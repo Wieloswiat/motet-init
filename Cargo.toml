@@ -1,0 +1,91 @@
+[workspace]
+resolver = "3"
+members = ["crates/rules", "crates/dice", "crates/testkit", "crates/lexgen", "crates/lexicons", "crates/log"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+publish = false
+repository = "https://github.com/Wieloswiat/motet-init"
+
+[workspace.dependencies]
+# Motet crates. Paths only: nothing here is published.
+motet-dice = { path = "crates/dice" }
+motet-lexicons = { path = "crates/lexicons" }
+motet-log = { path = "crates/log" }
+motet-net = { path = "crates/net" }
+motet-render = { path = "crates/render" }
+motet-rules = { path = "crates/rules" }
+motet-spaces = { path = "crates/spaces" }
+motet-testkit = { path = "crates/testkit" }
+motet-xrpc = { path = "crates/xrpc" }
+
+# atproto-crates, pinned as one set. The Spaces crates are not on crates.io
+# yet, so the whole family comes from the same git revision rather than mixing
+# a released 0.14 with an unreleased 0.15. Bump `rev` for all of them at once
+# (see docs/adr/0004-atproto-crates.md).
+atproto-identity = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2", default-features = false }
+atproto-lexicon = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2", default-features = false }
+atproto-oauth = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+atproto-record = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+atproto-space = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+atproto-space-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+atproto-tap-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+atproto-xrpcs = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+
+# Runtime and services.
+anyhow = "1"
+axum = "0.8"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+object_store = { version = "0.14", features = ["aws"] }
+rand = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "migrate", "json", "chrono", "uuid"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "limit", "timeout", "request-id"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+
+# Testing.
+insta = { version = "1", features = ["json"] }
+proptest = "1"
+proptest-state-machine = "0.9"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that fight the codebase's style more than they help.
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+# A bare unwrap hides why a value must exist; `expect("why")` says it.
+unwrap_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.dev]
+# Debug info for our crates only; dependencies compile faster without it.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test.package.proptest]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

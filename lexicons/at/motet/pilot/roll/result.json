@@ -1,0 +1,39 @@
+{
+  "lexicon": 1,
+  "id": "at.motet.pilot.roll.result",
+  "description": "DRAFT. Written by the tenor as the World, committed before it is returned: the one result for one request.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["request", "grammar", "algorithm", "expression", "outcome", "createdAt"],
+        "properties": {
+          "request": { "type": "ref", "ref": "com.atproto.repo.strongRef" },
+          "grammar": { "type": "string", "description": "Dice grammar version, e.g. motet-dice/1." },
+          "algorithm": {
+            "type": "string",
+            "knownValues": ["os-csprng"],
+            "description": "Where the randomness came from. Verifiable randomness can be added later without changing old rolls."
+          },
+          "expression": { "type": "string", "maxLength": 256 },
+          "outcome": { "type": "string", "knownValues": ["rolled", "failed"] },
+          "total": { "type": "integer" },
+          "groups": { "type": "array", "items": { "type": "ref", "ref": "#group" }, "maxLength": 64 },
+          "failure": { "type": "string", "description": "Why the roll could not complete. A failure is final, never re-rolled." },
+          "createdAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "required": ["dice", "faces", "kept"],
+      "properties": {
+        "dice": { "type": "string" },
+        "faces": { "type": "array", "items": { "type": "integer" }, "maxLength": 1000 },
+        "kept": { "type": "array", "items": { "type": "boolean" }, "maxLength": 1000 }
+      }
+    }
+  }
+}

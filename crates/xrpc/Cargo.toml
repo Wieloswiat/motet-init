@@ -1,0 +1,21 @@
+[package]
+name = "motet-xrpc"
+description = "XRPC serving: a typed, fail-closed registry of who may call what, service auth, and atproto error responses."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+atproto-identity.workspace = true
+atproto-xrpcs.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

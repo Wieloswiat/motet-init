@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 495c9ff3766d955d45dbd3bfa2e01135838b4b8608f892c88a9b9e1ed6305cf4 # shrinks to actions = [Write { author: 1, post: 2, scene: 0, body: 0 }, Admit { author: 1, post: 2, claim: Current }]

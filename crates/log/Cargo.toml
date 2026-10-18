@@ -1,0 +1,21 @@
+[package]
+name = "motet-log"
+description = "An append-only, fenced log in object storage: the tenor's durable state and the AppView's archive."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+object_store.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+motet-testkit = { workspace = true, features = ["services"] }
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

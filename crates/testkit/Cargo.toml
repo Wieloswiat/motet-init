@@ -1,0 +1,25 @@
+[package]
+name = "motet-testkit"
+description = "Shared test machinery: delivery-order generators, service fixtures, fault injection."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Generic on purpose: no Motet domain crate depends on it except as a
+# dev-dependency, and it depends on none of them, so there is never a second
+# copy of a domain type in a test build. Domain-specific generators live next
+# to the domain's tests (e.g. crates/rules/tests/support/).
+[dependencies]
+proptest.workspace = true
+
+# Fixtures for integration tests against real services, off by default so pure
+# crates' tests don't compile a database driver.
+object_store = { workspace = true, optional = true }
+sqlx = { workspace = true, optional = true }
+
+[features]
+services = ["dep:object_store", "dep:sqlx"]
+
+[lints]
+workspace = true

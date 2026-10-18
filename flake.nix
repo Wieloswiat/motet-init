@@ -1,0 +1,64 @@
+{
+  description = "Motet: play-by-forum on atproto";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    devenv = {
+      url = "github:cachix/devenv";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    crane.url = "github:ipetkov/crane";
+  };
+
+  nixConfig = {
+    extra-substituters = [ "https://devenv.cachix.org" ];
+    extra-trusted-public-keys = [ "devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw=" ];
+  };
+
+  outputs =
+    inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      imports = [ inputs.devenv.flakeModule ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "aarch64-darwin"
+      ];
+
+      perSystem =
+        { system, ... }:
+        let
+          pkgs = import inputs.nixpkgs {
+            inherit system;
+            overlays = [ (import inputs.rust-overlay) ];
+          };
+          # One toolchain, read from rust-toolchain.toml, for the shell, the
+          # build and CI.
+          rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          rust = import ./nix/rust.nix {
+            inherit pkgs rustToolchain;
+            crane = inputs.crane;
+            src = ./.;
+          };
+        in
+        {
+          _module.args.pkgs = pkgs;
+
+          packages = rust.packages // {
+            default = rust.packages.motet-appview;
+          };
+
+          # `nix flake check`: everything that needs no running services.
+          checks = rust.checks;
+
+          devenv.shells.default = import ./nix/devenv.nix { inherit rustToolchain; };
+
+          formatter = pkgs.nixfmt;
+        };
+    };
+}

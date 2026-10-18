@@ -1,0 +1,10 @@
+[net]
+# atproto-crates is fetched from Tangled, which redirects to its knot; the git
+# CLI follows that redirect where libgit2 does not.
+git-fetch-with-cli = true
+
+[alias]
+# `cargo t` runs the fast suite exactly as CI's first job does.
+t = "nextest run --workspace"
+# Integration tests that need PostgreSQL and object storage (`devenv up`).
+ti = "nextest run --workspace --profile integration --run-ignored only"

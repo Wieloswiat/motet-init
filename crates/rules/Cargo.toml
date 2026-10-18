@@ -1,0 +1,21 @@
+[package]
+name = "motet-rules"
+description = "The World's authority model: admission, permissions and the view every consumer derives. Pure."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# No I/O, clock, randomness or atproto SDK types may enter this crate: the
+# tenor decides with it, the AppView checks and warns with it, and both must
+# get the same answer from the same inputs. Adapters convert at the edges.
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+motet-testkit.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

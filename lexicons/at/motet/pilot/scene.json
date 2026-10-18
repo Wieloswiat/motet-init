@@ -1,0 +1,22 @@
+{
+  "lexicon": 1,
+  "id": "at.motet.pilot.scene",
+  "description": "DRAFT. A scene, written as the World in its public repo or in the Space of the scene's audience.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["title", "state", "createdAt"],
+        "properties": {
+          "title": { "type": "string", "maxGraphemes": 120, "maxLength": 1200 },
+          "location": { "type": "string", "format": "record-key" },
+          "arc": { "type": "string", "format": "record-key" },
+          "state": { "type": "string", "knownValues": ["planned", "open", "closed"] },
+          "createdAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    }
+  }
+}

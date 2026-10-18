@@ -1,0 +1,31 @@
+# Build output
+/target/
+node_modules/
+.svelte-kit/
+build/
+dist/
+styled-system/
+*.tsbuildinfo
+
+# Nix / devenv / direnv
+result
+result-*
+.devenv/
+.devenv.flake.nix
+.direnv/
+devenv.lock
+.pre-commit-config.yaml
+
+# Test output
+junit.xml
+playwright-report/
+test-results/
+*.profraw
+lcov.info
+mutants.out*/
+
+# Local
+.env
+.env.*
+!.env.example
+.previous-sources/

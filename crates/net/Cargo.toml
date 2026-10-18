@@ -1,0 +1,18 @@
+[package]
+name = "motet-net"
+description = "The one hardened outbound HTTP client: identity, OAuth, PDS and media requests."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+reqwest.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

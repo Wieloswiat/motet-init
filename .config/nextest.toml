@@ -1,0 +1,34 @@
+# Test suites, from fastest to slowest:
+#
+#   default      pure and in-process tests, including property tests. No
+#                services; every developer runs these on each change.
+#   integration  `#[ignore = "integration: …"]` tests against real PostgreSQL,
+#                S3 storage (SeaweedFS) and, later, a Spaces PDS (`devenv up`). CI starts the
+#                same services from the same devenv configuration.
+#   ci           default plus JUnit output and retries for flake detection,
+#                never for hiding failures (a retried pass is still reported).
+
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[profile.ci]
+fail-fast = false
+retries = { backoff = "fixed", count = 1, delay = "1s" }
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[profile.integration]
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 5 }
+# Integration tests share one database and one bucket; each test creates its own
+# schema and key prefix, but heavy fault-injection tests still run one at a time.
+[[profile.integration.overrides]]
+filter = "test(/fault_/)"
+test-group = "serial"
+
+[test-groups]
+serial = { max-threads = 1 }
