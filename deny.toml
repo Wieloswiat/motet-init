@@ -8,6 +8,28 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+# Each ignore is upstream's to fix, with the reason it doesn't bite Motet now.
+# Revisit when the crate that pulls it in moves (Renovate groups them).
+ignore = [
+  # Typst's bibliography and syntax-highlighting stack (hayagriva, syntect,
+  # two-face) and its text shaping. Nothing to upgrade to yet.
+  { id = "RUSTSEC-2024-0436", reason = "paste, via typst-library: unmaintained, no known flaw" },
+  { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml, via typst-library: unmaintained, no known flaw" },
+  { id = "RUSTSEC-2024-0320", reason = "yaml-rust, via syntect in typst-library: unmaintained, no known flaw" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode, via two-face in typst-library: unmaintained, no known flaw" },
+  { id = "RUSTSEC-2026-0206", reason = "rustybuzz, Typst's shaper: unmaintained, no known flaw" },
+  { id = "RUSTSEC-2026-0192", reason = "ttf-parser, Typst's font parser: unmaintained, no known flaw" },
+  # quick-xml 0.38 in citationberg (hayagriva): a post can pass a CSL style as
+  # bytes, but Typst runs in the render worker, whose CPU and memory limits
+  # bound both denial-of-service flaws.
+  { id = "RUSTSEC-2026-0194", reason = "quick-xml via typst-library; bounded by the render worker's limits" },
+  { id = "RUSTSEC-2026-0195", reason = "quick-xml via typst-library; bounded by the render worker's limits" },
+  # hickory 0.25 in atproto-identity's handle resolution. Motet doesn't
+  # enable DNSSEC validation (0118), and a lookup encodes one short name (0119); the fix
+  # needs hickory 0.26 upstream.
+  { id = "RUSTSEC-2026-0118", reason = "hickory-proto via atproto-identity; DNSSEC validation not enabled" },
+  { id = "RUSTSEC-2026-0119", reason = "hickory-proto via atproto-identity; needs atproto-identity on hickory 0.26" },
+]
 
 [licenses]
 version = 2
