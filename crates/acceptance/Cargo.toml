@@ -1,0 +1,21 @@
+[package]
+name = "motet-acceptance"
+description = "Acceptance tests from the backend plan that need more than one part of Motet: tenor, consumers, repos."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+motet-log.workspace = true
+motet-rules.workspace = true
+motet-tenor.workspace = true
+object_store.workspace = true
+
+[dev-dependencies]
+motet-testkit.workspace = true
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

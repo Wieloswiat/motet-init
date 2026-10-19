@@ -63,6 +63,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 
+# Typst. The worker's Typst follows typst.ts once the vector renderer lands
+# (docs/adr/0008-rendering.md); until then plain typst for static SVG.
+typst = "0.15.1"
+typst-assets = { version = "0.15.1", features = ["fonts"] }
+typst-layout = "0.15.1"
+typst-svg = "0.15.1"
+rlimit = "0.11"
+
 # Testing.
 insta = { version = "1", features = ["json"] }
 proptest = "1"
