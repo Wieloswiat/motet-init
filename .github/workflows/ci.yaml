@@ -56,11 +56,14 @@ jobs:
         run: |
           # devenv-up is a script, not a package with a bin/ directory.
           nix build --no-pure-eval .#devenv-up -o devenv-up
-          nohup ./devenv-up > services.log 2>&1 &
+          # No terminal here, so no process-compose TUI.
+          nohup ./devenv-up --tui=false > services.log 2>&1 &
       - run: nix develop --no-pure-eval --command ci
       - name: Service logs
         if: ${{ failure() }}
-        run: tail -n 200 services.log
+        run: |
+          tail -n 100 services.log
+          tail -n 200 /tmp/process-compose-*.log || true
       - name: Test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
