@@ -1,0 +1,72 @@
+# Architecture overview
+
+This is the map from Motet's design to its code. The design itself, with the
+reasoning and the references behind it, is the backend plan ("Motet backend:
+research and plan"); the decisions that shaped the code are in
+[the ADRs](../adr/README.md).
+
+## The parts
+
+```
+          people's PDSes  ──(relay, Tap)──┐        ┌── Spaces (sync, notifications)
+                 ▲                        ▼        ▼
+ web app ──► AppView API ──admission──► tenor ── World's repo and Spaces
+   (SvelteKit)   │  indexer ◄──────────────────────┘
+                 ▼
+     archive (bucket) ──► projections (PostgreSQL)
+```
+
+- **The AppView** (`crates/appview`), which Motet runs. Its indexer verifies
+  every record, appends it to the **archive** in object storage, then applies
+  it to the PostgreSQL **projections** pages are built from. Its API serves
+  Motet's XRPC methods; its **outbox** carries writes to people's PDSes and
+  admission requests to tenors until each has a final outcome.
+- **The tenor** (`crates/tenor`), which anyone can run. It hosts each World as
+  a group account. Every command for a World (an admission, a removal, a
+  roll) goes through that World's one command stream, kept as a fenced log in
+  the tenor's bucket.
+- **Workers**: Typst rendering (`crates/render`) runs in a separate,
+  resource-limited process because its input is untrusted. An image proxy,
+  email and exports come later.
+- **The web app** (`apps/web`) talks only to the AppView.
+
+## Five ideas, and where each lives
+
+| Idea                                                              | Where it is enforced                                                                                                                      |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Repositories hold the truth; projections rebuild from the archive | `appview::projection::apply` is the only writer of projections, for the live indexer and for a rebuild alike; `tests/rebuild.rs`          |
+| A post counts once the World admits it                            | `rules::world` decides; `tenor::admission` reads the record back from its author's repo first; `rules::view` shows only what was admitted |
+| A World is a group account on its tenor                           | `tenor` (identity, keys and account hosting are still to come)                                                                            |
+| Spaces are part of the design                                     | `spaces`: one Space per audience, per-reader serving decisions with a freshness bound                                                     |
+| Buckets for what must last, PostgreSQL for what must be queried   | `log`: group commit, fencing, read-back reconciliation; the tenor's shard and the AppView's archive both use it                           |
+
+## Contracts and their code
+
+The backend plan lists implementation contracts. Each has one home, so
+handlers can't forget it:
+
+- **Endpoint authorization**: `xrpc::Registry` declares every method with its
+  access rule; `xrpc::server` checks verb, caller and access before reading a
+  body. A method can't be served without being declared.
+- **Service auth**: `xrpc::service_auth` verifies the token against the
+  issuer's `#atproto` key, the audience, the method (`lxm`) and a lifetime cap.
+  A DID inside a request body is never the caller.
+- **Serialized World commands** and **operations**: `rules::world::World::apply`
+  with an `OperationId`; a retried operation returns its first outcome, a
+  reused one is refused. `tenor::shard` makes outcomes durable before
+  returning them.
+- **Outbound HTTP**: `net::Fetcher`, the only client: HTTPS only, no redirects, non-public
+  addresses refused after DNS, bounded time and size.
+- **Rendering**: `render::world::Sandbox` sees only the post, bundled fonts and the
+  package mirror, with a fixed date; `render::supervisor::Supervisor` runs the worker with
+  a clean environment, rlimits, a wall-clock timeout and an output cap.
+- **Per-reader authorization**: `spaces::serving::decide`.
+
+## Still to come
+
+In rough order, following the plan's First World phase: Tap ingestion into
+the indexer; OAuth sign-in and sessions; the World's group account on the
+tenor (keys, repo, publishing admissions as records); Spaces over
+atproto-crates' unreleased crates; dice through the tenor; typst.ts vector
+artifacts instead of static SVG ([ADR 0008](../adr/0008-rendering.md)); the
+compose stack's Tap and Spaces PDS.

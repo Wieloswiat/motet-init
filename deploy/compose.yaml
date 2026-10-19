@@ -1,0 +1,112 @@
+# The deployment-shaped stack: every part Motet runs, wired the way production
+# will be, on one machine. `stack` in the dev shell builds the images with nix
+# and brings this up with podman-compose; `docker compose` works the same.
+#
+# Development credentials only. Day-to-day work doesn't need this: `devenv up`
+# runs PostgreSQL and S3 natively, and the binaries run with `cargo run`.
+#
+# Not here yet, each waiting on a pinned upstream image:
+#   - Tap (public sync), from bluesky-social/indigo.
+#   - The Spaces-alpha PDS Motet hosts for alpha players.
+# Both slot in as services below; the AppView and tenor find them through
+# environment variables that don't exist yet either.
+
+name: motet
+
+services:
+  postgres:
+    # PostgreSQL with pg_search (ParadeDB). Pin a tag that matches the
+    # PostgreSQL major in nix/devenv.nix.
+    image: docker.io/paradedb/paradedb:latest-pg18
+    environment:
+      POSTGRES_USER: motet
+      POSTGRES_PASSWORD: motet
+      POSTGRES_DB: motet
+    volumes:
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-U', 'motet']
+      interval: 2s
+      retries: 30
+
+  s3:
+    # SeaweedFS's S3 gateway, as in the dev shell (it has the conditional
+    # writes the log's fencing needs).
+    image: docker.io/chrislusf/seaweedfs:latest
+    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json
+    configs:
+      - source: s3-identities
+        target: /etc/seaweedfs/s3.json
+    volumes:
+      - s3:/data
+    ports:
+      - 127.0.0.1:8333:8333
+
+  buckets:
+    image: docker.io/chrislusf/seaweedfs:latest
+    depends_on: [s3]
+    restart: on-failure
+    entrypoint: ['sh', '-c']
+    command:
+      - |
+        for bucket in motet-archive motet-tenor; do
+          echo "s3.bucket.create -name $$bucket" | weed shell -master=s3:9333 || exit 1
+        done
+
+  appview-migrate:
+    image: localhost/motet-appview:dev
+    command: migrate
+    environment:
+      DATABASE_URL: postgres://motet:motet@postgres/motet
+      MOTET_APPVIEW_S3_ENDPOINT: http://s3:8333
+      MOTET_APPVIEW_S3_BUCKET: motet-archive
+      MOTET_APPVIEW_S3_ACCESS_KEY: motet
+      MOTET_APPVIEW_S3_SECRET_KEY: motet-dev-secret
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  appview:
+    image: localhost/motet-appview:dev
+    command: serve
+    environment:
+      DATABASE_URL: postgres://motet:motet@postgres/motet
+      MOTET_APPVIEW_S3_ENDPOINT: http://s3:8333
+      MOTET_APPVIEW_S3_BUCKET: motet-archive
+      MOTET_APPVIEW_S3_ACCESS_KEY: motet
+      MOTET_APPVIEW_S3_SECRET_KEY: motet-dev-secret
+      MOTET_APPVIEW_LISTEN: 0.0.0.0:2583
+      MOTET_APPVIEW_SERVICE_DID: did:web:localhost#motet_appview
+      MOTET_ALLOW_PRIVATE_NETWORK: 'true'
+      RUST_LOG: info,motet=debug
+    depends_on:
+      appview-migrate: { condition: service_completed_successfully }
+      buckets: { condition: service_completed_successfully }
+    ports:
+      - 127.0.0.1:2583:2583
+
+  tenor:
+    image: localhost/motet-tenor:dev
+    command: serve
+    environment:
+      MOTET_TENOR_LISTEN: 0.0.0.0:2584
+      MOTET_TENOR_S3_ENDPOINT: http://s3:8333
+      MOTET_TENOR_S3_BUCKET: motet-tenor
+      MOTET_TENOR_S3_ACCESS_KEY: motet
+      MOTET_TENOR_S3_SECRET_KEY: motet-dev-secret
+      MOTET_ALLOW_PRIVATE_NETWORK: 'true'
+      RUST_LOG: info,motet=debug
+    depends_on:
+      buckets: { condition: service_completed_successfully }
+    ports:
+      - 127.0.0.1:2584:2584
+
+configs:
+  s3-identities:
+    content: |
+      {"identities": [{"name": "motet",
+        "credentials": [{"accessKey": "motet", "secretKey": "motet-dev-secret"}],
+        "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
+
+volumes:
+  postgres:
+  s3:
