@@ -23,8 +23,11 @@ let
       # Generated TypeScript, so lexicons-fresh can check both outputs.
       (src + "/packages/lexicons/src/generated")
       (lib.fileset.fileFilter (f: f.hasExt "snap") src)
-      (lib.fileset.maybeMissing (src + "/crates/appview/migrations"))
-      (lib.fileset.fileFilter (f: f.hasExt "txt") (src + "/crates"))
+      # Files crates embed with include_str! or read in tests: SQL schemas and
+      # migrations, proptest regression seeds.
+      (lib.fileset.fileFilter (f: f.hasExt "sql" || f.hasExt "txt" || f.hasExt "proptest-regressions") (
+        src + "/crates"
+      ))
     ];
   };
 
