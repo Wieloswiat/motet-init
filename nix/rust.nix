@@ -10,6 +10,10 @@ let
   inherit (pkgs) lib;
   craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
+  # Files crates embed with include_str! or read in tests: SQL schemas and
+  # migrations, proptest regression seeds.
+  embedded = f: f.hasExt "sql" || f.hasExt "txt" || f.hasExt "proptest-regressions";
+
   # Cargo sources, plus what builds and tests read at compile or run time.
   # Anything not listed here can't affect a build, so editing docs or the web
   # app never invalidates the Rust cache.
@@ -23,11 +27,7 @@ let
       # Generated TypeScript, so lexicons-fresh can check both outputs.
       (src + "/packages/lexicons/src/generated")
       (lib.fileset.fileFilter (f: f.hasExt "snap") src)
-      # Files crates embed with include_str! or read in tests: SQL schemas and
-      # migrations, proptest regression seeds.
-      (lib.fileset.fileFilter (f: f.hasExt "sql" || f.hasExt "txt" || f.hasExt "proptest-regressions") (
-        src + "/crates"
-      ))
+      (lib.fileset.fileFilter embedded (src + "/crates"))
     ];
   };
 
