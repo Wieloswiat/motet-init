@@ -1,0 +1,6 @@
+[default.extend-words]
+# Dice notation: NdM is "N dice of M sides".
+Nd = "Nd"
+
+[files]
+extend-exclude = ["packages/lexicons/src/generated/", "crates/lexicons/src/generated/", "pnpm-lock.yaml"]

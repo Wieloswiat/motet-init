@@ -143,9 +143,10 @@ impl Dice {
                 min: Some(kept_min * lo),
                 max: None,
             },
+            // k ≥ 0 and lo ≤ hi, so k·lo ≤ k·hi.
             Some(k) => Bounds {
-                min: Some((k * lo).min(k * hi)),
-                max: Some((k * lo).max(k * hi)),
+                min: Some(k * lo),
+                max: Some(k * hi),
             },
         }
     }

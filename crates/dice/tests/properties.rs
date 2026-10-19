@@ -298,6 +298,7 @@ fn bounds_examples() {
     assert_eq!(bounds("2d6+1"), (Some(3), Some(13)));
     assert_eq!(bounds("1d6*1d4"), (Some(1), Some(24)));
     assert_eq!(bounds("(1d6-4)*(1d6-4)"), (Some(-6), Some(9)));
+    assert_eq!(bounds("1d6*(1d4-5)"), (Some(-24), Some(-1)));
     assert_eq!(bounds("-1d6!"), (None, Some(-1)));
     assert_eq!(bounds("1d6!*2"), (None, None));
 

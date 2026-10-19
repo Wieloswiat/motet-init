@@ -1,0 +1,9 @@
+# cargo-mutants configuration (`mutants` in the dev shell).
+#
+# Every exclusion is an equivalent mutant: a change no test can detect because
+# the program behaves the same. Each says why.
+exclude_re = [
+  # A die's lowest face is 1 or -1 (dM, d%, dF), so `n * lo` and `n / lo` are
+  # the same number.
+  'crates/dice/src/expr\.rs:.*replace \* with / in Dice::bounds',
+]
