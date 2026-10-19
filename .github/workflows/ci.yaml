@@ -35,7 +35,9 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-      - run: nix flake check --print-build-logs
+      # devenv needs the working directory, so even the hermetic checks
+      # evaluate impurely; the checks themselves stay sandboxed builds.
+      - run: nix flake check --no-pure-eval --print-build-logs
 
   gate:
     runs-on: ubuntu-latest
@@ -59,4 +61,6 @@ jobs:
           path: |
             target/nextest/ci/junit.xml
             apps/web/playwright-report/
+            .devenv/**/*.log
           if-no-files-found: ignore
+          include-hidden-files: true

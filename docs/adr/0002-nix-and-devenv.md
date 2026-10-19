@@ -16,7 +16,7 @@ runs different commands from the ones developers run drifts.
   (`nix/devenv.nix`): packages, PostgreSQL and SeaweedFS as processes, git
   hooks, and every command as a devenv **script**, with a description shown by
   `devenv info`. No justfile or Makefile: one place defines commands.
-- `nix flake check` (`nix/rust.nix`, crane) runs everything hermetic: fmt,
+- `nix flake check --no-pure-eval` (`nix/rust.nix`, crane) runs everything hermetic: fmt,
   clippy, the default tests, cargo-deny and lexicon freshness.
 - `devenv test` runs `enterTest`, the whole gate with services. CI runs these
   two and nothing else.

@@ -221,8 +221,9 @@ in
     lint
     lexgen-check
     tests --profile ci
-    wait_for_port ${toString pgPort}
-    wait_for_port ${toString s3Port}
+    # First start includes initdb and SeaweedFS's master election.
+    wait_for_port ${toString pgPort} 120
+    wait_for_port ${toString s3Port} 120
     tests-integration
   '';
 
