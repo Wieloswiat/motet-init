@@ -34,7 +34,9 @@ pub enum Op {
         scene: SceneId,
         body: String,
     },
-    DeletePost { uri: RecordUri },
+    DeletePost {
+        uri: RecordUri,
+    },
     /// An admission record written in the World's repo.
     PutAdmission(Admission),
     /// The World closed an admission after observing the post's deletion.
@@ -133,16 +135,12 @@ impl WorldView {
             }
             // Admissions count only from the World's own repo.
             Op::PutAdmission(admission) if event.repo == self.world => {
-                self.admissions.insert(
-                    admission.post.uri.clone(),
-                    AdmissionState::Open(admission.clone()),
-                );
+                self.admissions
+                    .insert(admission.post.uri.clone(), AdmissionState::Open(admission.clone()));
             }
             Op::CloseAdmission(admission) if event.repo == self.world => {
-                self.admissions.insert(
-                    admission.post.uri.clone(),
-                    AdmissionState::Closed(admission.clone()),
-                );
+                self.admissions
+                    .insert(admission.post.uri.clone(), AdmissionState::Closed(admission.clone()));
             }
             Op::PutAdmission(_) | Op::CloseAdmission(_) => {}
         }

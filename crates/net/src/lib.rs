@@ -41,6 +41,7 @@ impl Default for Policy {
 
 impl Policy {
     /// For local development and tests against services on this machine.
+    #[must_use]
     pub fn allow_private(mut self) -> Self {
         self.allow_private = true;
         self
@@ -168,9 +169,22 @@ mod tests {
     #[test]
     fn known_internal_addresses_are_refused() {
         for addr in [
-            "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
-            "255.255.255.255", "::1", "::", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254",
-            "64:ff9b::a9fe:a9fe", "2002:7f00:1::",
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "64:ff9b::a9fe:a9fe",
+            "2002:7f00:1::",
         ] {
             let ip: IpAddr = addr.parse().expect("test address parses");
             assert!(!is_public(ip), "{addr} must not be reachable");

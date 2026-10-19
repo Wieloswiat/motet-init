@@ -57,21 +57,41 @@ pub struct ReadBack {
 /// One authoritative mutation in a World's command stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Command {
-    OpenScene { scene: SceneId, cast: BTreeSet<Did> },
-    CloseScene { scene: SceneId },
-    JoinCast { scene: SceneId, member: Did },
-    LeaveCast { scene: SceneId, member: Did },
+    OpenScene {
+        scene: SceneId,
+        cast: BTreeSet<Did>,
+    },
+    CloseScene {
+        scene: SceneId,
+    },
+    JoinCast {
+        scene: SceneId,
+        member: Did,
+    },
+    LeaveCast {
+        scene: SceneId,
+        member: Did,
+    },
     /// A World-scoped posting suspension. A sanction, not a role: roles only
     /// ever add access, so taking one away can leave another route open.
-    Suspend { member: Did },
-    Reinstate { member: Did },
+    Suspend {
+        member: Did,
+    },
+    Reinstate {
+        member: Did,
+    },
     /// Admit a post version, or for an edit, the new version of an admitted
     /// post. `replaces` must name the currently admitted version.
-    Admit { post: ReadBack, replaces: Option<Cid> },
+    Admit {
+        post: ReadBack,
+        replaces: Option<Cid>,
+    },
     /// The author deleted the post. A deletion is honoured without the tenor;
     /// closing the admission makes sure a later re-creation, even byte for
     /// byte, needs an admission of its own.
-    ObserveDeletion { post: RecordUri },
+    ObserveDeletion {
+        post: RecordUri,
+    },
 }
 
 /// What applying a command produced. Persisted with its operation ID, and
@@ -79,7 +99,9 @@ pub enum Command {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
     /// An authority fact changed; `authority_rev` is the new revision.
-    AuthorityChanged { authority_rev: u64 },
+    AuthorityChanged {
+        authority_rev: u64,
+    },
     Admitted(Admission),
     /// An admitted post was deleted and its admission is now closed.
     Closed(Admission),
@@ -102,7 +124,10 @@ pub enum Refusal {
     #[error("this version is already admitted")]
     AlreadyAdmitted,
     #[error("the edit replaces {expected:?}, but the admitted version is {current:?}")]
-    StaleEdit { expected: Option<Cid>, current: Option<Cid> },
+    StaleEdit {
+        expected: Option<Cid>,
+        current: Option<Cid>,
+    },
     #[error("an edit must stay in its post's scene")]
     SceneChanged,
 }
@@ -269,10 +294,7 @@ impl World {
                 .unwrap_or_else(|| unreachable!("check() verified the scene exists"));
             let seq = scene.next_seq;
             scene.next_seq += 1;
-            Place {
-                epoch: self.epoch,
-                seq,
-            }
+            Place { epoch: self.epoch, seq }
         };
         let admission = Admission {
             post: post.post.clone(),
@@ -282,8 +304,7 @@ impl World {
             authority_rev: self.authority_rev,
             replaces,
         };
-        self.admitted
-            .insert(post.post.uri.clone(), admission.clone());
+        self.admitted.insert(post.post.uri.clone(), admission.clone());
         admission
     }
 

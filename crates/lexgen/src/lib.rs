@@ -125,16 +125,29 @@ impl Target {
     /// Resolves `#def`, `nsid` or `nsid#def` from inside `doc`.
     pub fn resolve(doc: &str, reference: &str) -> Self {
         match reference.split_once('#') {
-            Some(("", def)) => Self { doc: doc.to_owned(), def: def.to_owned() },
-            Some((nsid, def)) => Self { doc: nsid.to_owned(), def: def.to_owned() },
-            None => Self { doc: reference.to_owned(), def: "main".to_owned() },
+            Some(("", def)) => Self {
+                doc: doc.to_owned(),
+                def: def.to_owned(),
+            },
+            Some((nsid, def)) => Self {
+                doc: nsid.to_owned(),
+                def: def.to_owned(),
+            },
+            None => Self {
+                doc: reference.to_owned(),
+                def: "main".to_owned(),
+            },
         }
     }
 }
 
 /// The type name for a definition: `main` takes the NSID's last segment.
 pub fn type_name(doc: &str, def: &str) -> String {
-    let base = if def == "main" { doc.rsplit('.').next().unwrap_or(doc) } else { def };
+    let base = if def == "main" {
+        doc.rsplit('.').next().unwrap_or(doc)
+    } else {
+        def
+    };
     let mut out = String::new();
     let mut upper = true;
     for c in base.chars() {
@@ -166,7 +179,8 @@ pub fn load(dir: &Path) -> Result<BTreeMap<String, Doc>> {
                 if doc.lexicon != 1 {
                     bail!("{}: unsupported lexicon version {}", path.display(), doc.lexicon);
                 }
-                let expected: std::path::PathBuf = doc.id.split('.').collect::<std::path::PathBuf>().with_extension("json");
+                let expected: std::path::PathBuf =
+                    doc.id.split('.').collect::<std::path::PathBuf>().with_extension("json");
                 if !path.ends_with(&expected) {
                     bail!("{}: id {} belongs at {}", path.display(), doc.id, expected.display());
                 }

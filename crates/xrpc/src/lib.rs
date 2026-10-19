@@ -9,8 +9,8 @@
 //!
 //! Independent clients reach these methods the standard way: through their
 //! PDS with the `atproto-proxy` header, which mints a service-auth token
-//! naming the caller, this service and the method (`lxm`). A DID inside a
-//! request body is never the caller.
+//! naming the caller, this service and the method (`lxm`); [`service_auth`]
+//! verifies it. A DID inside a request body is never the caller.
 
 use std::collections::BTreeMap;
 
@@ -20,8 +20,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use thiserror::Error;
 
+pub mod service_auth;
+
 pub use atproto_identity::traits::IdentityResolver;
-pub use atproto_xrpcs::service_auth::{ServiceAuthClaims, ServiceAuthPolicy, verify_service_auth};
 
 /// Query (GET) or procedure (POST), as the lexicon declares it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +82,9 @@ impl Registry {
     pub fn authorize(&self, nsid: &str, kind: Kind, caller: &Caller) -> Result<&Method, XrpcError> {
         let method = self.methods.get(nsid).ok_or(XrpcError::MethodNotImplemented)?;
         if method.kind != kind {
-            return Err(XrpcError::InvalidRequest("wrong HTTP method for this XRPC method".into()));
+            return Err(XrpcError::InvalidRequest(
+                "wrong HTTP method for this XRPC method".into(),
+            ));
         }
         let allowed = match (&method.access, caller) {
             (Access::Public, _) | (Access::Account, Caller::Account { .. } | Caller::Service { .. }) => true,
@@ -110,19 +113,17 @@ impl Registry {
 pub enum Caller {
     Anonymous,
     /// A Motet browser session bound to this account.
-    Account { did: String },
+    Account {
+        did: String,
+    },
     /// A verified service-auth token: issuer and the one method it allows.
-    Service { did: String, lxm: String },
+    Service {
+        did: String,
+        lxm: String,
+    },
 }
 
 impl Caller {
-    pub fn from_claims(claims: &ServiceAuthClaims) -> Option<Self> {
-        Some(Self::Service {
-            did: claims.iss.clone(),
-            lxm: claims.lxm.clone()?,
-        })
-    }
-
     pub fn did(&self) -> Option<&str> {
         match self {
             Self::Anonymous => None,
@@ -161,7 +162,14 @@ impl IntoResponse for XrpcError {
             Self::NotFound => (StatusCode::NOT_FOUND, "NotFound"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "InternalServerError"),
         };
-        (status, Json(ErrorBody { error: name, message: self.to_string() })).into_response()
+        (
+            status,
+            Json(ErrorBody {
+                error: name,
+                message: self.to_string(),
+            }),
+        )
+            .into_response()
     }
 }
 
@@ -173,9 +181,24 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::new([
-            Method { nsid: "at.motet.pilot.getScene", kind: Kind::Query, access: Access::Public, max_body: 0 },
-            Method { nsid: "at.motet.pilot.submitPost", kind: Kind::Procedure, access: Access::Account, max_body: 1 << 16 },
-            Method { nsid: "at.motet.pilot.play.submitAdmission", kind: Kind::Procedure, access: Access::Service, max_body: 1 << 12 },
+            Method {
+                nsid: "at.motet.pilot.getScene",
+                kind: Kind::Query,
+                access: Access::Public,
+                max_body: 0,
+            },
+            Method {
+                nsid: "at.motet.pilot.submitPost",
+                kind: Kind::Procedure,
+                access: Access::Account,
+                max_body: 1 << 16,
+            },
+            Method {
+                nsid: "at.motet.pilot.play.submitAdmission",
+                kind: Kind::Procedure,
+                access: Access::Service,
+                max_body: 1 << 12,
+            },
         ])
         .expect("no duplicates")
     }
@@ -189,8 +212,13 @@ mod tests {
         ];
         prop_oneof![
             Just(Caller::Anonymous),
-            Just(Caller::Account { did: "did:plc:a".into() }),
-            nsid.prop_map(|lxm| Caller::Service { did: "did:plc:a".into(), lxm }),
+            Just(Caller::Account {
+                did: "did:plc:a".into()
+            }),
+            nsid.prop_map(|lxm| Caller::Service {
+                did: "did:plc:a".into(),
+                lxm
+            }),
         ]
     }
 
@@ -219,7 +247,15 @@ mod tests {
 
     #[test]
     fn duplicate_declarations_are_rejected() {
-        let m = Method { nsid: "x.y.z", kind: Kind::Query, access: Access::Public, max_body: 0 };
-        assert_eq!(Registry::new([m.clone(), m]).err(), Some(RegistryError::Duplicate("x.y.z")));
+        let m = Method {
+            nsid: "x.y.z",
+            kind: Kind::Query,
+            access: Access::Public,
+            max_body: 0,
+        };
+        assert_eq!(
+            Registry::new([m.clone(), m]).err(),
+            Some(RegistryError::Duplicate("x.y.z"))
+        );
     }
 }

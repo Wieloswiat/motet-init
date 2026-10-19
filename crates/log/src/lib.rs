@@ -156,7 +156,12 @@ impl Writer {
             mode: PutMode::Create,
             ..PutOptions::default()
         };
-        match self.log.store.put_opts(&self.log.key(seq), PutPayload::from(batch), options).await {
+        match self
+            .log
+            .store
+            .put_opts(&self.log.key(seq), PutPayload::from(batch), options)
+            .await
+        {
             Ok(_) => {
                 self.next += 1;
                 Ok(seq)
@@ -177,7 +182,10 @@ impl Writer {
         };
         match self.log.store.get(&self.log.key(seq)).await {
             Ok(found) => {
-                let found = found.bytes().await.map_err(|source| AppendError::Unknown { seq, source })?;
+                let found = found
+                    .bytes()
+                    .await
+                    .map_err(|source| AppendError::Unknown { seq, source })?;
                 if found == *batch {
                     self.unresolved = None;
                     self.next = seq + 1;

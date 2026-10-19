@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::prefix::PrefixStore;
-use sqlx::postgres::{PgConnectOptions, PgPool};
 use sqlx::ConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPool};
 
 fn env(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {

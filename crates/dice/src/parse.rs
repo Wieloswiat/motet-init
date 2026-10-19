@@ -31,7 +31,11 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
         .enumerate()
         .filter(|(_, b)| !b.is_ascii_whitespace())
         .collect();
-    let mut p = Parser { bytes, pos: 0, depth: 0 };
+    let mut p = Parser {
+        bytes,
+        pos: 0,
+        depth: 0,
+    };
     let expr = p.expr()?;
     match p.peek() {
         None => Ok(expr),
@@ -157,7 +161,10 @@ impl Parser {
     }
 
     fn keep(&mut self) -> Result<Option<Keep>, ParseError> {
-        let kind = match (self.peek().map(|b| b.to_ascii_lowercase()), self.peek2().map(|b| b.to_ascii_lowercase())) {
+        let kind = match (
+            self.peek().map(|b| b.to_ascii_lowercase()),
+            self.peek2().map(|b| b.to_ascii_lowercase()),
+        ) {
             (Some(b'k'), Some(b'h')) => Keep::Highest as fn(u32) -> Keep,
             (Some(b'k'), Some(b'l')) => Keep::Lowest,
             (Some(b'd'), Some(b'h')) => Keep::DropHighest,

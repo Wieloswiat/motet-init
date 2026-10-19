@@ -145,10 +145,18 @@ impl Ctx<'_> {
         let mut values = Vec::new();
         for _ in 0..d.count {
             let mut face = self.face(d.die)?;
-            values.push(Value { face, exploded: false, kept: true });
+            values.push(Value {
+                face,
+                exploded: false,
+                kept: true,
+            });
             while d.explode && face == max_face {
                 face = self.face(d.die)?;
-                values.push(Value { face, exploded: true, kept: true });
+                values.push(Value {
+                    face,
+                    exploded: true,
+                    kept: true,
+                });
             }
         }
 
@@ -169,9 +177,12 @@ impl Ctx<'_> {
 
         let mut kept = values.iter().filter(|v| v.kept);
         let total = match d.success {
-            Some(c) => i64::try_from(kept.filter(|v| c.op.holds(v.face, c.target)).count())
-                .map_err(|_| RollError::Overflow)?,
-            None => kept.try_fold(0i64, |acc, v| acc.checked_add(v.face)).ok_or(RollError::Overflow)?,
+            Some(c) => {
+                i64::try_from(kept.filter(|v| c.op.holds(v.face, c.target)).count()).map_err(|_| RollError::Overflow)?
+            }
+            None => kept
+                .try_fold(0i64, |acc, v| acc.checked_add(v.face))
+                .ok_or(RollError::Overflow)?,
         };
         self.groups.push(Group {
             dice: d.to_string(),

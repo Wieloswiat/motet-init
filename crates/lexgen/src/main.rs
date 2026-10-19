@@ -38,9 +38,16 @@ fn main() -> Result<ExitCode> {
         Command::Check(p) => (p, false),
     };
     let docs = motet_lexgen::load(&paths.lexicons)?;
-    let mut outputs = motet_lexgen::rust::generate(&docs)?.into_iter().map(|(f, c)| (paths.rust.join(f), c)).collect::<Vec<_>>();
+    let mut outputs = motet_lexgen::rust::generate(&docs)?
+        .into_iter()
+        .map(|(f, c)| (paths.rust.join(f), c))
+        .collect::<Vec<_>>();
     if let Some(ts) = &paths.ts {
-        outputs.extend(motet_lexgen::ts::generate(&docs)?.into_iter().map(|(f, c)| (ts.join(f), c)));
+        outputs.extend(
+            motet_lexgen::ts::generate(&docs)?
+                .into_iter()
+                .map(|(f, c)| (ts.join(f), c)),
+        );
     }
 
     let mut stale = Vec::new();

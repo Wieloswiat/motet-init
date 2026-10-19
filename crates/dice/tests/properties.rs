@@ -11,7 +11,11 @@ struct Scripted {
 
 impl Source for Scripted {
     fn roll(&mut self, sides: u32) -> u32 {
-        let raw = self.faces.get(self.next % self.faces.len().max(1)).copied().unwrap_or(0);
+        let raw = self
+            .faces
+            .get(self.next % self.faces.len().max(1))
+            .copied()
+            .unwrap_or(0);
         self.next += 1;
         raw % sides + 1
     }
@@ -34,8 +38,20 @@ fn dice() -> impl Strategy<Value = Dice> {
         (1..5u32).prop_map(Keep::DropHighest),
         (1..5u32).prop_map(Keep::DropLowest),
     ];
-    let cmp = prop_oneof![Just(CmpOp::Ge), Just(CmpOp::Le), Just(CmpOp::Gt), Just(CmpOp::Lt), Just(CmpOp::Eq)];
-    (1..8u32, die(), any::<bool>(), proptest::option::of(keep), proptest::option::of((cmp, -2..10i64)))
+    let cmp = prop_oneof![
+        Just(CmpOp::Ge),
+        Just(CmpOp::Le),
+        Just(CmpOp::Gt),
+        Just(CmpOp::Lt),
+        Just(CmpOp::Eq)
+    ];
+    (
+        1..8u32,
+        die(),
+        any::<bool>(),
+        proptest::option::of(keep),
+        proptest::option::of((cmp, -2..10i64)),
+    )
         .prop_map(|(count, die, explode, keep, success)| Dice {
             count,
             die,
@@ -52,7 +68,11 @@ fn expr() -> impl Strategy<Value = Expr> {
     leaf.prop_recursive(4, 24, 2, |inner| {
         prop_oneof![
             inner.clone().prop_map(|e| Expr::Neg(Box::new(e))),
-            (inner.clone(), prop_oneof![Just(BinOp::Add), Just(BinOp::Sub), Just(BinOp::Mul)], inner)
+            (
+                inner.clone(),
+                prop_oneof![Just(BinOp::Add), Just(BinOp::Sub), Just(BinOp::Mul)],
+                inner
+            )
                 .prop_map(|(l, op, r)| Expr::Bin(Box::new(l), op, Box::new(r))),
         ]
     })
@@ -139,7 +159,10 @@ fn dice_that_cannot_stop_exploding_are_refused() {
     }
     for text in ["1d1!", "4dF!"] {
         let e = parse(text).expect("valid notation");
-        assert!(matches!(e.roll(&mut Max, Limits::default()), Err(RollError::Explode(_))), "{text}");
+        assert!(
+            matches!(e.roll(&mut Max, Limits::default()), Err(RollError::Explode(_))),
+            "{text}"
+        );
     }
 }
 
@@ -158,5 +181,89 @@ fn notation_examples() {
     ];
     for (input, canonical) in cases {
         assert_eq!(parse(input).map(|e| e.to_string()).as_deref(), Ok(canonical), "{input}");
+    }
+}
+
+/// Returns the given faces in order, exactly as given.
+struct Faces(std::vec::IntoIter<u32>);
+
+impl Faces {
+    fn new(faces: &[u32]) -> Self {
+        Self(faces.to_vec().into_iter())
+    }
+}
+
+impl Source for Faces {
+    fn roll(&mut self, sides: u32) -> u32 {
+        let face = self.0.next().expect("the test scripted enough faces");
+        assert!((1..=sides).contains(&face), "scripted face {face} isn't on a d{sides}");
+        face
+    }
+}
+
+fn total(text: &str, faces: &[u32]) -> Result<i64, RollError> {
+    let e = parse(text).expect("valid notation");
+    e.roll(&mut Faces::new(faces), Limits::default()).map(|r| r.total)
+}
+
+/// Each comparison counts a face equal to its target the way its operator
+/// says, so swapping `>=` for `>` (or any other pair) changes a result here.
+#[test]
+fn successes_count_faces_against_the_target() {
+    let faces = [7, 8, 9, 8, 1];
+    let cases = [(">=8", 3), (">8", 1), ("<=8", 4), ("<8", 2), ("=8", 2)];
+    for (cmp, successes) in cases {
+        assert_eq!(total(&format!("5d10{cmp}"), &faces), Ok(successes), "5d10{cmp}");
+    }
+}
+
+/// Successes are counted over the dice keep/drop kept, after explosions.
+#[test]
+fn successes_count_only_kept_dice() {
+    // 3d6!: 6 explodes into 2; then keep the highest two of [6, 2, 5, 1].
+    assert_eq!(total("3d6!kh2>=5", &[6, 2, 5, 1]), Ok(2));
+    assert_eq!(total("3d6!kl2>=5", &[6, 2, 5, 1]), Ok(0));
+}
+
+#[test]
+fn sides_limit_is_inclusive() {
+    let limits = Limits {
+        max_sides: 20,
+        ..Limits::default()
+    };
+    let roll = |text: &str| parse(text).expect("valid").roll(&mut Faces::new(&[1]), limits);
+    assert!(roll("1d20").is_ok());
+    assert_eq!(roll("1d21").err(), Some(RollError::TooManySides(20)));
+}
+
+#[test]
+fn value_limit_is_inclusive_and_counts_explosions() {
+    let limits = Limits {
+        max_values: 3,
+        ..Limits::default()
+    };
+    let roll = |text: &str, faces: &[u32]| parse(text).expect("valid").roll(&mut Faces::new(faces), limits);
+    assert!(roll("3d6", &[1, 2, 3]).is_ok());
+    // One explosion makes a fourth value.
+    assert_eq!(roll("3d6!", &[6, 2, 3, 4]).err(), Some(RollError::TooManyValues(3)));
+    // Values from every term count towards the same limit.
+    assert_eq!(roll("2d6+2d6", &[1, 2, 3, 4]).err(), Some(RollError::TooManyValues(3)));
+}
+
+/// An oversized count fails before any die is rolled: `Faces` panics if
+/// asked for a face it wasn't given.
+#[test]
+fn oversized_counts_fail_before_rolling() {
+    let e = parse("1001d6").expect("valid");
+    assert_eq!(
+        e.roll(&mut Faces::new(&[]), Limits::default()).err(),
+        Some(RollError::TooManyValues(1000))
+    );
+}
+
+#[test]
+fn empty_dice_are_refused() {
+    for text in ["0d6", "1d0"] {
+        assert_eq!(total(text, &[]), Err(RollError::Empty), "{text}");
     }
 }

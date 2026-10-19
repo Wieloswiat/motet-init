@@ -8,14 +8,19 @@ publish.workspace = true
 
 [dependencies]
 atproto-identity.workspace = true
-atproto-xrpcs.workspace = true
+atproto-oauth.workspace = true
 axum.workspace = true
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
 proptest.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

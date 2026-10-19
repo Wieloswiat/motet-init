@@ -31,30 +31,56 @@ pub fn scene(i: usize) -> SceneId {
 }
 
 pub fn post_uri(author_index: usize, post: usize) -> RecordUri {
-    RecordUri::new(format!(
-        "at://{}/at.motet.pilot.post/p{post}",
-        author(author_index)
-    ))
+    RecordUri::new(format!("at://{}/at.motet.pilot.post/p{post}", author(author_index)))
 }
 
 /// One step of a history.
 #[derive(Clone, Debug)]
 pub enum Action {
     /// An author writes (or rewrites) one of their posts in a scene.
-    Write { author: usize, post: usize, scene: usize, body: u8 },
-    Delete { author: usize, post: usize },
-    JoinCast { author: usize, scene: usize },
-    LeaveCast { author: usize, scene: usize },
-    CloseScene { scene: usize },
-    ReopenScene { scene: usize },
-    Suspend { author: usize },
-    Reinstate { author: usize },
+    Write {
+        author: usize,
+        post: usize,
+        scene: usize,
+        body: u8,
+    },
+    Delete {
+        author: usize,
+        post: usize,
+    },
+    JoinCast {
+        author: usize,
+        scene: usize,
+    },
+    LeaveCast {
+        author: usize,
+        scene: usize,
+    },
+    CloseScene {
+        scene: usize,
+    },
+    ReopenScene {
+        scene: usize,
+    },
+    Suspend {
+        author: usize,
+    },
+    Reinstate {
+        author: usize,
+    },
     /// The tenor reads the post back from its author's PDS and asks to admit
     /// whatever version is there now. `claim` is which version the author's
     /// client said the edit replaces: clients can be stale or wrong.
-    Admit { author: usize, post: usize, claim: Claim },
+    Admit {
+        author: usize,
+        post: usize,
+        claim: Claim,
+    },
     /// The tenor notices a deletion through sync.
-    ObserveDeletion { author: usize, post: usize },
+    ObserveDeletion {
+        author: usize,
+        post: usize,
+    },
 }
 
 /// What an admission request says it replaces.
@@ -105,6 +131,7 @@ pub struct Run {
 }
 
 /// Runs `actions` against a World whose scenes start open with everyone cast.
+#[allow(clippy::too_many_lines)] // one arm per action, read top to bottom
 pub fn run(actions: &[Action]) -> (World, Run) {
     let mut world = World::new(0);
     let mut out = Run::default();
@@ -141,7 +168,12 @@ pub fn run(actions: &[Action]) -> (World, Run) {
 
     for action in actions {
         match *action {
-            Action::Write { author: a, post, scene: s, body } => {
+            Action::Write {
+                author: a,
+                post,
+                scene: s,
+                body,
+            } => {
                 let uri = post_uri(a, post);
                 // An edit stays in its scene; a new post goes where it's written.
                 let scene_id = current.get(&uri).map_or_else(|| scene(s), |(_, sc)| sc.clone());
@@ -151,7 +183,11 @@ pub fn run(actions: &[Action]) -> (World, Run) {
                 emit(
                     &mut repos,
                     author(a),
-                    Op::PutPost { post: version, scene: scene_id, body: format!("body {body}") },
+                    Op::PutPost {
+                        post: version,
+                        scene: scene_id,
+                        body: format!("body {body}"),
+                    },
                 );
             }
             Action::Delete { author: a, post } => {
@@ -161,10 +197,24 @@ pub fn run(actions: &[Action]) -> (World, Run) {
                 }
             }
             Action::JoinCast { author: a, scene: s } => {
-                tenor(&mut world, &mut out, Command::JoinCast { scene: scene(s), member: author(a) });
+                tenor(
+                    &mut world,
+                    &mut out,
+                    Command::JoinCast {
+                        scene: scene(s),
+                        member: author(a),
+                    },
+                );
             }
             Action::LeaveCast { author: a, scene: s } => {
-                tenor(&mut world, &mut out, Command::LeaveCast { scene: scene(s), member: author(a) });
+                tenor(
+                    &mut world,
+                    &mut out,
+                    Command::LeaveCast {
+                        scene: scene(s),
+                        member: author(a),
+                    },
+                );
             }
             Action::CloseScene { scene: s } => {
                 tenor(&mut world, &mut out, Command::CloseScene { scene: scene(s) });
@@ -182,7 +232,9 @@ pub fn run(actions: &[Action]) -> (World, Run) {
             Action::Admit { author: a, post, claim } => {
                 let uri = post_uri(a, post);
                 // Read-back: only a version that exists can be admitted.
-                let Some((version, scene_id)) = current.get(&uri).cloned() else { continue };
+                let Some((version, scene_id)) = current.get(&uri).cloned() else {
+                    continue;
+                };
                 let replaces = match claim {
                     Claim::Current => world.admission(&uri).map(|adm| adm.post.cid.clone()),
                     Claim::Nothing => None,
@@ -192,7 +244,11 @@ pub fn run(actions: &[Action]) -> (World, Run) {
                     &mut world,
                     &mut out,
                     Command::Admit {
-                        post: ReadBack { post: version, author: author(a), scene: scene_id },
+                        post: ReadBack {
+                            post: version,
+                            author: author(a),
+                            scene: scene_id,
+                        },
                         replaces,
                     },
                 );
@@ -205,8 +261,7 @@ pub fn run(actions: &[Action]) -> (World, Run) {
                 if current.contains_key(&uri) {
                     continue; // nothing deleted to observe
                 }
-                if let Outcome::Closed(admission) =
-                    tenor(&mut world, &mut out, Command::ObserveDeletion { post: uri })
+                if let Outcome::Closed(admission) = tenor(&mut world, &mut out, Command::ObserveDeletion { post: uri })
                 {
                     emit(&mut repos, world_did(), Op::CloseAdmission(admission));
                 }

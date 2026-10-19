@@ -8,6 +8,7 @@
 //! untouched.
 
 #[allow(missing_docs, unreachable_pub)]
+#[rustfmt::skip] // generated: lexgen-check compares it byte for byte
 mod generated;
 
 pub use generated::*;

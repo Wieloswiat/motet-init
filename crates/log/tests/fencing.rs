@@ -13,7 +13,10 @@ use proptest::prelude::*;
 /// Two writers take over the same log, then append in the given interleaving.
 async fn race(store: Arc<dyn ObjectStore>, schedule: &[bool]) {
     let log = Log::new(store, "shard-0");
-    let mut writers = [log.writer().await.expect("writer a"), log.writer().await.expect("writer b")];
+    let mut writers = [
+        log.writer().await.expect("writer a"),
+        log.writer().await.expect("writer b"),
+    ];
     let mut fenced = [false, false];
     let mut acknowledged = Vec::new();
     for (step, &second) in schedule.iter().enumerate() {
@@ -44,5 +47,9 @@ proptest! {
 #[tokio::test]
 #[ignore = "integration: needs S3 (devenv up)"]
 async fn fault_second_writer_against_real_bucket() {
-    race(motet_testkit::services::bucket(), &[false, true, true, false, false, true, false]).await;
+    race(
+        motet_testkit::services::bucket(),
+        &[false, true, true, false, false, true, false],
+    )
+    .await;
 }

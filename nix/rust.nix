@@ -20,6 +20,8 @@ let
       (src + "/.config/nextest.toml")
       (src + "/deny.toml")
       (src + "/lexicons")
+      # Generated TypeScript, so lexicons-fresh can check both outputs.
+      (src + "/packages/lexicons/src/generated")
       (lib.fileset.fileFilter (f: f.hasExt "snap") src)
       (lib.fileset.maybeMissing (src + "/crates/appview/migrations"))
       (lib.fileset.fileFilter (f: f.hasExt "txt") (src + "/crates"))
@@ -119,7 +121,8 @@ in
     # Generated lexicon code must match the lexicons it was generated from.
     lexicons-fresh = pkgs.runCommand "lexicons-fresh" { } ''
       cd ${source}
-      ${lib.getExe binaries.motet-lexgen} check --lexicons lexicons --rust crates/lexicons/src/generated
+      ${lib.getExe binaries.motet-lexgen} check --lexicons lexicons \
+        --rust crates/lexicons/src/generated --ts packages/lexicons/src/generated
       touch $out
     '';
   };

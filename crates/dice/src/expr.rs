@@ -184,10 +184,7 @@ impl Expr {
                                 max: p.iter().max().copied(),
                             }
                         }
-                        _ => Bounds {
-                            min: None,
-                            max: None,
-                        },
+                        _ => Bounds { min: None, max: None },
                     },
                 }
             }

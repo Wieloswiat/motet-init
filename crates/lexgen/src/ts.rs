@@ -29,13 +29,33 @@ fn document(doc: &Doc) -> String {
     for (name, def) in &doc.defs {
         body.push('\n');
         match def {
-            Def::Record { description, record, .. } => {
+            Def::Record {
+                description, record, ..
+            } => {
                 let ty = type_name(&doc.id, name);
                 let _ = writeln!(body, "export const {ty}Nsid = '{}' as const;\n", doc.id);
-                object(&mut body, doc, &ty, description.as_deref(), record, Some(&doc.id), &mut imports, &mut uses_blob);
+                object(
+                    &mut body,
+                    doc,
+                    &ty,
+                    description.as_deref(),
+                    record,
+                    Some(&doc.id),
+                    &mut imports,
+                    &mut uses_blob,
+                );
             }
             Def::Object(o) => {
-                object(&mut body, doc, &type_name(&doc.id, name), o.description.as_deref(), o, None, &mut imports, &mut uses_blob);
+                object(
+                    &mut body,
+                    doc,
+                    &type_name(&doc.id, name),
+                    o.description.as_deref(),
+                    o,
+                    None,
+                    &mut imports,
+                    &mut uses_blob,
+                );
             }
             Def::Unsupported => {}
         }

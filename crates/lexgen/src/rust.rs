@@ -24,7 +24,11 @@ pub fn generate(docs: &BTreeMap<String, Doc>) -> Result<Vec<(String, String)>> {
     root.push_str("\n/// Every lexicon document, by NSID, as JSON text.\npub const SCHEMAS: &[(&str, &str)] = &[\n");
     for doc in docs.values() {
         let path = doc.id.replace('.', "/");
-        let _ = writeln!(root, "    (\"{}\", include_str!(\"../../../../lexicons/{path}.json\")),", doc.id);
+        let _ = writeln!(
+            root,
+            "    (\"{}\", include_str!(\"../../../../lexicons/{path}.json\")),",
+            doc.id
+        );
     }
     root.push_str("];\n");
     files.push(("mod.rs".to_owned(), root));
@@ -43,9 +47,19 @@ fn document(doc: &Doc) -> String {
     for (name, def) in &doc.defs {
         out.push('\n');
         match def {
-            Def::Record { description, key, record } => {
+            Def::Record {
+                description,
+                key,
+                record,
+            } => {
                 let ty = type_name(&doc.id, name);
-                object(&mut out, doc, &ty, description.as_deref().or(record.description.as_deref()), record);
+                object(
+                    &mut out,
+                    doc,
+                    &ty,
+                    description.as_deref().or(record.description.as_deref()),
+                    record,
+                );
                 let _ = write!(
                     out,
                     "\nimpl crate::Record for {ty} {{\n    const NSID: &'static str = \"{}\";\n    const KEY: &'static str = \"{key}\";\n}}\n",
@@ -89,7 +103,11 @@ fn rust_type(doc: &Doc, field: &Field) -> String {
         Field::Ref { target, .. } => {
             let t = Target::resolve(&doc.id, target);
             let name = type_name(&t.doc, &t.def);
-            if t.doc == doc.id { name } else { format!("super::{}::{name}", module_name(&t.doc)) }
+            if t.doc == doc.id {
+                name
+            } else {
+                format!("super::{}::{name}", module_name(&t.doc))
+            }
         }
         Field::Array { items, .. } => format!("Vec<{}>", rust_type(doc, items)),
     }
@@ -118,7 +136,9 @@ fn snake(camel: &str) -> String {
 
 fn raw(name: &str) -> String {
     match name {
-        "type" | "ref" | "self" | "move" | "match" | "use" | "where" | "mod" | "fn" | "struct" | "enum" => format!("r#{name}"),
+        "type" | "ref" | "self" | "move" | "match" | "use" | "where" | "mod" | "fn" | "struct" | "enum" => {
+            format!("r#{name}")
+        }
         _ => name.to_owned(),
     }
 }

@@ -7,7 +7,11 @@ use std::path::Path;
 fn generated_code_for_motet_lexicons() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lexicons");
     let docs = motet_lexgen::load(&dir).expect("lexicons load");
-    for (file, contents) in motet_lexgen::rust::generate(&docs).expect("rust").into_iter().chain(motet_lexgen::ts::generate(&docs).expect("ts")) {
+    for (file, contents) in motet_lexgen::rust::generate(&docs)
+        .expect("rust")
+        .into_iter()
+        .chain(motet_lexgen::ts::generate(&docs).expect("ts"))
+    {
         insta::assert_snapshot!(file.clone(), contents);
     }
 }

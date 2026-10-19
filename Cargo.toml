@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rules", "crates/dice", "crates/testkit", "crates/lexgen", "crates/lexicons", "crates/log"]
+members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
@@ -20,22 +20,25 @@ motet-spaces = { path = "crates/spaces" }
 motet-testkit = { path = "crates/testkit" }
 motet-xrpc = { path = "crates/xrpc" }
 
-# atproto-crates, pinned as one set. The Spaces crates are not on crates.io
-# yet, so the whole family comes from the same git revision rather than mixing
-# a released 0.14 with an unreleased 0.15. Bump `rev` for all of them at once
-# (see docs/adr/0004-atproto-crates.md).
-atproto-identity = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2", default-features = false }
-atproto-lexicon = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2", default-features = false }
-atproto-oauth = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
-atproto-record = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
-atproto-space = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
-atproto-space-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
-atproto-tap-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
-atproto-xrpcs = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "27a07776b66d92e3fe68c0086735162a43d388b2" }
+# atproto-crates. The released crates come from crates.io as one version;
+# bump them together. The Spaces and Tap crates (atproto-space,
+# atproto-space-client, atproto-tap-client) and atproto-testkit aren't
+# released yet: they are added from git, at one pinned revision of
+# https://tangled.org/ngerakines.me/atproto-crates, by the change that first
+# uses them, and the released crates move to that same revision then so no
+# two copies of the core types meet (docs/adr/0004-atproto-crates.md).
+atproto-attestation = "0.14.5"
+atproto-client = "0.14.5"
+atproto-identity = { version = "0.14.5", default-features = false }
+atproto-lexicon = { version = "0.14.5", default-features = false }
+atproto-oauth = "0.14.5"
+atproto-record = "0.14.5"
 
 # Runtime and services.
 anyhow = "1"
+async-trait = "0.1"
 axum = "0.8"
+base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
