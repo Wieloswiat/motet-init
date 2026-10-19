@@ -1,0 +1,3 @@
+# TOML formatting (taplo), wrapped like rustfmt.toml wraps Rust.
+[formatting]
+column_width = 120

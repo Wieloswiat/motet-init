@@ -1,3 +1,21 @@
 allow-unwrap-in-tests = true
 allow-dbg-in-tests = true
-doc-valid-idents = ["AppView", "AppViews", "PostgreSQL", "ParadeDB", "SlateDB", "SeaweedFS", "TypeScript", "SvelteKit", "OAuth", "XRPC", "..", "atproto", "NodeBB", "WebAssembly", "JavaScript", "TypeScript", "OpenTelemetry"]
+doc-valid-idents = [
+  "AppView",
+  "AppViews",
+  "PostgreSQL",
+  "ParadeDB",
+  "SlateDB",
+  "SeaweedFS",
+  "TypeScript",
+  "SvelteKit",
+  "OAuth",
+  "XRPC",
+  "..",
+  "atproto",
+  "NodeBB",
+  "WebAssembly",
+  "JavaScript",
+  "TypeScript",
+  "OpenTelemetry",
+]
