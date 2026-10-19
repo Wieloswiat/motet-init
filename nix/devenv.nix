@@ -195,6 +195,23 @@ in
       '';
     };
 
+    ci = {
+      description = "The CI gate: every check and suite (needs the services from devenv up)";
+      exec = ''
+        set -euo pipefail
+        fmt-check
+        lint
+        lexgen-check
+        tests --profile ci
+        # A cold start includes initdb and SeaweedFS's master election.
+        for port in ${toString pgPort} ${toString s3Port}; do
+          timeout 180 bash -c "until (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; do sleep 1; done" \
+            || { echo "port $port never opened; is devenv up running?" >&2; exit 1; }
+        done
+        tests-integration
+      '';
+    };
+
     # Slower assurance.
     audit = {
       description = "Dependency advisories (needs network)";
@@ -214,18 +231,10 @@ in
     };
   };
 
-  # `devenv test` starts the processes above, waits for them, then runs this:
-  # the whole CI gate in one command.
-  enterTest = ''
-    fmt-check
-    lint
-    lexgen-check
-    tests --profile ci
-    # First start includes initdb and SeaweedFS's master election.
-    wait_for_port ${toString pgPort} 120
-    wait_for_port ${toString s3Port} 120
-    tests-integration
-  '';
+  # `devenv test` starts the processes above, then runs this: the whole CI
+  # gate in one command. CI starts the processes itself and runs `ci`, so it
+  # can keep their logs.
+  enterTest = "ci";
 
   enterShell = ''
     echo "Motet dev shell. 'devenv up' starts PostgreSQL and S3; 'devenv info' lists scripts."

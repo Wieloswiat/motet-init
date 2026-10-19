@@ -3,9 +3,9 @@
 #
 #   checks   `nix flake check`: fmt, clippy, the default test suites, cargo-deny
 #            and lexicon freshness, all hermetic and cached per derivation.
-#   gate     `devenv test`: starts PostgreSQL and S3 from nix/devenv.nix, then
-#            runs its enterTest: everything above plus the web packages and
-#            the integration and end-to-end suites.
+#   gate     starts PostgreSQL and S3 from nix/devenv.nix, then runs its `ci`
+#            script (what `devenv test` runs locally): everything above plus
+#            the web packages and the integration and end-to-end suites.
 name: CI
 
 on:
@@ -52,7 +52,13 @@ jobs:
         with:
           primary-key: devenv-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'pnpm-lock.yaml') }}
           restore-prefixes-first-match: devenv-${{ runner.os }}-
-      - run: nix develop --no-pure-eval --command devenv test
+      - name: Start PostgreSQL and S3
+        run: |
+          nohup nix run --no-pure-eval .#devenv-up > services.log 2>&1 &
+      - run: nix develop --no-pure-eval --command ci
+      - name: Service logs
+        if: ${{ failure() }}
+        run: tail -n 200 services.log
       - name: Test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -61,6 +67,6 @@ jobs:
           path: |
             target/nextest/ci/junit.xml
             apps/web/playwright-report/
-            .devenv/**/*.log
+            services.log
           if-no-files-found: ignore
           include-hidden-files: true
