@@ -2,8 +2,8 @@
 
 The schemas are the contract. Records, Space types and every XRPC method
 Motet exposes are defined here first; Rust and TypeScript types are
-generated from them (`just lexgen`), and CI fails if the generated code is
-stale (`just lexgen-check`, `nix flake check`).
+generated from them (`lexgen` in the dev shell), and CI fails if the generated code is
+stale (`lexgen-check`, `nix flake check`).
 
 | Path | Owner | Status |
 | --- | --- | --- |

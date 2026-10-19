@@ -62,7 +62,7 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     for path in stale {
-        eprintln!("stale: {} (run `just lexgen`)", path.display());
+        eprintln!("stale: {} (run `lexgen` in the dev shell)", path.display());
     }
     Ok(ExitCode::FAILURE)
 }

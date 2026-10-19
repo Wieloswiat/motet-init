@@ -2,9 +2,11 @@
 #
 #   nix develop --no-pure-eval   (or `direnv allow`)
 #   devenv up                    PostgreSQL with pg_search, SeaweedFS (S3)
-#   just                         list tasks
+#   devenv test                  everything CI runs, services included
+#   devenv info                  lists the scripts below with descriptions
 #
-# CI enters this same shell, so a task that works here works there.
+# Commands live here as devenv scripts, so they're on PATH in the shell and
+# CI runs exactly the same ones (`nix develop --no-pure-eval -c <script>`).
 { rustToolchain }:
 { pkgs, lib, ... }:
 let
@@ -44,7 +46,6 @@ in
     cargo-llvm-cov
     cargo-insta
     sqlx-cli
-    just
     typst
     seaweedfs
     taplo
@@ -116,7 +117,108 @@ in
     actionlint.enable = true;
   };
 
+  scripts = {
+    # Everyday.
+    fmt = {
+      description = "Format Rust, Nix, TOML and the web packages";
+      exec = ''
+        cargo fmt --all
+        nixfmt flake.nix nix/*.nix
+        taplo fmt
+        pnpm -r --if-present format
+      '';
+    };
+    fmt-check = {
+      description = "Fail if anything is unformatted";
+      exec = ''
+        cargo fmt --all --check
+        nixfmt --check flake.nix nix/*.nix
+        taplo fmt --check
+        pnpm -r --if-present format:check
+      '';
+    };
+    lint = {
+      description = "Clippy (warnings are errors), typos, web lint and type checks";
+      exec = ''
+        cargo clippy --workspace --all-targets --all-features -- --deny warnings
+        typos
+        pnpm -r --if-present lint
+        pnpm -r --if-present check
+      '';
+    };
+    tests = {
+      description = "Default suites: pure, property and in-process tests (no services)";
+      exec = ''
+        cargo nextest run --workspace "$@"
+        pnpm -r --if-present test
+      '';
+    };
+    tests-integration = {
+      description = "Integration tests against PostgreSQL and S3 (needs devenv up)";
+      exec = ''
+        cargo nextest run --workspace --profile integration --run-ignored only "$@"
+        pnpm -r --if-present test:e2e
+      '';
+    };
+
+    # Code generation.
+    lexgen = {
+      description = "Regenerate Rust and TypeScript types from lexicons/";
+      exec = ''
+        cargo run -q -p motet-lexgen -- generate --lexicons lexicons \
+          --rust crates/lexicons/src/generated --ts packages/lexicons/src/generated
+      '';
+    };
+    lexgen-check = {
+      description = "Fail if generated lexicon code is stale";
+      exec = ''
+        cargo run -q -p motet-lexgen -- check --lexicons lexicons \
+          --rust crates/lexicons/src/generated --ts packages/lexicons/src/generated
+      '';
+    };
+
+    # Running.
+    stack = {
+      description = "Deployment-shaped stack (AppView, tenor, Tap, Spaces PDS, PostgreSQL, S3) in podman";
+      exec = ''
+        nix build .#appview-image -o result-appview && ./result-appview | podman load
+        nix build .#tenor-image -o result-tenor && ./result-tenor | podman load
+        podman-compose -f deploy/compose.yaml up "$@"
+      '';
+    };
+
+    # Slower assurance.
+    audit = {
+      description = "Dependency advisories (needs network)";
+      exec = "cargo deny check advisories";
+    };
+    mutants = {
+      description = "Mutation testing: which code can change without any test noticing?";
+      exec = ''cargo mutants --workspace --test-tool nextest "$@"'';
+    };
+    coverage = {
+      description = "Line coverage of the default suites, as lcov.info";
+      exec = "cargo llvm-cov nextest --workspace --lcov --output-path lcov.info";
+    };
+    soak = {
+      description = "Property tests with many more cases (default 20000)";
+      exec = ''PROPTEST_CASES="''${1:-20000}" cargo nextest run --workspace --release'';
+    };
+  };
+
+  # `devenv test` starts the processes above, waits for them, then runs this:
+  # the whole CI gate in one command.
+  enterTest = ''
+    fmt-check
+    lint
+    lexgen-check
+    tests --profile ci
+    wait_for_port ${toString pgPort}
+    wait_for_port ${toString s3Port}
+    tests-integration
+  '';
+
   enterShell = ''
-    echo "Motet dev shell. 'devenv up' starts PostgreSQL and SeaweedFS (S3); 'just' lists tasks."
+    echo "Motet dev shell. 'devenv up' starts PostgreSQL and S3; 'devenv info' lists scripts."
   '';
 }

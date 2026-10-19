@@ -97,7 +97,7 @@ in
     );
 
     # The default suite: pure and in-process tests, property tests included.
-    # Integration tests need services and run outside the sandbox (just ci-integration).
+    # Integration tests need services and run outside the sandbox (the tests-integration script).
     nextest = craneLib.cargoNextest (
       common
       // {
@@ -110,7 +110,7 @@ in
       }
     );
 
-    # Advisories need the network, so they run in CI (just audit), not here.
+    # Advisories need the network, so they run in CI (the audit script), not here.
     deny = craneLib.cargoDeny {
       src = source;
       cargoDenyChecks = "bans licenses sources";
