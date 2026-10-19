@@ -58,7 +58,10 @@ in
   languages.javascript = {
     enable = true;
     package = pkgs.nodejs_24;
-    pnpm.enable = true;
+    pnpm = {
+      enable = true;
+      install.enable = true;
+    };
   };
 
   services.postgres = {
@@ -100,8 +103,12 @@ in
     MOTET_TEST_S3_BUCKET = "motet-test";
     MOTET_TEST_S3_ACCESS_KEY = s3Key;
     MOTET_TEST_S3_SECRET_KEY = s3Secret;
-    # Playwright uses nixpkgs' browsers rather than downloading its own.
-    PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+  }
+  // lib.optionalAttrs pkgs.stdenv.isLinux {
+    # Vitest's browser mode and Playwright launch nixpkgs' Chromium (see
+    # apps/web/vite.config.ts), so the npm package's browser build never has to
+    # match nixpkgs'. Elsewhere, `pnpm exec playwright install chromium`.
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE = "${pkgs.chromium}/bin/chromium";
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
   };
 
@@ -125,7 +132,7 @@ in
         cargo fmt --all
         nixfmt flake.nix nix/*.nix
         taplo fmt
-        pnpm -r --if-present format
+        pnpm format
       '';
     };
     fmt-check = {
@@ -134,7 +141,7 @@ in
         cargo fmt --all --check
         nixfmt --check flake.nix nix/*.nix
         taplo fmt --check
-        pnpm -r --if-present format:check
+        pnpm format:check
       '';
     };
     lint = {
@@ -142,22 +149,22 @@ in
       exec = ''
         cargo clippy --workspace --all-targets --all-features -- --deny warnings
         typos
-        pnpm -r --if-present lint
-        pnpm -r --if-present check
+        pnpm lint
+        pnpm check
       '';
     };
     tests = {
       description = "Default suites: pure, property and in-process tests (no services)";
       exec = ''
         cargo nextest run --workspace "$@"
-        pnpm -r --if-present test
+        pnpm test
       '';
     };
     tests-integration = {
       description = "Integration tests against PostgreSQL and S3 (needs devenv up)";
       exec = ''
         cargo nextest run --workspace --profile integration --run-ignored only "$@"
-        pnpm -r --if-present test:e2e
+        pnpm test:e2e
       '';
     };
 

@@ -1,0 +1,29 @@
+{
+	"name": "motet",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@10.28.0",
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"lint": "eslint .",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"check": "pnpm -r --if-present check",
+		"test": "pnpm -r --if-present test",
+		"test:e2e": "pnpm -r --if-present test:e2e",
+		"build": "pnpm -r --if-present build"
+	},
+	"devDependencies": {
+		"@eslint/js": "^10.0.1",
+		"eslint": "^10.13.0",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-svelte": "^3.23.1",
+		"globals": "^17.13.0",
+		"prettier": "^3.9.10",
+		"prettier-plugin-svelte": "^4.1.1",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.71.2"
+	}
+}

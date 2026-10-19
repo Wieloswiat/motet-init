@@ -1,0 +1,26 @@
+# Rust, Nix and generated output have their own formatters or none.
+target/
+result*
+.devenv/
+.direnv/
+crates/
+nix/
+flake.lock
+
+# Generated: lexgen-check compares these byte for byte.
+packages/lexicons/src/generated/
+
+# Package managers and build output
+pnpm-lock.yaml
+node_modules/
+.svelte-kit/
+build/
+dist/
+styled-system/
+apps/web/static/
+playwright-report/
+test-results/
+
+# Exported from the Theme Creator; regenerated, not edited.
+packages/design/src/tokens.css
+packages/design/src/fonts.css

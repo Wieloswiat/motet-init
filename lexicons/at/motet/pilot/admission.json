@@ -1,37 +1,41 @@
 {
-  "lexicon": 1,
-  "id": "at.motet.pilot.admission",
-  "description": "DRAFT. Written by the tenor as the World: this exact post version is part of the World, at this place. One per admitted version; an edit's admission keeps the place.",
-  "defs": {
-    "main": {
-      "type": "record",
-      "key": "tid",
-      "record": {
-        "type": "object",
-        "required": ["post", "author", "scene", "place", "authorityRev", "createdAt"],
-        "properties": {
-          "post": { "type": "ref", "ref": "com.atproto.repo.strongRef" },
-          "author": { "type": "string", "format": "did" },
-          "scene": { "type": "string", "format": "record-key" },
-          "place": { "type": "ref", "ref": "#place" },
-          "authorityRev": {
-            "type": "integer",
-            "minimum": 0,
-            "description": "The authority revision the post was checked against."
-          },
-          "replaces": { "type": "string", "format": "cid", "description": "For an edit, the version this supersedes." },
-          "createdAt": { "type": "string", "format": "datetime" }
-        }
-      }
-    },
-    "place": {
-      "type": "object",
-      "description": "A position in a scene, numbered within a recovery epoch.",
-      "required": ["epoch", "seq"],
-      "properties": {
-        "epoch": { "type": "integer", "minimum": 0 },
-        "seq": { "type": "integer", "minimum": 0 }
-      }
-    }
-  }
+	"lexicon": 1,
+	"id": "at.motet.pilot.admission",
+	"description": "DRAFT. Written by the tenor as the World: this exact post version is part of the World, at this place. One per admitted version; an edit's admission keeps the place.",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["post", "author", "scene", "place", "authorityRev", "createdAt"],
+				"properties": {
+					"post": { "type": "ref", "ref": "com.atproto.repo.strongRef" },
+					"author": { "type": "string", "format": "did" },
+					"scene": { "type": "string", "format": "record-key" },
+					"place": { "type": "ref", "ref": "#place" },
+					"authorityRev": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The authority revision the post was checked against."
+					},
+					"replaces": {
+						"type": "string",
+						"format": "cid",
+						"description": "For an edit, the version this supersedes."
+					},
+					"createdAt": { "type": "string", "format": "datetime" }
+				}
+			}
+		},
+		"place": {
+			"type": "object",
+			"description": "A position in a scene, numbered within a recovery epoch.",
+			"required": ["epoch", "seq"],
+			"properties": {
+				"epoch": { "type": "integer", "minimum": 0 },
+				"seq": { "type": "integer", "minimum": 0 }
+			}
+		}
+	}
 }

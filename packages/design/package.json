@@ -1,0 +1,24 @@
+{
+	"name": "@motet/design",
+	"description": "Motet's design tokens, its Panda CSS preset and theme checks. Provisional: Ark UI and Panda are the working choice, not a settled one.",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./preset": "./src/preset.ts",
+		"./tokens.css": "./src/tokens.css"
+	},
+	"scripts": {
+		"check": "tsc -p .",
+		"test": "vitest run"
+	},
+	"peerDependencies": {
+		"@pandacss/dev": "^2.2.0"
+	},
+	"devDependencies": {
+		"@pandacss/dev": "^2.2.0",
+		"@types/node": "^24",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.8"
+	}
+}

@@ -1,37 +1,52 @@
 {
-  "lexicon": 1,
-  "id": "at.motet.pilot.post",
-  "description": "DRAFT. A post in a scene, in its author's repo (or their repo in the scene's Space). It counts once the World's tenor admits this exact version.",
-  "defs": {
-    "main": {
-      "type": "record",
-      "key": "tid",
-      "record": {
-        "type": "object",
-        "required": ["world", "scene", "body", "register", "createdAt"],
-        "properties": {
-          "world": { "type": "string", "format": "did", "description": "The World, by its DID." },
-          "scene": { "type": "string", "format": "record-key", "description": "The scene's record key in the World." },
-          "character": {
-            "type": "string",
-            "format": "at-uri",
-            "description": "The speaking character, as currently described. Absent for out-of-character posts by the writer."
-          },
-          "register": {
-            "type": "string",
-            "knownValues": ["in-character", "out-of-character"]
-          },
-          "body": {
-            "type": "string",
-            "maxLength": 65536,
-            "description": "Typst source. Never rendered output."
-          },
-          "lang": { "type": "string", "format": "language" },
-          "reply": { "type": "ref", "ref": "com.atproto.repo.strongRef", "description": "The exact version this post answers." },
-          "labels": { "type": "unknown", "description": "Self-labels (content notes, spoilers): com.atproto.label.defs#selfLabels." },
-          "createdAt": { "type": "string", "format": "datetime", "description": "When it was written. Shown, never used for order." }
-        }
-      }
-    }
-  }
+	"lexicon": 1,
+	"id": "at.motet.pilot.post",
+	"description": "DRAFT. A post in a scene, in its author's repo (or their repo in the scene's Space). It counts once the World's tenor admits this exact version.",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["world", "scene", "body", "register", "createdAt"],
+				"properties": {
+					"world": { "type": "string", "format": "did", "description": "The World, by its DID." },
+					"scene": {
+						"type": "string",
+						"format": "record-key",
+						"description": "The scene's record key in the World."
+					},
+					"character": {
+						"type": "string",
+						"format": "at-uri",
+						"description": "The speaking character, as currently described. Absent for out-of-character posts by the writer."
+					},
+					"register": {
+						"type": "string",
+						"knownValues": ["in-character", "out-of-character"]
+					},
+					"body": {
+						"type": "string",
+						"maxLength": 65536,
+						"description": "Typst source. Never rendered output."
+					},
+					"lang": { "type": "string", "format": "language" },
+					"reply": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "The exact version this post answers."
+					},
+					"labels": {
+						"type": "unknown",
+						"description": "Self-labels (content notes, spoilers): com.atproto.label.defs#selfLabels."
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "datetime",
+						"description": "When it was written. Shown, never used for order."
+					}
+				}
+			}
+		}
+	}
 }

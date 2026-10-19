@@ -1,0 +1,15 @@
+{
+	"name": "@motet/lexicons",
+	"description": "TypeScript types generated from lexicons/ (run `lexgen` in the dev shell). Do not edit src/generated.",
+	"private": true,
+	"type": "module",
+	"exports": {
+		".": "./src/generated/index.ts"
+	},
+	"scripts": {
+		"check": "tsc -p ."
+	},
+	"devDependencies": {
+		"typescript": "^6.0.3"
+	}
+}

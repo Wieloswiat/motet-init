@@ -5,11 +5,11 @@ Motet exposes are defined here first; Rust and TypeScript types are
 generated from them (`lexgen` in the dev shell), and CI fails if the generated code is
 stale (`lexgen-check`, `nix flake check`).
 
-| Path | Owner | Status |
-| --- | --- | --- |
-| `at/motet/pilot/` | Motet | **Draft.** The settled pilot namespace; exact names and fields are still an open gate (backend plan, "Data model and lexicons"). Nothing here is stable, and nothing is ever promoted in place to a stable NSID. |
-| `com/atproto/` | Bluesky | Vendored, unmodified, only what Motet's lexicons reference. |
-| `group/opensocial/` | opensocial.group | Not vendored yet. Pin a revision of the proposal here when Groundwork decides which records Motet adopts. |
+| Path                | Owner            | Status                                                                                                                                                                                                           |
+| ------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `at/motet/pilot/`   | Motet            | **Draft.** The settled pilot namespace; exact names and fields are still an open gate (backend plan, "Data model and lexicons"). Nothing here is stable, and nothing is ever promoted in place to a stable NSID. |
+| `com/atproto/`      | Bluesky          | Vendored, unmodified, only what Motet's lexicons reference.                                                                                                                                                      |
+| `group/opensocial/` | opensocial.group | Not vendored yet. Pin a revision of the proposal here when Groundwork decides which records Motet adopts.                                                                                                        |
 
 Rules for Motet's own lexicons (from the backend plan's modelling rules):
 

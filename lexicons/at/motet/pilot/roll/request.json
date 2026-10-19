@@ -1,26 +1,30 @@
 {
-  "lexicon": 1,
-  "id": "at.motet.pilot.roll.request",
-  "description": "DRAFT. A request to roll, in its author's repo or the scene's Space. The tenor answers each with exactly one result.",
-  "defs": {
-    "main": {
-      "type": "record",
-      "key": "tid",
-      "record": {
-        "type": "object",
-        "required": ["world", "scene", "expression", "createdAt"],
-        "properties": {
-          "world": { "type": "string", "format": "did" },
-          "scene": { "type": "string", "format": "record-key" },
-          "expression": { "type": "string", "maxLength": 256, "description": "Dice notation (motet-dice grammar)." },
-          "opportunity": {
-            "type": "ref",
-            "ref": "com.atproto.repo.strongRef",
-            "description": "The roll opportunity this fills, if the action allows only one roll."
-          },
-          "createdAt": { "type": "string", "format": "datetime" }
-        }
-      }
-    }
-  }
+	"lexicon": 1,
+	"id": "at.motet.pilot.roll.request",
+	"description": "DRAFT. A request to roll, in its author's repo or the scene's Space. The tenor answers each with exactly one result.",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["world", "scene", "expression", "createdAt"],
+				"properties": {
+					"world": { "type": "string", "format": "did" },
+					"scene": { "type": "string", "format": "record-key" },
+					"expression": {
+						"type": "string",
+						"maxLength": 256,
+						"description": "Dice notation (motet-dice grammar)."
+					},
+					"opportunity": {
+						"type": "ref",
+						"ref": "com.atproto.repo.strongRef",
+						"description": "The roll opportunity this fills, if the action allows only one roll."
+					},
+					"createdAt": { "type": "string", "format": "datetime" }
+				}
+			}
+		}
+	}
 }
