@@ -54,7 +54,9 @@ jobs:
           restore-prefixes-first-match: devenv-${{ runner.os }}-
       - name: Start PostgreSQL and S3
         run: |
-          nohup nix run --no-pure-eval .#devenv-up > services.log 2>&1 &
+          # devenv-up is a script, not a package with a bin/ directory.
+          nix build --no-pure-eval .#devenv-up -o devenv-up
+          nohup ./devenv-up > services.log 2>&1 &
       - run: nix develop --no-pure-eval --command ci
       - name: Service logs
         if: ${{ failure() }}

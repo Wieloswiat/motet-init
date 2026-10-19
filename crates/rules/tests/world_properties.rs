@@ -118,6 +118,7 @@ proptest! {
                     prop_assert_ne!(Some(&a.post.cid), previous.as_ref(), "same version admitted twice");
                     prop_assert_eq!(a.authority_rev, f.rev, "checked against the wrong authority revision");
                     f.admitted.insert(post.post.uri.clone(), a.post.cid.clone());
+                    f.scene_of.insert(post.post.uri.clone(), a.scene.clone());
                 }
                 (Command::Admit { post, replaces }, Outcome::Refused(why)) => {
                     let previous = f.admitted.get(&post.post.uri);
@@ -130,12 +131,15 @@ proptest! {
                         Refusal::StaleEdit { expected, current } => {
                             expected.as_ref() == replaces.as_ref() && current.as_ref() == previous && previous != replaces.as_ref()
                         }
-                        Refusal::SceneChanged => false, // the generator keeps edits in their scene
+                        // A post recreated in another scene before its old
+                        // admission is closed (deletion not yet observed).
+                        Refusal::SceneChanged => f.scene_of.get(&post.post.uri).is_some_and(|s| *s != post.scene),
                     };
                     prop_assert!(true_reason, "refused with an untrue reason {:?}", why);
                 }
                 (Command::ObserveDeletion { post }, Outcome::Closed(a)) => {
                     let removed = f.admitted.remove(post);
+                    f.scene_of.remove(post);
                     prop_assert_eq!(removed.as_ref(), Some(&a.post.cid));
                 }
                 (Command::ObserveDeletion { post }, Outcome::Unchanged) => {
@@ -166,6 +170,7 @@ struct Facts {
     casts: BTreeMap<SceneId, BTreeSet<Did>>,
     suspended: BTreeSet<Did>,
     admitted: BTreeMap<RecordUri, Cid>,
+    scene_of: BTreeMap<RecordUri, SceneId>,
 }
 
 impl Facts {
