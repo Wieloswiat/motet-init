@@ -23,9 +23,9 @@ motet-testkit = { path = "crates/testkit" }
 motet-xrpc = { path = "crates/xrpc" }
 
 # atproto-crates. The released crates come from crates.io as one version;
-# bump them together. The Spaces and Tap crates (atproto-space,
-# atproto-space-client, atproto-tap-client) and atproto-testkit aren't
-# released yet: they are added from git, at one pinned revision of
+# bump them together. Tap's client is released (package `atproto-tap`). The
+# Spaces crates (atproto-space, atproto-space-client) and atproto-testkit
+# aren't released yet: they are added from git, at one pinned revision of
 # https://tangled.org/ngerakines.me/atproto-crates, by the change that first
 # uses them, and the released crates move to that same revision then so no
 # two copies of the core types meet (docs/adr/0004-atproto-crates.md).
