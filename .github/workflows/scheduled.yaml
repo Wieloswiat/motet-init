@@ -1,0 +1,47 @@
+# Slower assurance that shouldn't hold up a pull request: dependency
+# advisories (new ones appear without any change of ours) and mutation
+# testing (which code could change without any test noticing).
+name: Scheduled
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - run: nix develop --no-pure-eval --command audit
+      - run: nix develop --no-pure-eval --command pnpm audit --prod
+
+  mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        # The crates whose logic the rest relies on. Add a crate here once its
+        # tests are meant to pin its behaviour down.
+        crate: [motet-dice, motet-rules, motet-log, motet-xrpc]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - run: nix develop --no-pure-eval --command mutants --package ${{ matrix.crate }} --no-shuffle
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-${{ matrix.crate }}
+          path: mutants.out/

@@ -1,0 +1,62 @@
+# The CI gate. Both jobs run commands defined in the nix flake, so CI can't
+# drift from what a developer runs locally:
+#
+#   checks   `nix flake check`: fmt, clippy, the default test suites, cargo-deny
+#            and lexicon freshness, all hermetic and cached per derivation.
+#   gate     `devenv test`: starts PostgreSQL and S3 from nix/devenv.nix, then
+#            runs its enterTest: everything above plus the web packages and
+#            the integration and end-to-end suites.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
+      - run: nix flake check --print-build-logs
+
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: devenv-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'pnpm-lock.yaml') }}
+          restore-prefixes-first-match: devenv-${{ runner.os }}-
+      - run: nix develop --no-pure-eval --command devenv test
+      - name: Test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/nextest/ci/junit.xml
+            apps/web/playwright-report/
+          if-no-files-found: ignore

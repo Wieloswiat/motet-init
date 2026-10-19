@@ -1,0 +1,82 @@
+// Dependency updates. Grouped so that things which must move together do,
+// and so the weekly volume stays reviewable. Everything lands as a pull
+// request through the normal CI gate; nothing automerges yet.
+{
+	$schema: 'https://docs.renovatebot.com/renovate-schema.json',
+	extends: [
+		'config:recommended',
+		':semanticCommitsDisabled',
+		'helpers:pinGitHubActionDigestsToSemver',
+		'group:monorepos'
+	],
+	schedule: ['before 6am on monday'],
+	timezone: 'Europe/Warsaw',
+	prConcurrentLimit: 10,
+	rangeStrategy: 'bump',
+	// Lockfiles (Cargo.lock, pnpm-lock.yaml, flake.lock) refresh transitive
+	// dependencies weekly in one pull request.
+	lockFileMaintenance: { enabled: true, schedule: ['before 6am on monday'] },
+	nix: { enabled: true },
+	packageRules: [
+		{
+			groupName: 'atproto crates',
+			matchManagers: ['cargo'],
+			matchPackageNames: ['atproto-*']
+		},
+		{
+			// Typst's crates share one version and one compiler; render output
+			// depends on it (see crates/render: compiler_version is in RenderKey).
+			groupName: 'typst',
+			matchManagers: ['cargo'],
+			matchPackageNames: ['typst', 'typst-*']
+		},
+		{ groupName: 'sqlx', matchManagers: ['cargo'], matchPackageNames: ['sqlx', 'sqlx-*'] },
+		{
+			groupName: 'svelte',
+			matchManagers: ['npm'],
+			matchPackageNames: [
+				'svelte',
+				'svelte-check',
+				'@sveltejs/*',
+				'prettier-plugin-svelte',
+				'eslint-plugin-svelte'
+			]
+		},
+		{ groupName: 'panda', matchManagers: ['npm'], matchPackageNames: ['@pandacss/*'] },
+		{ groupName: 'ark', matchManagers: ['npm'], matchPackageNames: ['@ark-ui/*'] },
+		{
+			groupName: 'web test runners',
+			matchManagers: ['npm'],
+			matchPackageNames: ['vitest', '@vitest/*', 'vitest-browser-*', 'playwright', '@playwright/*']
+		},
+		{
+			groupName: 'lint and format',
+			matchManagers: ['npm'],
+			matchPackageNames: [
+				'eslint',
+				'@eslint/*',
+				'eslint-config-*',
+				'typescript-eslint',
+				'globals',
+				'prettier'
+			]
+		},
+		{ groupName: 'github actions', matchManagers: ['github-actions'] },
+		{
+			// Moving to a new toolchain can bring new clippy lints; one PR, on its own.
+			groupName: 'rust toolchain',
+			matchDepNames: ['rust']
+		}
+	],
+	customManagers: [
+		{
+			customType: 'regex',
+			description: 'The Rust toolchain in rust-toolchain.toml',
+			managerFilePatterns: ['/^rust-toolchain\\.toml$/'],
+			matchStrings: ['channel = "(?<currentValue>\\d+\\.\\d+\\.\\d+)"'],
+			depNameTemplate: 'rust',
+			packageNameTemplate: 'rust-lang/rust',
+			datasourceTemplate: 'github-releases'
+		}
+	]
+}

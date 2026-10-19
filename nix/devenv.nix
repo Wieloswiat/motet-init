@@ -145,10 +145,11 @@ in
       '';
     };
     lint = {
-      description = "Clippy (warnings are errors), typos, web lint and type checks";
+      description = "Clippy (warnings are errors), typos, workflow lint, web lint and type checks";
       exec = ''
         cargo clippy --workspace --all-targets --all-features -- --deny warnings
         typos
+        actionlint
         pnpm lint
         pnpm check
       '';
