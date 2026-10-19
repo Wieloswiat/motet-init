@@ -18,6 +18,9 @@
 //! audience and method to each handler, which is exactly the per-handler
 //! check this crate exists to avoid, so verification is done here instead.
 
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use atproto_identity::key::identify_key;
 use atproto_identity::model::{Document, VerificationMethod};
 use atproto_identity::traits::IdentityResolver;
@@ -26,7 +29,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use thiserror::Error;
 
-use crate::Caller;
+use crate::server::Authenticate;
+use crate::{Caller, XrpcError};
 
 /// Longest lifetime accepted for a token. PDSes mint them for about a minute;
 /// anything much longer is a credential someone is keeping around.
@@ -61,9 +65,11 @@ pub fn check_claims(
 ) -> Result<Caller, ServiceAuthError> {
     let jose = &claims.jose;
     let iss = jose.issuer.as_deref().ok_or(ServiceAuthError::NoIssuer)?;
-    if !jose.audience.as_deref().is_some_and(&accepts_audience) {
-        return Err(ServiceAuthError::WrongAudience);
-    }
+    let audience = jose
+        .audience
+        .as_deref()
+        .filter(|aud| accepts_audience(aud))
+        .ok_or(ServiceAuthError::WrongAudience)?;
     let lxm = claims
         .private
         .get("lxm")
@@ -81,6 +87,7 @@ pub fn check_claims(
     Ok(Caller::Service {
         did: did_of(iss).to_owned(),
         lxm: lxm.to_owned(),
+        audience: audience.to_owned(),
     })
 }
 
@@ -102,6 +109,35 @@ pub async fn verify(
     let key = identify_key(key).map_err(|_| ServiceAuthError::NoSigningKey)?;
     let claims = atproto_oauth::jwt::verify(token, &key).map_err(|_| ServiceAuthError::BadSignature)?;
     check_claims(&claims, accepts_audience, now)
+}
+
+/// An [`Authenticate`] for services that accept service auth only: a bearer
+/// token is verified with [`verify`], no credentials at all is anonymous.
+pub fn authenticate(
+    resolver: Arc<dyn IdentityResolver>,
+    accepts_audience: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+) -> Authenticate {
+    Arc::new(move |headers| {
+        let token = headers.get(axum::http::header::AUTHORIZATION).map(|v| {
+            v.to_str()
+                .ok()
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(str::to_owned)
+        });
+        let (resolver, accepts_audience) = (resolver.clone(), accepts_audience.clone());
+        Box::pin(async move {
+            match token {
+                None => Ok(Caller::Anonymous),
+                Some(None) => Err(XrpcError::AuthRequired),
+                Some(Some(token)) => {
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                    verify(&token, resolver.as_ref(), |aud| accepts_audience(aud), now)
+                        .await
+                        .map_err(|_| XrpcError::AuthRequired)
+                }
+            }
+        })
+    })
 }
 
 /// The DID part of an issuer, which may carry a service fragment

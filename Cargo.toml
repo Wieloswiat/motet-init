@@ -17,6 +17,8 @@ motet-net = { path = "crates/net" }
 motet-render = { path = "crates/render" }
 motet-rules = { path = "crates/rules" }
 motet-spaces = { path = "crates/spaces" }
+motet-tenor = { path = "crates/tenor" }
+motet-appview = { path = "crates/appview" }
 motet-testkit = { path = "crates/testkit" }
 motet-xrpc = { path = "crates/xrpc" }
 
@@ -42,12 +44,16 @@ base64 = "0.22"
 bytes = "1"
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
+getrandom = "0.4"
 object_store = { version = "0.14", features = ["aws"] }
 rand = "0.10"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "stream"] }
+# 0.12, the version atproto-crates uses, so their clients can be handed
+# motet-net's hardened client instead of building their own.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "migrate", "json", "chrono", "uuid"] }
+serde_urlencoded = "0.7"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring-webpki", "derive", "macros", "migrate", "json", "chrono", "uuid"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tower = "0.5"
@@ -55,6 +61,7 @@ tower-http = { version = "0.7", features = ["trace", "limit", "timeout", "reques
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
+uuid = { version = "1", features = ["v7", "serde"] }
 
 # Testing.
 insta = { version = "1", features = ["json"] }

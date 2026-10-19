@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use thiserror::Error;
 
+pub mod server;
 pub mod service_auth;
 
 pub use atproto_identity::traits::IdentityResolver;
@@ -116,10 +117,13 @@ pub enum Caller {
     Account {
         did: String,
     },
-    /// A verified service-auth token: issuer and the one method it allows.
+    /// A verified service-auth token: issuer, the one method it allows, and
+    /// the audience it was minted for. A tenor answers for many Worlds, so
+    /// handlers check that the World a request names is the audience.
     Service {
         did: String,
         lxm: String,
+        audience: String,
     },
 }
 
@@ -143,6 +147,8 @@ pub enum XrpcError {
     InvalidRequest(String),
     #[error("not found")]
     NotFound,
+    #[error("the request body is larger than {0} bytes")]
+    PayloadTooLarge(usize),
     #[error("internal error")]
     Internal,
 }
@@ -160,6 +166,7 @@ impl IntoResponse for XrpcError {
             Self::AuthRequired => (StatusCode::UNAUTHORIZED, "AuthRequired"),
             Self::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "InvalidRequest"),
             Self::NotFound => (StatusCode::NOT_FOUND, "NotFound"),
+            Self::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "PayloadTooLarge"),
             Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "InternalServerError"),
         };
         (
@@ -217,7 +224,8 @@ mod tests {
             }),
             nsid.prop_map(|lxm| Caller::Service {
                 did: "did:plc:a".into(),
-                lxm
+                lxm,
+                audience: "did:web:motet.test".into(),
             }),
         ]
     }

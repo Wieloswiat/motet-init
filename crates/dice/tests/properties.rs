@@ -1,6 +1,8 @@
 //! Properties of dice notation and rolling.
 
-use motet_dice::{BinOp, CmpOp, Comparison, Dice, Die, Expr, Keep, Limits, RollError, Source, parse};
+use motet_dice::{
+    BinOp, CmpOp, Comparison, Dice, Die, Expr, Keep, Limits, MAX_LEN, ParseError, RollError, Source, parse,
+};
 use proptest::prelude::*;
 
 /// Faces from a proptest-generated script, wrapped into range.
@@ -185,17 +187,19 @@ fn notation_examples() {
 }
 
 /// Returns the given faces in order, exactly as given.
-struct Faces(std::vec::IntoIter<u32>);
+struct Faces(Vec<u32>);
 
 impl Faces {
     fn new(faces: &[u32]) -> Self {
-        Self(faces.to_vec().into_iter())
+        let mut faces = faces.to_vec();
+        faces.reverse();
+        Self(faces)
     }
 }
 
 impl Source for Faces {
     fn roll(&mut self, sides: u32) -> u32 {
-        let face = self.0.next().expect("the test scripted enough faces");
+        let face = self.0.pop().expect("the test scripted enough faces");
         assert!((1..=sides).contains(&face), "scripted face {face} isn't on a d{sides}");
         face
     }
@@ -210,10 +214,12 @@ fn total(text: &str, faces: &[u32]) -> Result<i64, RollError> {
 /// says, so swapping `>=` for `>` (or any other pair) changes a result here.
 #[test]
 fn successes_count_faces_against_the_target() {
-    let faces = [7, 8, 9, 8, 1];
-    let cases = [(">=8", 3), (">8", 1), ("<=8", 4), ("<8", 2), ("=8", 2)];
+    // One face below the target, two on it, four above: every operator gets
+    // a different count, so no two can be confused.
+    let faces = [3, 8, 8, 9, 10, 9, 10];
+    let cases = [("<8", 1), ("=8", 2), (">8", 4), ("<=8", 3), (">=8", 6)];
     for (cmp, successes) in cases {
-        assert_eq!(total(&format!("5d10{cmp}"), &faces), Ok(successes), "5d10{cmp}");
+        assert_eq!(total(&format!("7d10{cmp}"), &faces), Ok(successes), "7d10{cmp}");
     }
 }
 
@@ -266,4 +272,67 @@ fn empty_dice_are_refused() {
     for text in ["0d6", "1d0"] {
         assert_eq!(total(text, &[]), Err(RollError::Empty), "{text}");
     }
+}
+
+#[test]
+fn fudge_dice_read_minus_one_to_plus_one() {
+    // The source's 1, 2, 3 are the faces -, blank, +.
+    assert_eq!(total("4dF", &[1, 2, 3, 3]), Ok(1));
+    assert_eq!(total("2dF", &[1, 1]), Ok(-2));
+}
+
+#[test]
+fn bounds_examples() {
+    let bounds = |text: &str| {
+        let b = parse(text).expect("valid").bounds();
+        (b.min, b.max)
+    };
+    assert_eq!(bounds("3d6"), (Some(3), Some(18)));
+    assert_eq!(bounds("4d6kh3"), (Some(3), Some(18)));
+    assert_eq!(bounds("4d6dl3"), (Some(1), Some(6)));
+    assert_eq!(bounds("2dF"), (Some(-2), Some(2)));
+    assert_eq!(bounds("3d6!"), (Some(3), None));
+    assert_eq!(bounds("5d10>=8"), (Some(0), Some(5)));
+    assert_eq!(bounds("2d6>=1"), (Some(2), Some(2)));
+    assert_eq!(bounds("2d6>6"), (Some(0), Some(0)));
+    assert_eq!(bounds("2d6+1"), (Some(3), Some(13)));
+    assert_eq!(bounds("1d6*1d4"), (Some(1), Some(24)));
+    assert_eq!(bounds("(1d6-4)*(1d6-4)"), (Some(-6), Some(9)));
+    assert_eq!(bounds("-1d6!"), (None, Some(-1)));
+    assert_eq!(bounds("1d6!*2"), (None, None));
+
+    let b = parse("2d6+1").expect("valid").bounds();
+    assert!(b.contains(3) && b.contains(13));
+    assert!(!b.contains(2) && !b.contains(14));
+}
+
+#[test]
+fn input_limits_are_inclusive() {
+    let longest = format!("1{}", " ".repeat(MAX_LEN - 1));
+    assert!(parse(&longest).is_ok());
+    assert_eq!(parse(&format!("{longest} ")), Err(ParseError::TooLong));
+
+    let nest = |n: usize| format!("{}1{}", "(".repeat(n), ")".repeat(n));
+    assert!(parse(&nest(32)).is_ok());
+    assert_eq!(parse(&nest(33)), Err(ParseError::TooDeep));
+    assert!(parse(&"-".repeat(32)).is_err());
+    // Depth is released after each group: many siblings are fine.
+    assert!(parse(&vec!["(((1)))"; 30].join("+")).is_ok());
+
+    assert!(parse("4294967295").is_ok());
+    assert_eq!(parse("1+4294967296"), Err(ParseError::NumberTooLarge { at: 2 }));
+}
+
+#[test]
+fn errors_point_at_the_offending_byte_in_the_original_input() {
+    let unexpected = |at, found: &str| {
+        Err(ParseError::Unexpected {
+            at,
+            found: found.into(),
+        })
+    };
+    assert_eq!(parse("1+*"), unexpected(2, "'*'"));
+    // Positions count the whitespace the parser skipped.
+    assert_eq!(parse("2d6  x"), unexpected(5, "'x'"));
+    assert_eq!(parse("2d6+"), unexpected(usize::MAX, "end of input"));
 }

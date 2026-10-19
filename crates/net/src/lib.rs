@@ -14,6 +14,8 @@
 //! Development against a local PDS needs the opposite policy; that is an
 //! explicit [`Policy::allow_private`] in configuration, never a fallback.
 
+pub mod identity;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,6 +56,8 @@ pub enum FetchError {
     Http(#[from] reqwest::Error),
     #[error("the response is larger than {0} bytes")]
     TooLarge(u64),
+    #[error("the server answered {0}")]
+    Status(reqwest::StatusCode),
 }
 
 /// The client every outbound request goes through.
@@ -80,14 +84,27 @@ impl Fetcher {
     }
 
     /// The underlying client, for SDKs that take one (atproto-crates' clients
-    /// accept a `reqwest::Client`), so they inherit this policy.
+    /// accept a `reqwest::Client`; the workspace pins the same reqwest), so
+    /// they inherit this policy.
     pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
 
-    /// GETs `url` and returns the body, refusing anything over the size limit.
+    /// GETs `url` and returns the body of a successful response, refusing
+    /// anything over the size limit.
     pub async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, FetchError> {
-        let mut response = self.client.get(url).send().await?.error_for_status()?;
+        let response = self.get(url).await?;
+        if !response.status.is_success() {
+            return Err(FetchError::Status(response.status));
+        }
+        Ok(response.body)
+    }
+
+    /// GETs `url` and returns the status and body whatever the status, for
+    /// protocols whose error bodies mean something (XRPC's `RecordNotFound`).
+    pub async fn get(&self, url: &str) -> Result<Response, FetchError> {
+        let mut response = self.client.get(url).send().await?;
+        let status = response.status();
         let limit = self.policy.max_response_bytes;
         if response.content_length().is_some_and(|n| n > limit) {
             return Err(FetchError::TooLarge(limit));
@@ -99,8 +116,15 @@ impl Fetcher {
                 return Err(FetchError::TooLarge(limit));
             }
         }
-        Ok(body)
+        Ok(Response { status, body })
     }
+}
+
+/// A bounded response.
+#[derive(Clone, Debug)]
+pub struct Response {
+    pub status: reqwest::StatusCode,
+    pub body: Vec<u8>,
 }
 
 /// A resolver that only ever returns publicly routable addresses.

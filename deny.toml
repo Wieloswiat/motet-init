@@ -39,6 +39,8 @@ ignore = true
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path dependencies between Motet's own unpublished crates.
+allow-wildcard-paths = true
 # A second async runtime or TLS stack sneaking in is a review question, not a
 # silent addition.
 deny = [
@@ -49,7 +51,7 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = [
-  # atproto-crates: the Spaces crates are unreleased (docs/adr/0004).
-  "https://tangled.org/ngerakines.me/atproto-crates",
-]
+# atproto-crates' Spaces, Tap and testkit crates are unreleased; the change
+# that first uses them adds their repository here (docs/adr/0004):
+#   "https://tangled.org/ngerakines.me/atproto-crates"
+allow-git = []

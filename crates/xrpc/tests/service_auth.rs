@@ -93,7 +93,8 @@ async fn a_well_formed_token_names_its_issuer_and_method() {
         f.verify(&f.token(|_| {})).await,
         Ok(Caller::Service {
             did: ALICE.into(),
-            lxm: METHOD.into()
+            lxm: METHOD.into(),
+            audience: APPVIEW.into(),
         })
     );
 }
