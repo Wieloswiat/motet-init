@@ -1,3 +1,7 @@
 # TOML formatting (taplo), wrapped like rustfmt.toml wraps Rust.
+# Taplo ignores .gitignore, so the dev shell's profile (with the Rust
+# toolchain's sources) and build output are listed here.
+exclude = [".devenv/**", ".direnv/**", "target/**", "**/node_modules/**"]
+
 [formatting]
 column_width = 120
