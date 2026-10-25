@@ -1,23 +1,8 @@
 <script lang="ts">
-	import ThemeSwitch, { type ThemeName } from '#lib/components/ThemeSwitch.svelte';
-	import { css } from '#styled/css';
+	import HomeShelves from '#lib/screens/HomeShelves.svelte';
+	import type { PageProps } from './$types';
 
-	let theme: ThemeName = $state('light');
+	let { data }: PageProps = $props();
 </script>
 
-<main
-	data-theme={theme}
-	class={css({
-		minHeight: '[100dvh]',
-		background: 'canvas',
-		color: 'ink',
-		fontFamily: 'ui',
-		padding: '8',
-		display: 'grid',
-		alignContent: 'start',
-		gap: '4'
-	})}
->
-	<h1 class={css({ fontFamily: 'display', color: 'accent-ink' })}>Motet</h1>
-	<ThemeSwitch bind:value={theme} />
-</main>
+<HomeShelves data={data.screen} />

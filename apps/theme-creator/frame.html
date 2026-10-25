@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Theme preview</title>
+<link rel="stylesheet" href="/src/styles.css">
+<style>
+  html, body { margin: 0; background: var(--canvas); color: var(--ink); font-family: var(--font-ui); }
+  body { min-height: 100vh; }
+  .pv-cards { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); align-items: start; margin-top: 8px; }
+  .pv-card { display: grid !important; grid-template-columns: minmax(0, 1fr) !important; grid-template-areas: none !important; grid-template-rows: none !important; gap: 14px; align-content: start; min-width: 0; }
+  .pv-card > * { grid-area: auto !important; }
+  .pv-card > h3 { margin: 0; font: 600 13px/18px var(--font-ui); color: var(--ink-muted); }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .pv-stack { display: grid; gap: 12px; }
+  .pv-section { margin-top: 36px; }
+  .pv-section > h2 { margin: 0 0 10px; }
+  .pv-chars { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); container-type: inline-size; }
+  .pv-chars > * { container-type: inline-size; }
+
+  /* palette view: both modes side by side */
+  .pal { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); min-height: 100vh; }
+  .pal__mode { padding: 28px 32px 40px; background: var(--canvas); color: var(--ink); min-width: 0; }
+  .pal__head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 18px; font: 600 22px/28px var(--font-display); font-variation-settings: var(--display-axes); letter-spacing: var(--display-tracking); text-transform: var(--display-case); }
+  .pal__head small { font: 400 13px/18px var(--font-ui); color: var(--ink-muted); letter-spacing: 0; text-transform: none; }
+  .pal__surfaces { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+  .pal__surface { padding: 10px 12px 12px; min-height: 76px; display: grid; align-content: space-between; font: 12px/16px var(--font-mono); color: var(--ink); }
+  .pal__surface b { font: 600 12.5px/16px var(--font-ui); }
+  .pal__text { margin-top: 14px; padding: 16px 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); display: grid; gap: 6px; }
+  .pal__text p { margin: 0; font: 400 16px/24px var(--font-reading); }
+  .pal__fills { margin-top: 14px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .pal__fill { padding: 10px 12px; border-radius: var(--radius-sm); font: 600 13px/18px var(--font-ui); display: flex; justify-content: space-between; gap: 8px; }
+  .pal__fill code { font: 400 11.5px/18px var(--font-mono); opacity: 0.9; }
+  .pal__table { width: 100%; margin-top: 18px; border-collapse: collapse; font: 13px/18px var(--font-ui); }
+  .pal__table th { text-align: start; font-weight: 600; color: var(--ink-muted); padding: 6px 8px; border-bottom: 1px solid var(--line-strong); }
+  .pal__table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .pal__table td.num { font: 12.5px/18px var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pal__chip { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-inline-end: 6px; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ink) 20%, transparent); }
+  .pal__ok { display: inline-flex; align-items: center; gap: 3px; color: var(--positive-ink); }
+  .pal__bad { display: inline-flex; align-items: center; gap: 3px; color: var(--danger-ink); font-weight: 600; }
+  .pal__ok .m-icon, .pal__bad .m-icon { font-size: 16px; }
+  .pal__notes { margin: 16px 0 0; padding: 0; list-style: none; display: grid; gap: 8px; font: 13px/18px var(--font-ui); color: var(--ink); }
+  .pal__notes li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 10px; align-items: start; }
+  .pal__swap { display: inline-flex; align-items: center; gap: 2px; padding-top: 1px; }
+  .pal__swap .m-icon { font-size: 14px; color: var(--ink-muted); }
+  .pal__swap i { width: 14px; height: 14px; border-radius: 3px; box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ink) 20%, transparent); }
+  @media (max-width: 520px) { .pal__surfaces { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pal__fills { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pal__mode { padding: 20px 16px 32px; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/frame.js"></script>
+</body>
+</html>

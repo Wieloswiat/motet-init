@@ -23,6 +23,13 @@ export default defineConfig(
 		// Vendored anti-slop rules (see oxlint.config.ts). They stay identical to
 		// upstream, so that an update can merge.
 		'tools/oxlint/anti-slop/',
+		// Exported from the Motet design system (packages/design/UPSTREAM.md).
+		'packages/design/src/panda/',
+		'packages/design/src/engine/',
+		'packages/design/src/demo/worlds.js',
+		// The Theme Creator's own script, as exported (apps/theme-creator/UPSTREAM.md).
+		'apps/theme-creator/src/main.js',
+		'apps/theme-creator/src/frame.js',
 		'.devenv/',
 		'.direnv/'
 	]),

@@ -5,8 +5,17 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
-		"./preset": "./src/preset.ts",
-		"./tokens.css": "./src/tokens.css"
+		"./preset": "./src/panda/index.ts",
+		"./tokens.css": "./src/tokens.css",
+		"./raw.css": "./src/panda/raw.css",
+		"./engine": {
+			"types": "./src/engine/motet.d.ts",
+			"default": "./src/engine/motet.js"
+		},
+		"./demo": {
+			"types": "./src/demo/worlds.d.ts",
+			"default": "./src/demo/worlds.js"
+		}
 	},
 	"scripts": {
 		"check": "tsc -p .",

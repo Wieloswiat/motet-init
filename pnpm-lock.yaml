@@ -42,6 +42,22 @@ importers:
         specifier: ^8.71.2
         version: 8.71.2(eslint@10.13.0)(typescript@6.0.3)
 
+  apps/theme-creator:
+    dependencies:
+      '@motet/design':
+        specifier: workspace:*
+        version: link:../../packages/design
+    devDependencies:
+      '@pandacss/dev':
+        specifier: ^2.2.0
+        version: 2.2.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(postcss@8.5.31)
+      '@pandacss/preset-base':
+        specifier: 2.2.0
+        version: 2.2.0
+      vite:
+        specifier: ^8.3.0
+        version: 8.3.4(@types/node@24.19.2)
+
   apps/web:
     dependencies:
       '@ark-ui/svelte':

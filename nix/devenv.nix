@@ -184,6 +184,12 @@ in
       '';
     };
 
+    # Design.
+    theme-creator = {
+      description = "Serve the Theme Creator, an editor for World themes (exported; saves only in the browser)";
+      exec = ''pnpm --filter @motet/theme-creator dev "$@"'';
+    };
+
     # Code generation.
     lexgen = {
       description = "Regenerate Rust and TypeScript types from lexicons/";

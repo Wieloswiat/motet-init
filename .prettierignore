@@ -30,3 +30,17 @@ test-results/
 # Exported from the Theme Creator; regenerated, not edited.
 packages/design/src/tokens.css
 packages/design/src/fonts.css
+
+# Exported from the Motet design system; a new export replaces them
+# (packages/design/UPSTREAM.md).
+packages/design/src/panda/
+packages/design/src/engine/
+packages/design/src/demo/worlds.js
+packages/design/src/tokens.json
+packages/design/docs/
+
+# Exported from the Theme Creator (apps/theme-creator/UPSTREAM.md).
+apps/theme-creator/index.html
+apps/theme-creator/frame.html
+apps/theme-creator/src/main.js
+apps/theme-creator/src/frame.js

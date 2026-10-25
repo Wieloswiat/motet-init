@@ -1,0 +1,7 @@
+# Masthead
+
+The World's header: art with the World's edge, the mark overlapping it, the title and facts on the surface below, and World tabs.
+
+`size: 'full'` on Overview, `'slim'` above Scenes. With `continuous` or `backdrop` placement the art area is a clear window onto the World's fixed art (`.m-world__backdrop`), and the content sheet behind the identity takes the World's edge, so header and background are one image. With `header` placement the masthead draws the art itself and ends it in the edge (`mask: var(--art-mask)`). Text never sits on the art. Art crops by `focus` and disappears with decoration off; the identity remains.
+
+With `imagery.title: 'art'` the mark, title and byline stand on the art above the edge and the sheet starts at the tabs. The engine picks dark ink over light art and light ink over dark art (from the art's measured dominant colour) and lays a scrim under them just opaque enough for 4.6:1 over the art's worst measured colour; under fixed art the scrim sits beneath the content sheet, so the World's edge stays clean. `imagery.titleBacking` picks the backing: `shade` (the default, and none at all where the art already contrasts), `halo` around the letters only, or `none` while the art itself allows it. `imagery.title: 'hidden'` hides the mark and title when the art carries the World's own wordmark; screen readers still get the title, and both return on phone widths and whenever the art is not shown. Otherwise the title sits on the page with clear space below the edge.

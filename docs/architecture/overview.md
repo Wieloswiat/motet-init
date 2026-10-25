@@ -28,7 +28,12 @@ research and plan"); the decisions that shaped the code are in
 - **Workers**: Typst rendering (`crates/render`) runs in a separate,
   resource-limited process because its input is untrusted. An image proxy,
   email and exports come later.
-- **The web app** (`apps/web`) talks only to the AppView.
+- **The web app** (`apps/web`) talks only to the AppView. For now its
+  screens show demo content ported from the design export (ADR 0012). A
+  World's look comes from `@motet/design`'s engine, which compiles the World's
+  theme record into custom properties on the World's part of the page.
+- **The Theme Creator** (`apps/theme-creator`) edits a theme record. It is
+  the exported tool, not yet connected to anything.
 
 ## Five ideas, and where each lives
 

@@ -33,7 +33,9 @@ tests                 # the default suites
 | `stack`                          | The deployment-shaped stack in containers (`deploy/compose.yaml`)                               |
 | `mutants`, `mutants-web`, `soak` | Rust and TypeScript/Svelte mutation testing; larger Rust property runs                          |
 
-The web app: `pnpm --filter @motet/web dev`.
+The web app: `pnpm --filter @motet/web dev`. Its screens show demo content
+from the design export, listed at `/design`; none is wired to the AppView yet.
+The Theme Creator: `theme-creator`.
 
 ## Layout
 
@@ -52,8 +54,9 @@ crates/            Rust: the AppView, the tenor and the libraries they share
   appview/         The AppView binary: indexer, archive, projections, outbox, API
   testkit/         Test support: delivery orders, services from the environment
   acceptance/      Acceptance tests that span several parts
-apps/web/          SvelteKit web app
-packages/design/   Design tokens, Panda CSS preset, theme contrast checks
+apps/web/          SvelteKit web app (demo screens for now)
+apps/theme-creator/ The Theme Creator, as exported: edits a World's theme record
+packages/design/   The design system: tokens, Panda preset, World engine, docs, contrast checks
 packages/lexicons/ TypeScript types generated from lexicons/
 lexicons/          Motet's lexicons (at.motet.*), the source of truth for records
 tools/             Vendored lint rules: anti-slop for Oxlint

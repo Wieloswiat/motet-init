@@ -1,6 +1,8 @@
 [default.extend-words]
 # Dice notation: NdM is "N dice of M sides".
 Nd = "Nd"
+# A knight's title in the demo Worlds ("Ser Jaume Tallow").
+Ser = "Ser"
 
 [files]
 extend-exclude = [
@@ -11,4 +13,16 @@ extend-exclude = [
   # so that the commit and git tree in its UPSTREAM.md still identify them.
   # Report typos upstream.
   "tools/oxlint/anti-slop/",
+  # Exported from the design artifacts (packages/design/UPSTREAM.md,
+  # apps/theme-creator/UPSTREAM.md). A new export replaces them; fix typos in
+  # the design, not here. `wdth` and `Gam` there are a font axis and a gamut.
+  "packages/design/src/panda/",
+  "packages/design/src/engine/",
+  "packages/design/src/demo/worlds.js",
+  "packages/design/src/tokens.json",
+  "packages/design/docs/",
+  "apps/theme-creator/index.html",
+  "apps/theme-creator/frame.html",
+  "apps/theme-creator/src/main.js",
+  "apps/theme-creator/src/frame.js",
 ]

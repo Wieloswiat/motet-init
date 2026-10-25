@@ -2,7 +2,7 @@ import { userEvent } from 'vitest/browser';
 import { cleanup, render } from 'vitest-browser-svelte';
 import { describe, expect, it } from 'vitest';
 import '../../app.css';
-import HomePage from '../../routes/+page.svelte';
+import DesignPage from '../../routes/design/+page.svelte';
 import ThemeSwitch from './ThemeSwitch.svelte';
 
 // These reactive updates have no network or animation to settle. Installed
@@ -14,7 +14,7 @@ describe('ThemeSwitch', () => {
 	// Exercise the real caller: losing the bound update can leave native
 	// radios checked while the page keeps painting the previous theme.
 	it('repaints the real page when the reader changes the selected theme', async () => {
-		const screen = await render(HomePage);
+		const screen = await render(DesignPage);
 		const main = screen.getByRole('main');
 		const group = screen.getByRole('radiogroup', { name: 'Theme' });
 

@@ -13,6 +13,14 @@ export default defineConfig({
 		'packages/lexicons/src/generated/**',
 		// Vendored. It stays identical to upstream, so that an update can merge.
 		'tools/oxlint/anti-slop/**',
+		// Exported from the Motet design system (packages/design/UPSTREAM.md). A
+		// new export replaces these files, so they stay as the export wrote them.
+		'packages/design/src/panda/**',
+		'packages/design/src/engine/**',
+		'packages/design/src/demo/worlds.js',
+		// The Theme Creator's own script, as exported (apps/theme-creator/UPSTREAM.md).
+		'apps/theme-creator/src/main.js',
+		'apps/theme-creator/src/frame.js',
 		// Agent tools install their own files here. The list is anti-slop's.
 		'.agent/**',
 		'.agents/**',

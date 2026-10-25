@@ -25,14 +25,14 @@
 		borderRadius: 'control',
 		color: 'ink',
 		cursor: 'pointer',
-		_checked: { background: 'accent', color: 'on-accent' }
+		_checked: { background: 'accent', color: 'accent.on' }
 	});
 </script>
 
 <SegmentGroup.Root
 	{value}
 	onValueChange={selectTheme}
-	class={css({ display: 'flex', gap: '1', background: 'surface-quiet', padding: '1' })}
+	class={css({ display: 'flex', gap: '1', background: 'surface.quiet', padding: '1' })}
 >
 	<SegmentGroup.Label class={css({ srOnly: true })}>Theme</SegmentGroup.Label>
 	{#each themes as theme (theme)}

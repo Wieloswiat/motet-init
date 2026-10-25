@@ -26,7 +26,7 @@ async function renderedContrast(text: Locator, surface: Locator): Promise<number
 	return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-test('the home page hydrates and changes theme under the production content security policy', async ({
+test('the design page hydrates and changes theme under the production content security policy', async ({
 	page
 }) => {
 	const errors: string[] = [];
@@ -40,7 +40,7 @@ test('the home page hydrates and changes theme under the production content secu
 		errors.push(error.message);
 	});
 
-	const response = await page.goto('/');
+	const response = await page.goto('/design');
 	const policy = response?.headers()['content-security-policy'];
 
 	expect(policy).toContain("object-src 'none'");
@@ -87,7 +87,7 @@ for (const { name, foreground, background, minimum } of palettes) {
 	// An updated data-theme marker alone missed the root-alias regression.
 	// The real page must paint the chosen palette and keep its text legible.
 	test(`choosing ${name} repaints the page and preserves readable text`, async ({ page }) => {
-		await page.goto('/');
+		await page.goto('/design');
 
 		const main = page.getByRole('main');
 		const group = page.getByRole('radiogroup', { name: 'Theme' });

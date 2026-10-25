@@ -1,0 +1,7 @@
+/* Motet: rules Panda can't emit. Appended after `panda cssgen`; an app that builds its own
+   stylesheet from the preset imports this file once, after the generated CSS. */
+
+/* Full page loads within Motet cross-fade, and named parts (the chrome, a World's mark and
+   name, the composer) carry across. Pages that render on the client after load are skipped
+   by Motet's pagereveal check rather than revealed half-drawn. */
+@view-transition { navigation: auto; }
