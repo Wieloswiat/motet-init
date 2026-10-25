@@ -27,6 +27,11 @@ pub struct Tenor {
 }
 
 impl Tenor {
+    /// # Panics
+    ///
+    /// Panics if opening or committing to the fresh in-memory log fails, or
+    /// if its single begin entry does not produce one accepted outcome.
+    /// The log starts empty and has no competing writer or existing World.
     pub async fn start(world: &str) -> Self {
         let log = motet_log_on_memory();
         let mut shard = Shard::open(log).await.expect("open shard");
@@ -51,6 +56,13 @@ impl Tenor {
 
     /// Commits one command and publishes what it decided to the World's
     /// repo, as the tenor does after an outcome is durable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the commit fails or does not return one accepted outcome,
+    /// including when the public `world` field was changed to an unknown
+    /// World. Also panics if the operation or published-event counters exhaust
+    /// their integer range; the harness is intended for bounded test histories.
     pub async fn command(&mut self, command: motet_rules::world::Command) -> Outcome {
         self.ops += 1;
         let entry = Entry::Apply {
@@ -83,6 +95,7 @@ impl Tenor {
     }
 
     /// The World's repo, in commit order.
+    #[must_use]
     pub fn repo(&self) -> Vec<RepoEvent> {
         self.published.clone()
     }

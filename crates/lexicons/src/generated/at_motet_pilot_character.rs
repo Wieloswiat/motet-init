@@ -2,11 +2,11 @@
 
 //! DRAFT. A character, in its player's repo. Where a World requires approval, it counts once an approval decision names this version.
 
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, reason = "doc comments copy lexicon descriptions, which are not Markdown")]
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Character {
     pub created_at: String,

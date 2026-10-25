@@ -50,6 +50,7 @@ pub fn router<R: Records + 'static>(
 
 /// Whether a token's audience is a World on this tenor: `did#motet_tenor`.
 /// Which Worlds are hosted is checked against the request, by the shard.
+#[must_use]
 pub fn accepts_audience(aud: &str) -> bool {
     aud.split_once('#')
         .is_some_and(|(did, fragment)| did.starts_with("did:") && fragment == SERVICE_FRAGMENT)

@@ -97,6 +97,7 @@ pub struct WorldView {
 }
 
 impl WorldView {
+    #[must_use]
     pub fn new(world: Did) -> Self {
         Self {
             world,
@@ -149,6 +150,7 @@ impl WorldView {
     /// The scene's entries in admission order. An admission whose post this
     /// consumer hasn't received yet is left out: it waits for the post and is
     /// never shown alone.
+    #[must_use]
     pub fn scene(&self, scene: &SceneId) -> Vec<Entry> {
         let mut entries: Vec<Entry> = self
             .admissions
@@ -186,6 +188,7 @@ impl WorldView {
 
     /// An author's posts whose current version isn't admitted (yet): shown to
     /// them as pending, outside the scene.
+    #[must_use]
     pub fn pending(&self, author: &Did) -> Vec<StrongRef> {
         self.posts
             .iter()

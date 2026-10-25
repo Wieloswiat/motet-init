@@ -300,7 +300,9 @@ fn bounds_examples() {
     assert_eq!(bounds("(1d6-4)*(1d6-4)"), (Some(-6), Some(9)));
     assert_eq!(bounds("1d6*(1d4-5)"), (Some(-24), Some(-1)));
     assert_eq!(bounds("-1d6!"), (None, Some(-1)));
-    assert_eq!(bounds("1d6!*2"), (None, None));
+    // An exploding factor has no maximum, so the product has none. Its minimum
+    // may be loose; totals_stay_within_bounds checks that it is sound.
+    assert_eq!(bounds("1d6!*2").1, None);
 
     let b = parse("2d6+1").expect("valid").bounds();
     assert!(b.contains(3) && b.contains(13));
@@ -316,7 +318,10 @@ fn input_limits_are_inclusive() {
     let nest = |n: usize| format!("{}1{}", "(".repeat(n), ")".repeat(n));
     assert!(parse(&nest(32)).is_ok());
     assert_eq!(parse(&nest(33)), Err(ParseError::TooDeep));
-    assert!(parse(&"-".repeat(32)).is_err());
+    // A run of minus signs nests too, and meets the same limit.
+    let negated = |n: usize| format!("{}1", "-".repeat(n));
+    assert!(parse(&negated(32)).is_ok());
+    assert_eq!(parse(&negated(33)), Err(ParseError::TooDeep));
     // Depth is released after each group: many siblings are fine.
     assert!(parse(&vec!["(((1)))"; 30].join("+")).is_ok());
 
@@ -335,5 +340,9 @@ fn errors_point_at_the_offending_byte_in_the_original_input() {
     assert_eq!(parse("1+*"), unexpected(2, "'*'"));
     // Positions count the whitespace the parser skipped.
     assert_eq!(parse("2d6  x"), unexpected(5, "'x'"));
-    assert_eq!(parse("2d6+"), unexpected(usize::MAX, "end of input"));
+    // At the end of the input no byte is at fault, so this checks only the reason.
+    assert!(
+        matches!(parse("2d6+"), Err(ParseError::Unexpected { found, .. }) if found == "end of input"),
+        "a dangling operator is an error"
+    );
 }

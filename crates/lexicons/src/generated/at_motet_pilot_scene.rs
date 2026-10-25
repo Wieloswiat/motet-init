@@ -2,11 +2,11 @@
 
 //! DRAFT. A scene, written as the World in its public repo or in the Space of the scene's audience.
 
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, reason = "doc comments copy lexicon descriptions, which are not Markdown")]
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Scene {
     #[serde(default, skip_serializing_if = "Option::is_none")]

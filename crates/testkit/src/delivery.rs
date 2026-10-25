@@ -14,6 +14,12 @@ use proptest::sample::Index;
 /// Every merge of `streams` that keeps each stream's own order.
 ///
 /// Each inner `Vec` is one repository's events in commit order.
+///
+/// # Panics
+///
+/// Panics only if the generated tags no longer match the input streams.
+/// Each stream contributes exactly one tag per event, so shuffling cannot
+/// exhaust a stream early or name a nonexistent stream.
 pub fn interleavings<E>(streams: Vec<Vec<E>>) -> impl Strategy<Value = Vec<E>>
 where
     E: Clone + Debug,
@@ -27,8 +33,13 @@ where
         let mut cursors = vec![0; streams.len()];
         tags.into_iter()
             .map(|i| {
-                let event = streams[i][cursors[i]].clone();
-                cursors[i] += 1;
+                let stream = streams.get(i).expect("tags are input stream indices");
+                let cursor = cursors.get_mut(i).expect("each input stream has a cursor");
+                let event = stream
+                    .get(*cursor)
+                    .expect("each stream contributes one tag per event")
+                    .clone();
+                *cursor += 1;
                 event
             })
             .collect()
@@ -37,6 +48,11 @@ where
 
 /// `events` with up to `max` earlier events delivered again at later points,
 /// as a sync consumer sees after a lost acknowledgement or a reconnect.
+///
+/// # Panics
+///
+/// Panics only if proptest's `Index` returns an index outside the nonempty
+/// vector length it was given; empty event lists are skipped.
 pub fn with_redelivery<E>(events: Vec<E>, max: usize) -> impl Strategy<Value = Vec<E>>
 where
     E: Clone + Debug,
@@ -50,7 +66,11 @@ where
             let from = source.index(out.len());
             // Insert strictly after the original: a redelivery is never early.
             let at = from + 1 + offset.index(out.len() - from);
-            out.insert(at, out[from].clone());
+            let event = out
+                .get(from)
+                .expect("Index is bounded by the nonempty output length")
+                .clone();
+            out.insert(at, event);
         }
         out
     })

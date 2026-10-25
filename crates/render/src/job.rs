@@ -20,6 +20,10 @@ pub struct Job {
 /// Starting limits from the backend plan, for all of a post's layouts
 /// together. To be tuned with measurements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "max_ distinguishes upper resource bounds and preserves the job wire format"
+)]
 pub struct Limits {
     pub max_source_bytes: usize,
     pub max_memory_bytes: u64,
@@ -66,6 +70,7 @@ pub enum Failure {
 
 impl Failure {
     /// Whether the same job will fail the same way every time.
+    #[must_use]
     pub fn is_deterministic(&self) -> bool {
         matches!(self, Self::Source(_) | Self::TooLong(_) | Self::TooLarge(_))
     }
@@ -95,6 +100,7 @@ impl RenderKey {
 }
 
 /// The Typst version this worker compiles with.
+#[must_use]
 pub fn compiler_version() -> String {
     format!("typst {}", typst::utils::version().raw())
 }

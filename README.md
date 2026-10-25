@@ -22,16 +22,16 @@ tests                 # the default suites
 
 `devenv info` lists every command. The ones used day to day:
 
-| Command             | What it does                                                            |
-| ------------------- | ----------------------------------------------------------------------- |
-| `fmt`               | Format Rust, Nix, TOML and the web packages                             |
-| `lint`              | Clippy (warnings are errors), typos, workflow lint, ESLint, type checks |
-| `tests`             | Pure, property and in-process tests; vitest. No services needed         |
-| `tests-integration` | Tests against PostgreSQL and S3, and Playwright (needs `devenv up`)     |
-| `lexgen`            | Regenerate Rust and TypeScript types after editing `lexicons/`          |
-| `devenv test`       | The whole CI gate, services included                                    |
-| `stack`             | The deployment-shaped stack in containers (`deploy/compose.yaml`)       |
-| `mutants`, `soak`   | Mutation testing; property tests with many more cases                   |
+| Command                          | What it does                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `fmt`                            | Format Rust, Nix, TOML and the web packages                                                     |
+| `lint`                           | Clippy and rustdoc (warnings are errors), cargo-deny, typos, workflow and web lint, type checks |
+| `tests`                          | Pure, property and in-process tests; vitest. No services needed                                 |
+| `tests-integration`              | Tests against PostgreSQL and S3, and Playwright (needs `devenv up`)                             |
+| `lexgen`                         | Regenerate Rust and TypeScript types after editing `lexicons/`                                  |
+| `devenv test`                    | The whole CI gate, services included                                                            |
+| `stack`                          | The deployment-shaped stack in containers (`deploy/compose.yaml`)                               |
+| `mutants`, `mutants-web`, `soak` | Rust and TypeScript/Svelte mutation testing; larger Rust property runs                          |
 
 The web app: `pnpm --filter @motet/web dev`.
 
@@ -56,16 +56,24 @@ apps/web/          SvelteKit web app
 packages/design/   Design tokens, Panda CSS preset, theme contrast checks
 packages/lexicons/ TypeScript types generated from lexicons/
 lexicons/          Motet's lexicons (at.motet.*), the source of truth for records
+tools/             Vendored lint rules: anti-slop for Oxlint
 nix/               Rust build and checks (crane), the dev environment (devenv)
 deploy/            The compose stack
-docs/              Architecture, testing, decisions
+docs/              Architecture, development standards, testing, decisions
 ```
+
+## Standards
+
+[docs/development.md](docs/development.md) is how code is written and
+reviewed: Google's Rust style guide with Motet's exceptions, the lint policy,
+comments that say why, and the review checklist.
 
 ## Testing
 
 Tests state properties of the system, not of its functions: replays give the
 same state, every consumer agrees on what was admitted, nothing unauthorised
-reaches a handler. See [docs/testing.md](docs/testing.md).
+reaches a handler. A test must name the bug it would catch. See
+[docs/testing.md](docs/testing.md).
 
 ## Licence
 

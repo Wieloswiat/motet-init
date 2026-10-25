@@ -86,6 +86,7 @@ impl Fetcher {
     /// The underlying client, for SDKs that take one (atproto-crates' clients
     /// accept a `reqwest::Client`; the workspace pins the same reqwest), so
     /// they inherit this policy.
+    #[must_use]
     pub fn client(&self) -> &reqwest::Client {
         &self.client
     }
@@ -149,6 +150,7 @@ impl Resolve for PublicOnly {
 /// Whether an address is publicly routable: not loopback, private, link-local,
 /// shared, documentation, multicast, unspecified or reserved, including IPv4
 /// addresses smuggled inside IPv6.
+#[must_use]
 pub fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_v4(v4),

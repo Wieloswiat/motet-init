@@ -42,10 +42,15 @@ export default defineConfig({
 				extends: './vite.config.ts',
 				test: {
 					name: 'client',
+					setupFiles: ['./test/stryker-browser.ts'],
+					provide: {
+						strykerActiveMutant: process.env.__STRYKER_ACTIVE_MUTANT__ ?? ''
+					},
 					browser: {
 						enabled: true,
 						provider: playwright({ launchOptions: { executablePath: chromium } }),
-						instances: [{ browser: 'chromium', headless: true }]
+						instances: [{ browser: 'chromium', headless: true }],
+						ui: false
 					},
 					include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
 					exclude: ['src/lib/server/**']

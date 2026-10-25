@@ -9,7 +9,7 @@
 //!
 //! The pieces are separate on purpose:
 //!
-//! - [`parse`] turns text into an [`Expr`], and [`Expr`]'s `Display` writes
+//! - [`parse()`] turns text into an [`Expr`], and [`Expr`]'s `Display` writes
 //!   the canonical form back (`parse(e.to_string()) == e`).
 //! - [`Expr::bounds`] computes the range a total can fall in without rolling.
 //! - [`Expr::roll`] evaluates against a [`Source`] the caller provides.

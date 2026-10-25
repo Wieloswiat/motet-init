@@ -128,6 +128,7 @@ pub enum Caller {
 }
 
 impl Caller {
+    #[must_use]
     pub fn did(&self) -> Option<&str> {
         match self {
             Self::Anonymous => None,

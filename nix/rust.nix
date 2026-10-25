@@ -26,7 +26,6 @@ let
       (src + "/lexicons")
       # Generated TypeScript, so lexicons-fresh can check both outputs.
       (src + "/packages/lexicons/src/generated")
-      (lib.fileset.fileFilter (f: f.hasExt "snap") src)
       (lib.fileset.fileFilter embedded (src + "/crates"))
     ];
   };
@@ -108,9 +107,10 @@ in
       // {
         inherit cargoArtifacts;
         cargoNextestExtraArgs = "--profile ci";
-        # Property tests: a fixed seed in the sandbox would hide nothing new
-        # but make failures reproducible; proptest persists regressions in
-        # each crate's proptest-regressions/ which are committed.
+        # PROPTEST_CASES replaces each suite's own case count, so every
+        # property runs 256 cases in this check. The seed is random each time
+        # the check runs, and proptest first replays the failures recorded in
+        # the committed *.proptest-regressions files. `soak` runs more cases.
         PROPTEST_CASES = "256";
       }
     );

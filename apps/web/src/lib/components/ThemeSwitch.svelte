@@ -4,6 +4,7 @@
 -->
 <script lang="ts" module>
 	export const themes = ['light', 'dark', 'contrast-light', 'contrast-dark'] as const;
+
 	export type ThemeName = (typeof themes)[number];
 </script>
 
@@ -12,6 +13,11 @@
 	import { css } from '#styled/css';
 
 	let { value = $bindable('light') }: { value?: ThemeName } = $props();
+
+	function selectTheme(event: SegmentGroup.ValueChangeDetails): void {
+		// SAFETY: Ark emits the values of the items rendered from themes above.
+		value = event.value as ThemeName;
+	}
 
 	const item = css({
 		paddingInline: '3',
@@ -25,7 +31,7 @@
 
 <SegmentGroup.Root
 	{value}
-	onValueChange={(e) => (value = e.value as ThemeName)}
+	onValueChange={selectTheme}
 	class={css({ display: 'flex', gap: '1', background: 'surface-quiet', padding: '1' })}
 >
 	<SegmentGroup.Label class={css({ srOnly: true })}>Theme</SegmentGroup.Label>

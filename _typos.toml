@@ -3,4 +3,12 @@
 Nd = "Nd"
 
 [files]
-extend-exclude = ["packages/lexicons/src/generated/", "crates/lexicons/src/generated/", "pnpm-lock.yaml"]
+extend-exclude = [
+  "packages/lexicons/src/generated/",
+  "crates/lexicons/src/generated/",
+  "pnpm-lock.yaml",
+  # Vendored from dmmulroy/anti-slop. The files must stay identical to upstream,
+  # so that the commit and git tree in its UPSTREAM.md still identify them.
+  # Report typos upstream.
+  "tools/oxlint/anti-slop/",
+]

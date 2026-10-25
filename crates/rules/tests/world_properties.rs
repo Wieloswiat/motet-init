@@ -150,7 +150,10 @@ proptest! {
                     prop_assert_eq!(*authority_rev, f.rev);
                     f.apply(command);
                 }
-                (_, Outcome::Refused(Refusal::UnknownScene)) => {}
+                (
+                    Command::CloseScene { scene } | Command::JoinCast { scene, .. } | Command::LeaveCast { scene, .. },
+                    Outcome::Refused(Refusal::UnknownScene),
+                ) => prop_assert!(!f.known.contains(scene), "{:?} refused, but its scene exists", command),
                 (c, o) => prop_assert!(false, "unexpected outcome {:?} for {:?}", o, c),
             }
         }

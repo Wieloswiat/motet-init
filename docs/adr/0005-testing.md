@@ -1,6 +1,7 @@
 # 0005. Properties, integration and acceptance tests; no tautological unit tests
 
-Status: Accepted
+Status: Accepted. The retry result is superseded by
+[0011](0011-flaky-tests-fail.md).
 
 ## Context
 

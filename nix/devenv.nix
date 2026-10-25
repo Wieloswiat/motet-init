@@ -2,7 +2,7 @@
 #
 #   nix develop --no-pure-eval   (or `direnv allow`)
 #   devenv up                    PostgreSQL with pg_search, SeaweedFS (S3)
-#   devenv test                  everything CI runs, services included
+#   devenv test                  the whole CI gate, services included
 #   devenv info                  lists the scripts below with descriptions
 #
 # Commands live here as devenv scripts, so they're on PATH in the shell and
@@ -44,7 +44,6 @@ in
     cargo-deny
     cargo-mutants
     cargo-llvm-cov
-    cargo-insta
     sqlx-cli
     typst
     seaweedfs
@@ -124,11 +123,17 @@ in
     actionlint.enable = true;
   };
 
+  # devenv runs each script with `bash <file>`, without errexit. A script that
+  # does not set it returns the status of its last command only, so an earlier
+  # failure is lost. For this reason, every script with more than one command
+  # starts with `set -euo pipefail` and keeps each command on its own line:
+  # errexit ignores a failure on the left side of `&&`.
   scripts = {
     # Everyday.
     fmt = {
       description = "Format Rust, Nix, TOML and the web packages";
       exec = ''
+        set -euo pipefail
         cargo fmt --all
         nixfmt flake.nix nix/*.nix
         taplo fmt
@@ -138,6 +143,7 @@ in
     fmt-check = {
       description = "Fail if anything is unformatted";
       exec = ''
+        set -euo pipefail
         cargo fmt --all --check
         nixfmt --check flake.nix nix/*.nix
         taplo fmt --check
@@ -145,9 +151,16 @@ in
       '';
     };
     lint = {
-      description = "Clippy (warnings are errors), typos, workflow lint, web lint and type checks";
+      description = "Clippy and rustdoc (warnings are errors), dependency policy, typos, workflow lint, web lint and type checks";
       exec = ''
+        set -euo pipefail
         cargo clippy --workspace --all-targets --all-features -- --deny warnings
+        # Rustdoc's lints, such as broken intra-doc links, run only in
+        # `cargo doc`. No crate is published, so people read the docs of
+        # private items as much as public ones: check both.
+        RUSTDOCFLAGS="--deny warnings" cargo doc --workspace --no-deps --all-features --document-private-items
+        # Advisories need the network, so they run in `audit`, not here.
+        cargo deny check bans licenses sources
         typos
         actionlint
         pnpm lint
@@ -155,15 +168,17 @@ in
       '';
     };
     tests = {
-      description = "Default suites: pure, property and in-process tests (no services)";
+      description = "Default suites: pure, property and in-process tests, and vitest (no services)";
       exec = ''
+        set -euo pipefail
         cargo nextest run --workspace "$@"
         pnpm test
       '';
     };
     tests-integration = {
-      description = "Integration tests against PostgreSQL and S3 (needs devenv up)";
+      description = "Integration tests against PostgreSQL and S3, and Playwright (needs devenv up)";
       exec = ''
+        set -euo pipefail
         cargo nextest run --workspace --profile integration --run-ignored only "$@"
         pnpm test:e2e
       '';
@@ -189,8 +204,11 @@ in
     stack = {
       description = "Deployment-shaped stack (AppView, tenor, Tap, Spaces PDS, PostgreSQL, S3) in podman";
       exec = ''
-        nix build .#appview-image -o result-appview && ./result-appview | podman load
-        nix build .#tenor-image -o result-tenor && ./result-tenor | podman load
+        set -euo pipefail
+        nix build .#appview-image -o result-appview
+        ./result-appview | podman load
+        nix build .#tenor-image -o result-tenor
+        ./result-tenor | podman load
         podman-compose -f deploy/compose.yaml up "$@"
       '';
     };
@@ -214,12 +232,20 @@ in
 
     # Slower assurance.
     audit = {
-      description = "Dependency advisories (needs network)";
-      exec = "cargo deny check advisories";
+      description = "Known advisories in Rust crates and production npm packages (needs network)";
+      exec = ''
+        set -euo pipefail
+        cargo deny check advisories
+        pnpm audit --prod
+      '';
     };
     mutants = {
       description = "Mutation testing: which code can change without any test noticing?";
       exec = ''cargo mutants --workspace --test-tool nextest "$@"'';
+    };
+    mutants-web = {
+      description = "Mutation testing for TypeScript and Svelte with Stryker and Vitest";
+      exec = "pnpm test:mutation";
     };
     coverage = {
       description = "Line coverage of the default suites, as lcov.info";

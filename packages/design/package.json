@@ -10,14 +10,18 @@
 	},
 	"scripts": {
 		"check": "tsc -p .",
-		"test": "vitest run"
+		"test": "vitest run",
+		"test:mutation": "FC_SEED=20261025 stryker run && node ../../tools/check-mutation-report.mjs reports/mutation/mutation.json"
 	},
 	"peerDependencies": {
 		"@pandacss/dev": "^2.2.0"
 	},
 	"devDependencies": {
 		"@pandacss/dev": "^2.2.0",
+		"@stryker-mutator/core": "10.1.1",
+		"@stryker-mutator/vitest-runner": "10.1.1",
 		"@types/node": "^24",
+		"fast-check": "^4.10.2",
 		"typescript": "^6.0.3",
 		"vitest": "^4.1.8"
 	}

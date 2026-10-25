@@ -1,5 +1,23 @@
+# Clippy settings. The lint levels are in [workspace.lints] in Cargo.toml.
+
+# In a test, a panic fails the test, and the harness captures output. These
+# restriction lints guard the code that ships, not the tests.
 allow-unwrap-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
 allow-dbg-in-tests = true
+
+# No crate is published, and all callers are in this workspace. Lints can ask
+# for a change to a public signature, because the same change updates all
+# callers.
+avoid-breaking-exported-api = false
+
+disallowed-methods = [
+  { path = "std::panic::catch_unwind", reason = "Google Rust style forbids it: fix the panic, do not catch it" },
+  { path = "std::thread::sleep", reason = "it blocks a Tokio worker thread; use tokio::time::sleep" },
+  { path = "std::string::String::from_utf8_lossy", reason = "it changes bad bytes silently; use String::from_utf8 and handle the error" },
+]
+
 doc-valid-idents = [
   "AppView",
   "AppViews",
@@ -16,6 +34,5 @@ doc-valid-idents = [
   "NodeBB",
   "WebAssembly",
   "JavaScript",
-  "TypeScript",
   "OpenTelemetry",
 ]

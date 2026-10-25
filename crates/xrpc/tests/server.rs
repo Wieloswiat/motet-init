@@ -72,7 +72,7 @@ async fn call(verb: &str, uri: &str, caller: Option<&str>, body: &'static str) -
     if let Some(caller) = caller {
         request = request.header("x-test-caller", caller);
     }
-    let response = router(calls.clone())
+    let response = router(Arc::clone(&calls))
         .oneshot(request.body(Body::from(body)).expect("request"))
         .await
         .expect("infallible");

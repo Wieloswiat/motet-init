@@ -10,6 +10,10 @@ flake.lock
 # Generated: lexgen-check compares these byte for byte.
 packages/lexicons/src/generated/
 
+# Vendored from dmmulroy/anti-slop. Kept identical to upstream, so that an
+# update can merge (tools/oxlint/anti-slop/UPSTREAM.md).
+tools/oxlint/anti-slop/
+
 # Package managers and build output
 pnpm-lock.yaml
 node_modules/
@@ -20,6 +24,8 @@ styled-system/
 apps/web/static/
 playwright-report/
 test-results/
+**/reports/mutation/
+.stryker-tmp/
 
 # Exported from the Theme Creator; regenerated, not edited.
 packages/design/src/tokens.css

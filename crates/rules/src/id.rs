@@ -70,6 +70,7 @@ pub struct StrongRef {
 }
 
 impl StrongRef {
+    #[must_use]
     pub fn new(uri: RecordUri, cid: Cid) -> Self {
         Self { uri, cid }
     }

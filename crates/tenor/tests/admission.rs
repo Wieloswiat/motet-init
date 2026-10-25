@@ -89,7 +89,11 @@ async fn world(store: Arc<dyn ObjectStore>) -> Handle {
 }
 
 async fn segments(store: &Arc<dyn ObjectStore>) -> usize {
-    Log::new(store.clone(), "shard").read_from(0).await.expect("read").len()
+    Log::new(Arc::clone(store), "shard")
+        .read_from(0)
+        .await
+        .expect("read")
+        .len()
 }
 
 /// Acceptance: "Request admission for a post whose PDS write fails". No
@@ -97,7 +101,7 @@ async fn segments(store: &Arc<dyn ObjectStore>) -> usize {
 #[tokio::test]
 async fn a_post_that_never_reached_its_pds_is_never_admitted() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let shard = world(store.clone()).await;
+    let shard = world(Arc::clone(&store)).await;
     let before = segments(&store).await;
 
     let decision = admit(&shard, &Repos::default(), request("op", post("p1", "v1")))

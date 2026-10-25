@@ -33,6 +33,11 @@ impl Supervisor {
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics only if a `Job` cannot serialize or a spawned child lacks its
+    /// configured pipes. Jobs contain only JSON-serializable strings and
+    /// integers, and both pipes are requested before spawning.
     pub async fn render(&self, job: &Job) -> Result<Outcome, SupervisorError> {
         if job.source.len() > job.limits.max_source_bytes {
             return Ok(Err(Failure::TooLong(job.limits.max_source_bytes)));

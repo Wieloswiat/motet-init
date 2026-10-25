@@ -50,6 +50,7 @@ pub mod kinds {
 
 impl Audience {
     /// The Space that holds this audience in `world`.
+    #[must_use]
     pub fn space(&self, world: &str) -> SpaceId {
         let (kind, key) = match self {
             Self::Meta => (kinds::META, "self"),
@@ -85,10 +86,13 @@ mod tests {
     proptest! {
         /// Two different audiences never share a Space, in any World, and no
         /// two Worlds share one: sharing would let one audience read the
-        /// other's records with its credential.
+        /// other's records with its credential. Each Space also prints
+        /// differently, so a sync error names exactly one Space.
         #[test]
         fn audiences_never_share_a_space(a in audience(), b in audience(), wa in "did:plc:[a-z]{1,4}", wb in "did:plc:[a-z]{1,4}") {
-            prop_assert_eq!(a.space(&wa) == b.space(&wb), a == b && wa == wb);
+            let same = a == b && wa == wb;
+            prop_assert_eq!(a.space(&wa) == b.space(&wb), same);
+            prop_assert_eq!(a.space(&wa).to_string() == b.space(&wb).to_string(), same);
         }
     }
 }

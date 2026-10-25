@@ -163,7 +163,7 @@ impl Ctx<'_> {
         if let Some(keep) = d.keep {
             // Rank by face, ties by roll order, so the result is reproducible.
             let mut order: Vec<usize> = (0..values.len()).collect();
-            order.sort_by_key(|&i| (values[i].face, i));
+            order.sort_by_key(|&i| (values.get(i).expect("order contains only indices from values").face, i));
             let n = values.len();
             let kept = usize::try_from(d.kept_count(u32::try_from(n).unwrap_or(u32::MAX))).unwrap_or(n);
             let keep_range = match keep {
@@ -171,7 +171,10 @@ impl Ctx<'_> {
                 Keep::Lowest(_) | Keep::DropHighest(_) => 0..kept,
             };
             for (rank, &i) in order.iter().enumerate() {
-                values[i].kept = keep_range.contains(&rank);
+                values
+                    .get_mut(i)
+                    .expect("sorting order does not change its values indices")
+                    .kept = keep_range.contains(&rank);
             }
         }
 

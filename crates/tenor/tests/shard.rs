@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use motet_log::Log;
-use motet_rules::world::{Command, ReadBack};
+use motet_rules::world::{Command, Outcome, ReadBack};
 use motet_rules::{Cid, Did, OperationId, RecordUri, SceneId, StrongRef};
 use motet_tenor::shard::{Entry, Rejected, Shard, ShardError, spawn};
 use object_store::ObjectStore;
@@ -21,8 +21,9 @@ fn did(s: &str) -> Did {
 }
 
 fn command() -> impl Strategy<Value = Command> {
-    let member = (0..MEMBERS.len()).prop_map(|i| did(MEMBERS[i]));
-    let scene = (0..SCENES.len()).prop_map(|i| SceneId::new(SCENES[i]));
+    let member = (0..MEMBERS.len()).prop_map(|i| did(MEMBERS.get(i).expect("generated index is below MEMBERS.len()")));
+    let scene =
+        (0..SCENES.len()).prop_map(|i| SceneId::new(*SCENES.get(i).expect("generated index is below SCENES.len()")));
     prop_oneof![
         1 => (scene.clone(), proptest::collection::btree_set(member.clone(), 0..3))
             .prop_map(|(scene, cast)| Command::OpenScene { scene, cast }),
@@ -45,7 +46,7 @@ fn command() -> impl Strategy<Value = Command> {
 /// some operation IDs reused, so rejections are replayed too.
 fn entries() -> impl Strategy<Value = Vec<Entry>> {
     let apply = (0..3usize, 0..12u8, command()).prop_map(|(w, op, command)| Entry::Apply {
-        world: did(if w < 2 { WORLDS[w] } else { "did:plc:nowhere" }),
+        world: did(WORLDS.get(w).copied().unwrap_or("did:plc:nowhere")),
         op: OperationId::new(format!("op-{op}")),
         command,
     });
@@ -74,7 +75,7 @@ proptest! {
     fn replay_reproduces_what_was_acknowledged(entries in entries(), cuts in proptest::collection::vec(1..8usize, 1..20)) {
         runtime().block_on(async {
             let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-            let mut batched = Shard::open(Log::new(store.clone(), "shard")).await.expect("open");
+            let mut batched = Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open");
             let mut one_by_one = Shard::open(Log::new(Arc::new(InMemory::new()), "shard")).await.expect("open");
 
             let mut outcomes = Vec::new();
@@ -126,10 +127,12 @@ async fn a_second_writer_fences_the_first() {
         world: did(w),
         epoch: 0,
     };
-    let mut old = Shard::open(Log::new(store.clone(), "shard")).await.expect("open");
+    let mut old = Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open");
     old.commit(&[begin(WORLDS[0])]).await.expect("first commit");
 
-    let mut new = Shard::open(Log::new(store.clone(), "shard")).await.expect("takeover");
+    let mut new = Shard::open(Log::new(Arc::clone(&store), "shard"))
+        .await
+        .expect("takeover");
     new.commit(&[begin(WORLDS[1])]).await.expect("new writer commits");
 
     let open = Command::OpenScene {
@@ -153,34 +156,58 @@ async fn a_second_writer_fences_the_first() {
     );
 }
 
-/// Group commit hands every waiter its own entry's outcome.
+/// Group commit hands every waiter its own entry's outcome. If it paired
+/// outcomes with the wrong waiters, a caller could hear "admitted" for an
+/// entry the World refused.
 #[tokio::test]
 async fn group_commit_answers_each_submitter() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let handle = spawn(Shard::open(Log::new(store.clone(), "shard")).await.expect("open"), 8);
+    let handle = spawn(
+        Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open"),
+        8,
+    );
+    let begin = |w: &str| Entry::Begin {
+        world: did(w),
+        epoch: 0,
+    };
     let worlds: Vec<String> = (0..20).map(|i| format!("did:plc:w{i}")).collect();
+    // Every other World began earlier. Each batch then mixes acceptances with
+    // refusals that name their own World, so a waiter that gets the outcome
+    // of another entry sees the wrong answer.
+    let earlier: Vec<&String> = worlds.iter().step_by(2).collect();
+    for w in &earlier {
+        handle
+            .submit(begin(w))
+            .await
+            .expect("durable")
+            .expect("a new World begins");
+    }
+    let before = Log::new(Arc::clone(&store), "shard")
+        .read_from(0)
+        .await
+        .expect("read")
+        .len();
+
     let submissions = worlds.iter().map(|w| {
-        let handle = handle.clone();
-        let entry = Entry::Begin {
-            world: did(w),
-            epoch: 0,
-        };
+        let (handle, entry) = (handle.clone(), begin(w));
         async move { handle.submit(entry).await }
     });
-    for result in futures::future::join_all(submissions).await {
-        assert!(matches!(result, Ok(Ok(_))));
+    let results = futures::future::join_all(submissions).await;
+    for (w, result) in worlds.iter().zip(results) {
+        let expected = if earlier.contains(&w) {
+            Err(Rejected::AlreadyBegun(did(w)))
+        } else {
+            Ok(Outcome::Unchanged)
+        };
+        assert_eq!(result.expect("durable"), expected, "{w}");
     }
-    let again = handle
-        .submit(Entry::Begin {
-            world: did(&worlds[3]),
-            epoch: 0,
-        })
-        .await
-        .expect("durable");
-    assert_eq!(again, Err(Rejected::AlreadyBegun(did(&worlds[3]))));
 
-    let segments = Log::new(store, "shard").read_from(0).await.expect("read").len();
-    assert!(segments < 21, "group commit wrote {segments} segments for 21 entries");
+    let segments = Log::new(store, "shard").read_from(0).await.expect("read").len() - before;
+    assert!(
+        segments < worlds.len(),
+        "group commit wrote {segments} segments for {} entries",
+        worlds.len()
+    );
 }
 
 /// The same takeover against the real bucket (SeaweedFS under devenv).
@@ -188,8 +215,10 @@ async fn group_commit_answers_each_submitter() {
 #[ignore = "integration: needs S3 (devenv up)"]
 async fn fault_takeover_against_real_bucket() {
     let store = motet_testkit::services::bucket();
-    let mut old = Shard::open(Log::new(store.clone(), "shard")).await.expect("open");
-    let mut new = Shard::open(Log::new(store.clone(), "shard")).await.expect("takeover");
+    let mut old = Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open");
+    let mut new = Shard::open(Log::new(Arc::clone(&store), "shard"))
+        .await
+        .expect("takeover");
     new.commit(&[Entry::Begin {
         world: did(WORLDS[0]),
         epoch: 0,

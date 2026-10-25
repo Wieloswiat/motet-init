@@ -31,6 +31,10 @@ struct Paths {
     ts: Option<PathBuf>,
 }
 
+#[expect(
+    clippy::print_stderr,
+    reason = "lexgen is a command-line tool, and stderr is where it reports stale files"
+)]
 fn main() -> Result<ExitCode> {
     let cli = Cli::parse();
     let (paths, write) = match cli.command {
@@ -38,13 +42,13 @@ fn main() -> Result<ExitCode> {
         Command::Check(p) => (p, false),
     };
     let docs = motet_lexgen::load(&paths.lexicons)?;
-    let mut outputs = motet_lexgen::rust::generate(&docs)?
+    let mut outputs = motet_lexgen::rust::generate(&docs)
         .into_iter()
         .map(|(f, c)| (paths.rust.join(f), c))
         .collect::<Vec<_>>();
     if let Some(ts) = &paths.ts {
         outputs.extend(
-            motet_lexgen::ts::generate(&docs)?
+            motet_lexgen::ts::generate(&docs)
                 .into_iter()
                 .map(|(f, c)| (ts.join(f), c)),
         );

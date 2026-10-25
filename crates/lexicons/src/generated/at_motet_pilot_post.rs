@@ -2,11 +2,11 @@
 
 //! DRAFT. A post in a scene, in its author's repo (or their repo in the scene's Space). It counts once the World's tenor admits this exact version.
 
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, reason = "doc comments copy lexicon descriptions, which are not Markdown")]
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Post {
     /// Typst source. Never rendered output.

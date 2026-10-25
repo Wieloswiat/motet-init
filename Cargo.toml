@@ -82,7 +82,6 @@ typst-svg = "0.15.1"
 rlimit = "0.11"
 
 # Testing.
-insta = { version = "1", features = ["json"] }
 proptest = "1"
 proptest-state-machine = "0.9"
 
@@ -91,18 +90,64 @@ unsafe_code = "forbid"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
 
+# The groups come first, at priority -1, so the lines below them can change
+# single lints. The `restriction` group stays off: some of its lints
+# contradict each other. We turn on its useful lints one by one, below.
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Pedantic lints that fight the codebase's style more than they help.
-module_name_repetitions = "allow"
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+# Exceptions to the groups. Each one says why.
+# The error type names each failure. An `# Errors` section on each function
+# would only repeat it.
 missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-must_use_candidate = "allow"
-# A bare unwrap hides why a value must exist; `expect("why")` says it.
+# A `const fn` promises that its body stays const. Make that promise on
+# purpose (Google Rust style), not on each function that can be const.
+missing_const_for_fn = "allow"
+# This lint wants `pub` where rustc's `unreachable_pub` (above) wants
+# `pub(crate)`. No code can satisfy both. We keep `unreachable_pub`.
+redundant_pub_crate = "allow"
+# cargo-deny owns duplicate dependency versions (`bans` in deny.toml). Most
+# duplicates come from Typst and atproto-crates, and Motet cannot remove them.
+multiple_crate_versions = "allow"
+
+# Restriction lints, selected one by one.
+# Panics. A panic stops a request or a shard task, so each panic must be
+# explicit and say why. A bare unwrap hides why a value must exist;
+# `expect("why")` says it. An index or a str slice out of range panics; use
+# `.get()` and handle `None`. A str slice also panics inside a UTF-8 character.
 unwrap_used = "warn"
-dbg_macro = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
 todo = "warn"
+unimplemented = "warn"
+# `exit()` runs no destructors, so open writers and guards do not finish.
+# Return from `main` with an error or an `ExitCode` instead.
+exit = "warn"
+# Shared state and resources. `Arc::clone(&x)` shows that only a reference
+# count changes. `Rc<Mutex<_>>` cannot cross threads, so its lock is useless.
+# A forgotten guard or handle never releases its resource. An empty `Drop`
+# does nothing.
+clone_on_ref_ptr = "warn"
+rc_mutex = "warn"
+mem_forget = "warn"
+empty_drop = "warn"
+# A replay must give the same state each time. Hash order changes from run to
+# run, so loops over hash maps and sets are not allowed.
+iter_over_hash_type = "warn"
+# Stdout carries the render worker's protocol and the services' JSON logs.
+# Report through `tracing` or a returned error, not a print or `dbg!`.
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+# Tests must run the code that ships.
+cfg_not_test = "warn"
+# Lint exceptions use `#[expect]`, which warns when its lint stops firing, so
+# stale exceptions get removed. Each exception gives its reason.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
 
 [profile.dev]
 # Debug info for our crates only; dependencies compile faster without it.

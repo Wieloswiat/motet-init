@@ -45,6 +45,8 @@ const roles = [
 	'scrim'
 ] as const;
 
+// SAFETY: fromEntries makes one entry for each name. The callers let TypeScript
+// infer K from the names, so every key of K has an entry.
 const fromVariables = <K extends string>(names: readonly K[], prefix = '') =>
 	Object.fromEntries(names.map((n) => [n, { value: `var(--${prefix}${n})` }])) as Record<
 		K,

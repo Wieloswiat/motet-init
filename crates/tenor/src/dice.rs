@@ -21,6 +21,10 @@ impl Source for OsSource {
 /// A uniform face in `1..=sides` from uniform 32-bit words, by rejection: a
 /// plain `word % sides` would favour low faces whenever `sides` doesn't
 /// divide 2³².
+///
+/// # Panics
+///
+/// Panics if `sides` is zero, because no face can be drawn from an empty die.
 pub fn uniform(sides: u32, mut word: impl FnMut() -> u32) -> u32 {
     assert!(sides > 0, "a die has at least one side");
     // Words in `zone..` would make the faces uneven; draw again.
@@ -54,7 +58,7 @@ mod tests {
         // For a d3, 2³² ≡ 1 (mod 3): exactly one word, u32::MAX, is rejected.
         let mut words = [u32::MAX, 4].into_iter();
         assert_eq!(uniform(3, || words.next().expect("two words")), 4 % 3 + 1);
-        let mut words = [u32::MAX - 1].into_iter();
+        let mut words = std::iter::once(u32::MAX - 1);
         assert_eq!(uniform(3, || words.next().expect("one word")), (u32::MAX - 1) % 3 + 1);
     }
 }

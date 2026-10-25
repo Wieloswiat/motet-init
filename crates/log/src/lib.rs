@@ -141,6 +141,7 @@ pub enum Reconciled {
 
 impl Writer {
     /// The position the next append will take.
+    #[must_use]
     pub fn next(&self) -> Seq {
         self.next
     }

@@ -1,11 +1,15 @@
-# The CI gate. Both jobs run commands defined in the nix flake, so CI can't
-# drift from what a developer runs locally:
+# The CI gate. The checking jobs run commands defined in the nix flake, so CI
+# can't drift from what a developer runs locally:
 #
 #   checks   `nix flake check`: fmt, clippy, the default test suites, cargo-deny
-#            and lexicon freshness, all hermetic and cached per derivation.
+#            (bans, licences, sources) and lexicon freshness, all hermetic and
+#            cached per derivation.
 #   gate     starts PostgreSQL and S3 from nix/devenv.nix, then runs its `ci`
 #            script (what `devenv test` runs locally): everything above plus
-#            the web packages and the integration and end-to-end suites.
+#            rustdoc's lints, the web packages, and the integration and
+#            end-to-end suites.
+#   images   on a push to main, once both pass: builds the container images
+#            with nix (no Dockerfile) and publishes them.
 name: CI
 
 on:
@@ -16,10 +20,18 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
+  # Runs on main don't overlap: a new run waits until the running one ends,
+  # so images are published in push order.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    # An explicit bash adds pipefail to the default -e, so a failure anywhere
+    # in a pipeline fails the step.
+    shell: bash
 
 jobs:
   checks:
@@ -27,6 +39,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@v16
         with:
@@ -36,14 +50,18 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
       # devenv needs the working directory, so even the hermetic checks
-      # evaluate impurely; the checks themselves stay sandboxed builds.
-      - run: nix flake check --no-pure-eval --print-build-logs
+      # evaluate impurely; the checks themselves stay sandboxed builds. An
+      # input that flake.lock doesn't pin fails here, because nix would
+      # otherwise lock it to its newest version, which no commit records.
+      - run: nix flake check --no-pure-eval --no-update-lock-file --print-build-logs
 
   gate:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: cachix/install-nix-action@v31
       - uses: cachix/cachix-action@v16
         with:
@@ -73,8 +91,60 @@ jobs:
           name: test-reports
           path: |
             target/nextest/ci/junit.xml
+            target/nextest/integration/junit.xml
             apps/web/playwright-report/
             services.log
             .devenv/state/process-compose/
           if-no-files-found: ignore
           include-hidden-files: true
+
+  # Container images for deploy/compose.yaml and whatever runs Motet next,
+  # tagged with the commit. `main` moves to a commit only while that commit
+  # is the head of main.
+  images:
+    # A failed or cancelled check skips this job. Pull requests and the merge
+    # queue run this workflow too, but only a push to main publishes.
+    needs: [checks, gate]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # The only job that can write packages.
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        image: [appview, tenor]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      - name: Build
+        env:
+          FLAKE_OUTPUT: ${{ matrix.image }}-image
+        run: |
+          nix build --no-update-lock-file ".#$FLAKE_OUTPUT" -o result
+          # skopeo from the nixpkgs that flake.lock pins, not from the newest
+          # nixpkgs in the flake registry.
+          nix build --inputs-from . nixpkgs#skopeo -o skopeo
+      - name: Publish
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/motet-${{ matrix.image }}
+          # skopeo pushes with it; gh reads the head of main with it.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Registry paths are lower case; owner names need not be.
+          image="${IMAGE,,}"
+          creds="$GITHUB_ACTOR:$GITHUB_TOKEN"
+          ./result | ./skopeo/bin/skopeo copy --dest-creds "$creds" \
+            docker-archive:/dev/stdin "docker://$image:$GITHUB_SHA"
+          # A re-run of an older run must not move `main` back.
+          head="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "::notice::main is now at $head, so $GITHUB_SHA keeps only its commit tag"
+            exit 0
+          fi
+          # `main` gets the digest just pushed; nothing is uploaded twice.
+          ./skopeo/bin/skopeo copy --dest-creds "$creds" \
+            "docker://$image:$GITHUB_SHA" "docker://$image:main"

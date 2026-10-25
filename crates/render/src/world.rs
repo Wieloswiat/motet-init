@@ -48,6 +48,11 @@ impl std::fmt::Debug for Sandbox {
 }
 
 impl Sandbox {
+    /// # Panics
+    ///
+    /// Panics only if Typst rejects the fixed `/post.typ` virtual path, which
+    /// is rooted and has no parent traversal; source and date do not affect it.
+    #[must_use]
     pub fn new(source: String, date: (i32, u8, u8), packages: Option<PathBuf>) -> Self {
         let main = RootedPath::new(
             VirtualRoot::Project,

@@ -1,6 +1,8 @@
 # cargo-deny: what may enter the dependency graph.
-# Runs in `nix flake check` and on a nightly schedule (new advisories appear
-# without any change here).
+# Bans, licences and sources are checked in `nix flake check` and the `lint`
+# script. Advisories need the network, so the `audit` script checks them
+# weekly in CI (.github/workflows/scheduled.yaml): new ones appear without any
+# change here.
 
 [graph]
 all-features = true

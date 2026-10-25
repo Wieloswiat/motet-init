@@ -34,6 +34,7 @@ impl DidResolver {
 
     /// Where a DID's document is published, or `None` for a DID method Motet
     /// doesn't resolve.
+    #[must_use]
     pub fn document_url(&self, did: &str) -> Option<String> {
         if let Some(id) = did.strip_prefix("did:plc:") {
             let valid = !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());

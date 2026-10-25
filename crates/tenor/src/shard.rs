@@ -53,6 +53,7 @@ pub enum Entry {
 }
 
 impl Entry {
+    #[must_use]
     pub fn world(&self) -> &Did {
         match self {
             Self::Begin { world, .. } | Self::Apply { world, .. } => world,
@@ -124,6 +125,7 @@ impl Shard {
         Ok(Self { writer, worlds })
     }
 
+    #[must_use]
     pub fn world(&self, world: &Did) -> Option<&World> {
         self.worlds.get(world)
     }
@@ -245,11 +247,16 @@ impl Handle {
 /// Runs `shard` with group commit: whatever queued while one segment was
 /// being written goes into the next, up to `max_batch` entries. Stops when
 /// fenced or unresolved; a new writer then has to open the shard.
+#[must_use]
 pub fn spawn(mut shard: Shard, max_batch: usize) -> Handle {
     let (tx, mut rx) = mpsc::channel::<Request>(max_batch * 4);
     tokio::spawn(async move {
         let mut batch = Vec::with_capacity(max_batch);
         while rx.recv_many(&mut batch, max_batch).await > 0 {
+            #[expect(
+                clippy::iter_with_drain,
+                reason = "recv_many reuses the batch allocation on the next iteration"
+            )]
             let (entries, waiters): (Vec<Entry>, Vec<_>) = batch.drain(..).unzip();
             match shard.commit(&entries).await {
                 Ok(results) => {
@@ -261,7 +268,7 @@ pub fn spawn(mut shard: Shard, max_batch: usize) -> Handle {
                     let stop = !matches!(e, ShardError::NotWritten);
                     let e = Arc::new(e);
                     for waiter in waiters {
-                        let _ = waiter.send(Err(e.clone()));
+                        let _ = waiter.send(Err(Arc::clone(&e)));
                     }
                     if stop {
                         tracing::error!(error = %e, "shard stopped");

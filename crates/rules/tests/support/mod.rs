@@ -5,7 +5,11 @@
 //! what it reads back. Running it through the real [`World`] gives both the
 //! tenor's outcomes and the per-repo record streams other consumers receive.
 
-#![allow(dead_code, unreachable_pub)]
+#![allow(
+    dead_code,
+    unreachable_pub,
+    reason = "shared fixtures expose different subsets to each integration test crate"
+)]
 
 use std::collections::BTreeMap;
 
@@ -105,7 +109,7 @@ pub fn action() -> impl Strategy<Value = Action> {
         1 => (a.clone(), s.clone()).prop_map(|(author, scene)| Action::JoinCast { author, scene }),
         1 => (a.clone(), s.clone()).prop_map(|(author, scene)| Action::LeaveCast { author, scene }),
         1 => s.clone().prop_map(|scene| Action::CloseScene { scene }),
-        1 => s.clone().prop_map(|scene| Action::ReopenScene { scene }),
+        1 => s.prop_map(|scene| Action::ReopenScene { scene }),
         1 => a.clone().prop_map(|author| Action::Suspend { author }),
         1 => a.clone().prop_map(|author| Action::Reinstate { author }),
         6 => (a.clone(), p.clone(), prop_oneof![8 => Just(Claim::Current), 1 => Just(Claim::Nothing), 1 => Just(Claim::Bogus)])
@@ -131,7 +135,10 @@ pub struct Run {
 }
 
 /// Runs `actions` against a World whose scenes start open with everyone cast.
-#[allow(clippy::too_many_lines)] // one arm per action, read top to bottom
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per action keeps the generated history interpretable top to bottom"
+)]
 pub fn run(actions: &[Action]) -> (World, Run) {
     let mut world = World::new(0);
     let mut out = Run::default();

@@ -2,11 +2,11 @@
 
 //! DRAFT. Written by the tenor as the World, committed before it is returned: the one result for one request.
 
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, reason = "doc comments copy lexicon descriptions, which are not Markdown")]
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
     pub dice: String,
@@ -17,7 +17,7 @@ pub struct Group {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Result {
     /// Where the randomness came from. Verifiable randomness can be added later without changing old rolls.

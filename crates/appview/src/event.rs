@@ -52,6 +52,7 @@ pub enum Action {
 }
 
 impl RecordEvent {
+    #[must_use]
     pub fn uri(&self) -> String {
         format!("at://{}/{}/{}", self.did, self.collection, self.rkey)
     }

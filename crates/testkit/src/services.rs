@@ -40,6 +40,11 @@ pub fn unique_name(prefix: &str) -> String {
 }
 
 /// A fresh, empty database on the test PostgreSQL (with `pg_search`).
+///
+/// # Panics
+///
+/// Panics if `MOTET_TEST_DATABASE_URL` is missing or invalid, PostgreSQL is
+/// unreachable, or the configured role cannot create and connect to a database.
 pub async fn database() -> PgPool {
     let admin = PgConnectOptions::from_str(&env("MOTET_TEST_DATABASE_URL"))
         .unwrap_or_else(|e| panic!("MOTET_TEST_DATABASE_URL is not a PostgreSQL URL: {e}"));
@@ -60,6 +65,12 @@ pub async fn database() -> PgPool {
 }
 
 /// A key prefix of its own in the test bucket (SeaweedFS under devenv).
+///
+/// # Panics
+///
+/// Panics if any `MOTET_TEST_S3_*` setting used here is missing, or if the
+/// endpoint, bucket or credentials cannot form a valid S3 client configuration.
+#[must_use]
 pub fn bucket() -> Arc<dyn ObjectStore> {
     let store = AmazonS3Builder::new()
         .with_endpoint(env("MOTET_TEST_S3_ENDPOINT"))

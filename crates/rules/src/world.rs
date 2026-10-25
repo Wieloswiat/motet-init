@@ -168,6 +168,7 @@ pub struct World {
 impl World {
     /// A World starting a new epoch: at creation, or when a recovery from an
     /// older export is declared.
+    #[must_use]
     pub fn new(epoch: u32) -> Self {
         Self {
             epoch,
@@ -179,11 +180,13 @@ impl World {
         }
     }
 
+    #[must_use]
     pub fn authority_rev(&self) -> u64 {
         self.authority_rev
     }
 
     /// The open admission for a post, if it has one.
+    #[must_use]
     pub fn admission(&self, post: &RecordUri) -> Option<&Admission> {
         self.admitted.get(post)
     }
@@ -277,10 +280,7 @@ impl World {
                 Err(refusal) => Outcome::Refused(refusal),
                 Ok(()) => Outcome::Admitted(self.admit(post, replaces.clone())),
             },
-            Command::ObserveDeletion { post } => match self.admitted.remove(post) {
-                Some(admission) => Outcome::Closed(admission),
-                None => Outcome::Unchanged,
-            },
+            Command::ObserveDeletion { post } => self.admitted.remove(post).map_or(Outcome::Unchanged, Outcome::Closed),
         }
     }
 
@@ -308,6 +308,10 @@ impl World {
         admission
     }
 
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the successful branch mutates self after borrowing its scene"
+    )]
     fn with_scene(&mut self, scene: &SceneId, change: impl FnOnce(&mut Scene)) -> Outcome {
         match self.scenes.get_mut(scene) {
             Some(s) => {

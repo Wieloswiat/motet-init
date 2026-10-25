@@ -8,8 +8,8 @@ pub enum Expr {
     /// A non-negative integer; negative numbers are [`Expr::Neg`].
     Const(u32),
     Dice(Dice),
-    Neg(Box<Expr>),
-    Bin(Box<Expr>, BinOp, Box<Expr>),
+    Neg(Box<Self>),
+    Bin(Box<Self>, BinOp, Box<Self>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,7 @@ pub enum Die {
 }
 
 impl Die {
+    #[must_use]
     pub fn faces(self) -> (i64, i64) {
         match self {
             Self::Sides(n) => (1, i64::from(n)),
@@ -73,6 +74,7 @@ pub enum CmpOp {
 }
 
 impl CmpOp {
+    #[must_use]
     pub fn holds(self, value: i64, target: i64) -> bool {
         match self {
             Self::Ge => value >= target,
@@ -100,6 +102,7 @@ impl Bounds {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, v: i64) -> bool {
         let v = i128::from(v);
         self.min.is_none_or(|m| m <= v) && self.max.is_none_or(|m| v <= m)
@@ -116,6 +119,10 @@ impl Dice {
         }
     }
 
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the branches document distinct finite and exploding dice bounds"
+    )]
     fn bounds(&self) -> Bounds {
         let kept_min = i128::from(self.kept_count(self.count));
         // Explosions only add dice, so keep-highest/lowest keeps the same
@@ -154,7 +161,8 @@ impl Dice {
 
 impl Expr {
     /// The range of totals this expression can produce, without rolling.
-    #[allow(clippy::many_single_char_names)] // interval arithmetic reads best as a..d
+    #[expect(clippy::many_single_char_names, reason = "interval arithmetic reads best as a..d")]
+    #[must_use]
     pub fn bounds(&self) -> Bounds {
         match self {
             Self::Const(n) => Bounds::exact(i128::from(*n)),
@@ -204,7 +212,7 @@ impl Expr {
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let child = |f: &mut fmt::Formatter<'_>, e: &Expr, min: u8| {
+        let child = |f: &mut fmt::Formatter<'_>, e: &Self, min: u8| {
             if e.precedence() < min {
                 write!(f, "({e})")
             } else {

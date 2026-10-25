@@ -57,7 +57,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
     let resolver = Arc::new(DidResolver::new(fetcher.clone(), config.plc_directory.clone()));
     let state = Arc::new(api::State {
         shard: handle,
-        records: pds::Pds::new(fetcher, resolver.clone()),
+        records: pds::Pds::new(fetcher, Arc::<DidResolver>::clone(&resolver)),
     });
     let authenticate = motet_xrpc::service_auth::authenticate(resolver, Arc::new(api::accepts_audience));
     let app = api::router(state, authenticate)?;

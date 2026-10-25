@@ -37,6 +37,7 @@ pub enum Decision {
 }
 
 /// Whether to serve a reader now.
+#[must_use]
 pub fn decide(verified: Option<Verified>, now_millis: u64, bound_millis: u64) -> Decision {
     match verified {
         None | Some(Verified { revoked: true, .. }) => Decision::Refuse,

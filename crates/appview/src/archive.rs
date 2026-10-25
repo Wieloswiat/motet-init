@@ -82,6 +82,12 @@ pub struct ArchiveWriter {
 impl ArchiveWriter {
     /// Makes `events` durable as one segment and returns its position. Only
     /// then may they be applied and acknowledged to Tap.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an event cannot serialize to JSON. Event fields are
+    /// strings, booleans and JSON values, and contain no non-string map keys
+    /// or custom serializers that could reject a value.
     pub async fn append(&mut self, events: &[Event]) -> Result<Seq, ArchiveError> {
         #[derive(Serialize)]
         struct SegmentRef<'a> {

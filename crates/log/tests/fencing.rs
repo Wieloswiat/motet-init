@@ -21,13 +21,19 @@ async fn race(store: Arc<dyn ObjectStore>, schedule: &[bool]) {
     let mut acknowledged = Vec::new();
     for (step, &second) in schedule.iter().enumerate() {
         let w = usize::from(second);
-        if fenced[w] {
+        let is_fenced = fenced.get_mut(w).expect("a boolean selects one of the two writers");
+        if *is_fenced {
             continue;
         }
         let batch = Bytes::from(format!("writer {w} step {step}"));
-        match writers[w].append(batch.clone()).await {
+        match writers
+            .get_mut(w)
+            .expect("a boolean selects one of the two writers")
+            .append(batch.clone())
+            .await
+        {
             Ok(seq) => acknowledged.push((seq, batch)),
-            Err(AppendError::Fenced(_)) => fenced[w] = true,
+            Err(AppendError::Fenced(_)) => *is_fenced = true,
             Err(e) => panic!("unexpected {e}"),
         }
     }

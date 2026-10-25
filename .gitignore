@@ -23,6 +23,8 @@ test-results/
 *.profraw
 lcov.info
 mutants.out*/
+**/reports/mutation/
+.stryker-tmp/
 
 # Local
 .env

@@ -43,10 +43,11 @@ pub enum ProjectionError {
     },
 }
 
-/// Brings the live projections up to date with the archive: rebuilds them if
-/// they are missing or from another [`PROJECTION_VERSION`], otherwise applies
-/// whatever the archive holds past the last applied segment (an indexer that
-/// stopped between archiving and applying).
+/// Brings the live projections up to date with the archive.
+///
+/// Rebuilds them if they are missing or from another [`PROJECTION_VERSION`],
+/// otherwise applies whatever the archive holds past the last applied
+/// segment (an indexer that stopped between archiving and applying).
 pub async fn ensure(pool: &PgPool, archive: &Archive) -> Result<(), ProjectionError> {
     let current: Option<(i32, Option<i64>)> = match sqlx::query_as("SELECT version, archive_seq FROM projection.meta")
         .fetch_optional(pool)
@@ -107,6 +108,11 @@ async fn replay(pool: &PgPool, archive: &Archive, schema: &'static str, from: Se
 
 /// Applies one archive segment to the projections in `schema`, atomically
 /// with recording that it was applied.
+///
+/// # Panics
+///
+/// Panics if `seq` exceeds `i64::MAX`: PostgreSQL stores archive positions
+/// as signed `bigint`, so callers must keep positions within that range.
 pub async fn apply(
     conn: &mut PgConnection,
     schema: &'static str,

@@ -95,11 +95,12 @@ pub enum Field {
     Array {
         #[serde(default)]
         description: Option<String>,
-        items: Box<Field>,
+        items: Box<Self>,
     },
 }
 
 impl Field {
+    #[must_use]
     pub fn description(&self) -> Option<&str> {
         match self {
             Self::String { description, .. }
@@ -123,6 +124,7 @@ pub struct Target {
 
 impl Target {
     /// Resolves `#def`, `nsid` or `nsid#def` from inside `doc`.
+    #[must_use]
     pub fn resolve(doc: &str, reference: &str) -> Self {
         match reference.split_once('#') {
             Some(("", def)) => Self {
@@ -142,6 +144,7 @@ impl Target {
 }
 
 /// The type name for a definition: `main` takes the NSID's last segment.
+#[must_use]
 pub fn type_name(doc: &str, def: &str) -> String {
     let base = if def == "main" {
         doc.rsplit('.').next().unwrap_or(doc)
@@ -222,6 +225,7 @@ fn check_refs(docs: &BTreeMap<String, Doc>, doc: &str, at: &str, field: &Field) 
 }
 
 /// The file stem a document generates into: `at.motet.pilot.post` → `at_motet_pilot_post`.
+#[must_use]
 pub fn module_name(nsid: &str) -> String {
     nsid.replace(['.', '-'], "_").to_lowercase()
 }

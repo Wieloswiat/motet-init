@@ -2,11 +2,11 @@
 
 //! DRAFT. A person's Motet profile. Writing one enrolls the repository: it is the collection Tap tracks repos by, and part of the published client contract.
 
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, reason = "doc comments copy lexicon descriptions, which are not Markdown")]
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
     pub created_at: String,

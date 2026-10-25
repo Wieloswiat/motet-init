@@ -2,11 +2,11 @@
 
 //! DRAFT. Written by the tenor as the World: this exact post version is part of the World, at this place. One per admitted version; an edit's admission keeps the place.
 
-#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_markdown, reason = "doc comments copy lexicon descriptions, which are not Markdown")]
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Admission {
     pub author: String,
@@ -30,7 +30,7 @@ impl crate::Record for Admission {
 }
 
 /// A position in a scene, numbered within a recovery epoch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Place {
     pub epoch: i64,

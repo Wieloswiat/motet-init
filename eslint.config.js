@@ -1,3 +1,5 @@
+// `pnpm lint` runs Oxlint (oxlint.config.ts) and then ESLint. ESLint stays
+// because Oxlint cannot use the Svelte parser: only ESLint checks Svelte markup.
 import prettier from 'eslint-config-prettier';
 import js from '@eslint/js';
 import svelte from 'eslint-plugin-svelte';
@@ -13,7 +15,14 @@ export default defineConfig(
 		'**/build/',
 		'**/dist/',
 		'**/styled-system/',
+		'**/reports/mutation/',
+		'**/.stryker-tmp/',
+		'**/playwright-report/',
+		'**/test-results/',
 		'packages/lexicons/src/generated/',
+		// Vendored anti-slop rules (see oxlint.config.ts). They stay identical to
+		// upstream, so that an update can merge.
+		'tools/oxlint/anti-slop/',
 		'.devenv/',
 		'.direnv/'
 	]),

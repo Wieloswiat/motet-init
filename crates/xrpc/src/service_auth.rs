@@ -124,7 +124,8 @@ pub fn authenticate(
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .map(str::to_owned)
         });
-        let (resolver, accepts_audience) = (resolver.clone(), accepts_audience.clone());
+        let resolver = Arc::<dyn IdentityResolver>::clone(&resolver);
+        let accepts_audience = Arc::<dyn Fn(&str) -> bool + Send + Sync>::clone(&accepts_audience);
         Box::pin(async move {
             match token {
                 None => Ok(Caller::Anonymous),

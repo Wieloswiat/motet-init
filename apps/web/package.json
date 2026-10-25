@@ -8,10 +8,12 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync && panda codegen || echo ''",
+		"prepare": "svelte-kit sync && panda codegen",
 		"check": "svelte-kit sync && panda codegen && svelte-check --tsconfig ./tsconfig.json",
 		"test": "vitest run",
-		"test:e2e": "playwright test"
+		"test:client": "vitest run --project client",
+		"test:e2e": "playwright test",
+		"test:mutation": "stryker run && node ../../tools/check-mutation-report.mjs reports/mutation/mutation.json"
 	},
 	"dependencies": {
 		"@ark-ui/svelte": "^5.24.3",
@@ -22,6 +24,7 @@
 		"@pandacss/dev": "^2.2.0",
 		"@pandacss/preset-base": "2.2.0",
 		"@playwright/test": "^1.60.0",
+		"@stryker-mutator/core": "10.1.1",
 		"@sveltejs/adapter-node": "^6.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
