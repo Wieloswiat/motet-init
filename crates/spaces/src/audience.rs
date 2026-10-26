@@ -17,6 +17,17 @@ pub struct SpaceId {
     pub key: String,
 }
 
+impl SpaceId {
+    /// The protocol Space reference: `at://<authority>/space/<type>/<skey>`.
+    ///
+    /// The caller supplies a valid authority DID, Space-type NSID and record key.
+    /// Validation stays at the protocol boundary, outside this seam.
+    #[must_use]
+    pub fn space_ref(&self) -> String {
+        format!("at://{}/space/{}/{}", self.authority, self.kind, self.key)
+    }
+}
+
 impl fmt::Display for SpaceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}/{}", self.authority, self.kind, self.key)
@@ -41,8 +52,10 @@ pub enum Audience {
 /// Space types. opensocial.group's are pinned to the revision Motet adopts;
 /// Motet's own are drafts in the pilot namespace.
 pub mod kinds {
-    pub const META: &str = "group.opensocial.space.meta";
-    pub const MEMBERS: &str = "group.opensocial.space.members";
+    pub const META: &str = "group.opensocial.meta";
+    pub const MEMBERS: &str = "group.opensocial.members";
+    /// A user's inbox, not an audience under the World's authority.
+    pub const INVITES: &str = "group.opensocial.invites";
     pub const GMS: &str = "at.motet.pilot.space.gms";
     pub const SCENE: &str = "at.motet.pilot.space.scene";
     pub const APPLICATION: &str = "at.motet.pilot.space.application";
@@ -93,6 +106,17 @@ mod tests {
             let same = a == b && wa == wb;
             prop_assert_eq!(a.space(&wa) == b.space(&wb), same);
             prop_assert_eq!(a.space(&wa).to_string() == b.space(&wb).to_string(), same);
+            prop_assert_eq!(a.space(&wa).space_ref() == b.space(&wb).space_ref(), same);
         }
+    }
+
+    /// The protocol marker and adopted type must reach callers unchanged.
+    /// Omitting `space` or using the old `.space.meta` NSID misaddresses the Space.
+    #[test]
+    fn space_reference_addresses_the_adopted_meta_space() {
+        assert_eq!(
+            Audience::Meta.space("did:plc:world").space_ref(),
+            "at://did:plc:world/space/group.opensocial.meta/self"
+        );
     }
 }

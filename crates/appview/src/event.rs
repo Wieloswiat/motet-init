@@ -38,8 +38,8 @@ pub struct RecordEvent {
     pub action: Action,
     /// Absent for deletions.
     pub cid: Option<String>,
-    /// The record as JSON, already validated against its lexicon. Absent
-    /// for deletions.
+    /// The record as JSON, verified by Tap. Lexicon validation is a separate
+    /// ingestion stage, not yet implemented. Absent for deletions.
     pub record: Option<serde_json::Value>,
 }
 

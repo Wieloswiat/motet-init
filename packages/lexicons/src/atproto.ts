@@ -13,3 +13,8 @@ export interface Blob {
 	mimeType: string;
 	size: number;
 }
+
+/** Bytes in the JSON encoding of the data model, encoded as base64. */
+export interface Bytes {
+	$bytes: string;
+}

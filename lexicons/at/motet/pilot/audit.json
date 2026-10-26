@@ -1,0 +1,21 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.audit",
+	"description": "DRAFT. An immutable tenor-authored record of a session acting as the World, stored atomically with the action in the World's GM Space. Moderation case details are not recorded here.",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["actor", "action", "subject", "at"],
+				"properties": {
+					"actor": { "type": "string", "format": "did" },
+					"action": { "type": "string", "maxLength": 256 },
+					"subject": { "type": "string", "format": "at-uri" },
+					"at": { "type": "string", "format": "datetime" }
+				}
+			}
+		}
+	}
+}

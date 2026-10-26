@@ -1,0 +1,52 @@
+{
+  "lexicon": 1,
+  "id": "at.motet.pilot.tenor.reserveWorld",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's did:web service with #motet_tenor as audience. The owner signs the returned PLC genesis on their device; its DID is determined only by that signature.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["handle", "rotationKey", "tenorRotationKey"],
+          "properties": {
+            "handle": { "type": "string", "format": "handle" },
+            "rotationKey": {
+              "type": "string",
+              "format": "did",
+              "description": "The owner's public P-256 or K-256 did:key, listed first for PLC recovery priority. Never send the private key."
+            },
+            "tenorRotationKey": {
+              "type": "boolean",
+              "description": "Opt in to a tenor-held recovery key listed after the owner's key."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["reservation", "operation", "signingBytes", "expiresAt"],
+          "properties": {
+            "reservation": { "type": "string" },
+            "operation": {
+              "type": "unknown",
+              "description": "Unsigned plc_operation genesis with prev explicitly null."
+            },
+            "signingBytes": {
+              "type": "string",
+              "description": "Unpadded base64url of the canonical DAG-CBOR unsigned operation. Sign these bytes with rotationKey."
+            },
+            "expiresAt": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Unix seconds; createWorld must begin before this instant."
+            }
+          }
+        }
+      }
+    }
+  }
+}

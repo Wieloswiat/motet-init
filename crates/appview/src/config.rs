@@ -46,4 +46,12 @@ pub struct Serve {
         default_value = "did:web:localhost#motet_appview"
     )]
     pub service_did: String,
+
+    /// Tap HTTP(S) URL. Without it, only the API runs.
+    #[arg(long, env = "MOTET_APPVIEW_TAP_URL")]
+    pub tap_url: Option<String>,
+
+    /// Tap administrator password for HTTP Basic authentication.
+    #[arg(long, env = "MOTET_APPVIEW_TAP_ADMIN_PASSWORD", hide_env_values = true)]
+    pub tap_admin_password: Option<String>,
 }

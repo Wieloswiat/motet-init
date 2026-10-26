@@ -124,6 +124,34 @@ async fn long_lived_or_endless_tokens_are_refused() {
     assert_eq!(f.verify(&long).await, Err(ServiceAuthError::BadLifetime));
 }
 
+/// Both verification layers use the supplied clock and distinguish signed
+/// lifetime refusals from forged signatures, even when wall time differs.
+#[tokio::test]
+async fn signed_time_claims_use_one_clock_and_report_lifetime_refusals() {
+    let f = Fixture::new();
+    let issued = 1_700_000_000;
+    let token = f.token(|c| {
+        c.jose.issued_at = Some(issued);
+        c.jose.expiration = Some(issued + 60);
+        c.jose.not_before = Some(issued);
+    });
+    assert!(verify(&token, &f.directory, |aud| aud == APPVIEW, issued).await.is_ok());
+    for time in [issued - 1, issued + 60] {
+        assert_eq!(
+            verify(&token, &f.directory, |aud| aud == APPVIEW, time).await,
+            Err(ServiceAuthError::BadLifetime),
+        );
+    }
+    let future = f.token(|c| {
+        c.jose.issued_at = Some(issued + 61);
+        c.jose.expiration = Some(issued + 120);
+    });
+    assert_eq!(
+        verify(&future, &f.directory, |aud| aud == APPVIEW, issued).await,
+        Err(ServiceAuthError::BadLifetime),
+    );
+}
+
 #[tokio::test]
 async fn a_key_that_isnt_the_atproto_key_doesnt_sign() {
     let mut f = Fixture::new();

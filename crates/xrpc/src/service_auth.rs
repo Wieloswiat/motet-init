@@ -24,7 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use atproto_identity::key::identify_key;
 use atproto_identity::model::{Document, VerificationMethod};
 use atproto_identity::traits::IdentityResolver;
-use atproto_oauth::jwt::Claims;
+use atproto_oauth::errors::JWTError;
+use atproto_oauth::jwt::{Claims, JwtValidationConfig};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use thiserror::Error;
@@ -107,7 +108,19 @@ pub async fn verify(
         .map_err(|_| ServiceAuthError::Unresolvable)?;
     let key = signing_key(&document).ok_or(ServiceAuthError::NoSigningKey)?;
     let key = identify_key(key).map_err(|_| ServiceAuthError::NoSigningKey)?;
-    let claims = atproto_oauth::jwt::verify(token, &key).map_err(|_| ServiceAuthError::BadSignature)?;
+    let config = JwtValidationConfig {
+        now: Some(now),
+        ..JwtValidationConfig::default()
+    };
+    let claims = atproto_oauth::jwt::verify_with_config(token, &key, &config).map_err(|error| {
+        match error.downcast_ref::<JWTError>() {
+            Some(JWTError::TokenExpired | JWTError::TokenNotValidYet | JWTError::InvalidTimestamp { .. }) => {
+                ServiceAuthError::BadLifetime
+            }
+            Some(JWTError::MissingClaim { claim }) if claim == "exp" || claim == "iat" => ServiceAuthError::BadLifetime,
+            _ => ServiceAuthError::BadSignature,
+        }
+    })?;
     check_claims(&claims, accepts_audience, now)
 }
 

@@ -5,11 +5,15 @@
 //! so reviews show what a schema change does to the code. `check` mode fails
 //! CI when the two drift.
 //!
-//! Deliberately small: it covers what Motet's lexicons use (records, objects,
-//! strings, integers, booleans, blobs, CID links, unknown, refs and arrays).
-//! Queries, procedures, subscriptions and unions come with the first XRPC
-//! methods. Validation against the schema (lengths, formats, known values)
-//! stays with `atproto-lexicon` at ingest; generated types only give shape.
+//! Records, objects, RPC parameters and JSON input/output bodies generate wire
+//! types. Strings, including `knownValues`, stay open; schema validation belongs
+//! to `atproto-lexicon` at ingest. Unions carry `$type` and preserve unknown
+//! variants unless the schema closes them. Bytes and CID links use DAG-JSON.
+//!
+//! Space and permission-set definitions describe host policy, not wire values.
+//! Their modules expose identifiers and explain the omission; [`rust::generate`]
+//! still embeds their complete schemas. Tokens generate string identifiers.
+//! Subscriptions and RPC bodies other than JSON objects or refs are refused.
 //!
 //! Output is deterministic: definitions, fields and files are sorted, so the
 //! same lexicons always produce byte-identical code.
@@ -43,8 +47,58 @@ pub enum Def {
         record: Object,
     },
     Object(Object),
+    String {
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(default, rename = "knownValues")]
+        known_values: Vec<String>,
+    },
+    Token {
+        #[serde(default)]
+        description: Option<String>,
+    },
+    Space {
+        #[serde(default)]
+        description: Option<String>,
+    },
+    PermissionSet {
+        #[serde(default)]
+        description: Option<String>,
+    },
+    Query(Rpc),
+    Procedure(Rpc),
     #[serde(other)]
     Unsupported,
+}
+
+/// The JSON wire shapes of an XRPC method, without its authorization policy.
+#[derive(Clone, Debug, Deserialize)]
+pub struct Rpc {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub parameters: Option<Object>,
+    #[serde(default)]
+    pub input: Option<Body>,
+    #[serde(default)]
+    pub output: Option<Body>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Body {
+    pub encoding: String,
+    pub schema: BodySchema,
+}
+
+/// Refuse unsupported schemas rather than silently generating an empty body.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum BodySchema {
+    Object(Object),
+    Ref {
+        #[serde(rename = "ref")]
+        target: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +119,8 @@ pub enum Field {
         description: Option<String>,
         #[serde(default)]
         format: Option<String>,
+        #[serde(default, rename = "knownValues")]
+        known_values: Vec<String>,
     },
     Integer {
         #[serde(default)]
@@ -82,6 +138,10 @@ pub enum Field {
         #[serde(default)]
         description: Option<String>,
     },
+    Bytes {
+        #[serde(default)]
+        description: Option<String>,
+    },
     Unknown {
         #[serde(default)]
         description: Option<String>,
@@ -91,6 +151,13 @@ pub enum Field {
         description: Option<String>,
         #[serde(rename = "ref")]
         target: String,
+    },
+    Union {
+        #[serde(default)]
+        description: Option<String>,
+        refs: Vec<String>,
+        #[serde(default)]
+        closed: bool,
     },
     Array {
         #[serde(default)]
@@ -108,8 +175,10 @@ impl Field {
             | Self::Boolean { description }
             | Self::Blob { description }
             | Self::CidLink { description }
+            | Self::Bytes { description }
             | Self::Unknown { description }
             | Self::Ref { description, .. }
+            | Self::Union { description, .. }
             | Self::Array { description, .. } => description.as_deref(),
         }
     }
@@ -139,6 +208,16 @@ impl Target {
                 doc: reference.to_owned(),
                 def: "main".to_owned(),
             },
+        }
+    }
+
+    /// The canonical `$type` tag, without a redundant `#main` fragment.
+    #[must_use]
+    pub fn reference(&self) -> String {
+        if self.def == "main" {
+            self.doc.clone()
+        } else {
+            format!("{}#{}", self.doc, self.def)
         }
     }
 }
@@ -193,35 +272,78 @@ pub fn load(dir: &Path) -> Result<BTreeMap<String, Doc>> {
     }
     for doc in docs.values() {
         for (name, def) in &doc.defs {
-            if matches!(def, Def::Unsupported) {
-                bail!("{}#{name}: definition type not supported by motet-lexgen yet", doc.id);
-            }
-            let fields = match def {
-                Def::Record { record, .. } => &record.properties,
-                Def::Object(o) => &o.properties,
-                Def::Unsupported => unreachable!(),
-            };
-            for (field, ty) in fields {
-                check_refs(&docs, &doc.id, &format!("{}#{name}.{field}", doc.id), ty)?;
+            let at = format!("{}#{name}", doc.id);
+            match def {
+                Def::Record { record, .. } | Def::Object(record) => {
+                    check_object_refs(&docs, &doc.id, &at, record)?;
+                }
+                Def::Query(rpc) | Def::Procedure(rpc) => {
+                    if let Some(parameters) = &rpc.parameters {
+                        check_object_refs(&docs, &doc.id, &format!("{at}.parameters"), parameters)?;
+                    }
+                    for (part, body) in [("input", &rpc.input), ("output", &rpc.output)] {
+                        if let Some(body) = body {
+                            if body.encoding != "application/json" {
+                                bail!("{at}.{part}: only application/json bodies are supported");
+                            }
+                            let at = format!("{at}.{part}");
+                            match &body.schema {
+                                BodySchema::Object(object) => check_object_refs(&docs, &doc.id, &at, object)?,
+                                BodySchema::Ref { target } => check_object_ref(&docs, &doc.id, &at, target)?,
+                            }
+                        }
+                    }
+                }
+                Def::String { .. } | Def::Token { .. } | Def::Space { .. } | Def::PermissionSet { .. } => {}
+                Def::Unsupported => bail!("{at}: definition type not supported by motet-lexgen yet"),
             }
         }
     }
     Ok(docs)
 }
 
+fn check_object_refs(docs: &BTreeMap<String, Doc>, doc: &str, at: &str, object: &Object) -> Result<()> {
+    for (name, field) in &object.properties {
+        check_refs(docs, doc, &format!("{at}.{name}"), field)?;
+    }
+    Ok(())
+}
+
 fn check_refs(docs: &BTreeMap<String, Doc>, doc: &str, at: &str, field: &Field) -> Result<()> {
     match field {
         Field::Ref { target, .. } => {
-            let t = Target::resolve(doc, target);
-            let found = docs.get(&t.doc).is_some_and(|d| d.defs.contains_key(&t.def));
-            if !found {
-                bail!("{at}: reference {target} doesn't resolve (vendor the lexicon under lexicons/?)");
+            let definition = resolve_ref(docs, doc, at, target)?;
+            if !matches!(
+                definition,
+                Def::Record { .. } | Def::Object(_) | Def::String { .. } | Def::Token { .. }
+            ) {
+                bail!("{at}: reference {target} does not name a value type");
             }
             Ok(())
         }
         Field::Array { items, .. } => check_refs(docs, doc, at, items),
+        Field::Union { refs, .. } => {
+            for target in refs {
+                check_object_ref(docs, doc, at, target)?;
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
+}
+
+fn check_object_ref(docs: &BTreeMap<String, Doc>, doc: &str, at: &str, target: &str) -> Result<()> {
+    if !matches!(resolve_ref(docs, doc, at, target)?, Def::Object(_) | Def::Record { .. }) {
+        bail!("{at}: reference {target} does not name an object or record");
+    }
+    Ok(())
+}
+
+fn resolve_ref<'a>(docs: &'a BTreeMap<String, Doc>, doc: &str, at: &str, target: &str) -> Result<&'a Def> {
+    let resolved = Target::resolve(doc, target);
+    docs.get(&resolved.doc)
+        .and_then(|doc| doc.defs.get(&resolved.def))
+        .with_context(|| format!("{at}: reference {target} doesn't resolve (vendor the lexicon under lexicons/?)"))
 }
 
 /// The file stem a document generates into: `at.motet.pilot.post` → `at_motet_pilot_post`.

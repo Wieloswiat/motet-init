@@ -75,7 +75,6 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# atproto-crates' Spaces, Tap and testkit crates are unreleased; the change
-# that first uses them adds their repository here (docs/adr/0004):
-#   "https://tangled.org/ngerakines.me/atproto-crates"
-allow-git = []
+# atproto-crates' 0.15 line isn't released; every atproto crate comes from one
+# pinned revision of it (docs/adr/0004).
+allow-git = ["https://tangled.org/ngerakines.me/atproto-crates"]
