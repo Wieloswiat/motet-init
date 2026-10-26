@@ -91,6 +91,14 @@ impl Fetcher {
         &self.client
     }
 
+    /// Whether configuration explicitly permits private addresses and HTTP.
+    ///
+    /// SDK endpoint validation must use the same policy as the transport.
+    #[must_use]
+    pub fn allows_private_network(&self) -> bool {
+        self.policy.allow_private
+    }
+
     /// GETs `url` and returns the body of a successful response, refusing
     /// anything over the size limit.
     pub async fn get_bytes(&self, url: &str) -> Result<Vec<u8>, FetchError> {

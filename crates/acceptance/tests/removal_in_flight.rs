@@ -20,7 +20,8 @@ proptest! {
         removal_first: bool,
         orders in (any::<u64>(), any::<u64>()),
     ) {
-        let runtime = tokio::runtime::Builder::new_current_thread().build().expect("runtime");
+        // The tenor's state store runs timers, so the runtime needs its drivers.
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
         let (outcome, streams) = runtime.block_on(async {
             let scene = SceneId::new("s1");
             let alice = Did::new(ALICE);

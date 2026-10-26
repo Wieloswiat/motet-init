@@ -7,7 +7,7 @@
 //! 1. the method exists and the HTTP verb matches its kind;
 //! 2. the caller is established from the request's credentials;
 //! 3. the registry authorizes that caller for that method;
-//! 4. only then is the body read, up to the method's `max_body`.
+//! 4. only then is a WebSocket upgrade extracted or the bounded body read.
 //!
 //! An unauthenticated request never gets as far as having its body read.
 
@@ -15,9 +15,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::body::{Body, Bytes};
-use axum::extract::{Path, RawQuery, State};
-use axum::http::{HeaderMap, Method as Verb};
+use axum::body::Bytes;
+use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::{FromRequestParts, Path, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method as Verb, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use futures::future::BoxFuture;
@@ -31,14 +32,46 @@ pub struct Input {
     pub params: Vec<(String, String)>,
     /// The request body, already bounded by the method's `max_body`.
     pub body: Bytes,
+    /// Original headers for checking resource-bound proofs after parsing the
+    /// request. Authentication has already verified the credential itself.
+    pub headers: HeaderMap,
+    /// An upgrade extracted only after the registry authorized this caller.
+    /// Subscription handlers consume it; ordinary requests leave it absent.
+    pub websocket: Option<WebSocketUpgrade>,
 }
 
 type Handler<S> = Arc<dyn Fn(S, Caller, Input) -> BoxFuture<'static, Result<Response, XrpcError>> + Send + Sync>;
 
-/// Establishes who is calling from a request's headers. Returns
-/// [`Caller::Anonymous`] when there are no credentials, and an error when
-/// there are credentials that don't verify: a bad token is never anonymous.
-pub type Authenticate = Arc<dyn Fn(&HeaderMap) -> BoxFuture<'static, Result<Caller, XrpcError>> + Send + Sync>;
+/// The original HTTP context used to bind credentials to this request.
+///
+/// The URI is the transport URI; authenticators use their configured public
+/// origin, not untrusted forwarded headers, when validating `DPoP` `htu`.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthenticationContext<'a> {
+    pub headers: &'a HeaderMap,
+    pub method: &'a Verb,
+    pub uri: &'a Uri,
+}
+
+/// Establishes who is calling from their credentials and HTTP context.
+/// Returns [`Caller::Anonymous`] only when no credentials are present:
+/// credentials that fail verification must return an error.
+pub type Authenticate =
+    Arc<dyn for<'a> Fn(AuthenticationContext<'a>) -> BoxFuture<'a, Result<Caller, XrpcError>> + Send + Sync>;
+
+/// Makes token-authenticated responses readable by independent browser clients.
+/// Do not apply this policy to cookie-authenticated login or consent routes.
+pub fn public_cors(response: &mut Response) {
+    let headers = response.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    headers.remove(header::ACCESS_CONTROL_ALLOW_CREDENTIALS);
+    headers.append(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("DPoP-Nonce, WWW-Authenticate"),
+    );
+}
+
+const CORS_REQUEST_HEADERS: &str = "authorization,dpop,content-type,accept,accept-language,content-language,atproto-proxy,atproto-space-audience,atproto-space-want-mac,signature,signature-input";
 
 /// A set of XRPC methods with their handlers, built into an axum router.
 pub struct Service<S> {
@@ -101,41 +134,110 @@ struct Shared<S> {
 async fn dispatch<S: Clone + Send + Sync + 'static>(
     State(shared): State<Arc<Shared<S>>>,
     Path(nsid): Path<String>,
-    verb: Verb,
-    headers: HeaderMap,
-    RawQuery(query): RawQuery,
-    body: Body,
+    request: Request,
 ) -> Response {
-    match serve(&shared, &nsid, &verb, &headers, query.as_deref(), body).await {
+    let preflight = request.method() == Verb::OPTIONS;
+    let mut response = match serve(&shared, &nsid, request).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
+    };
+    public_cors(&mut response);
+    if preflight {
+        response.headers_mut().append(
+            header::VARY,
+            HeaderValue::from_static("Access-Control-Request-Method, Access-Control-Request-Headers"),
+        );
     }
+    response
 }
 
 async fn serve<S: Clone + Send + Sync + 'static>(
     shared: &Shared<S>,
     nsid: &str,
-    verb: &Verb,
-    headers: &HeaderMap,
-    query: Option<&str>,
-    body: Body,
+    request: Request,
 ) -> Result<Response, XrpcError> {
-    let kind = match *verb {
+    let (mut parts, body) = request.into_parts();
+    if parts.method == Verb::OPTIONS {
+        return preflight(&shared.registry, nsid, &parts.headers);
+    }
+    let kind = match parts.method {
         Verb::GET => Kind::Query,
         Verb::POST => Kind::Procedure,
         _ => return Err(XrpcError::InvalidRequest("XRPC uses GET and POST only".into())),
     };
-    let caller = (shared.authenticate)(headers).await?;
-    let method = shared.registry.authorize(nsid, kind, &caller)?;
+    let method = shared.registry.resolve(nsid, kind)?;
+    let caller = (shared.authenticate)(AuthenticationContext {
+        headers: &parts.headers,
+        method: &parts.method,
+        uri: &parts.uri,
+    })
+    .await?;
+    let method = Registry::authorize_method(method, &caller)?;
     let handler = shared
         .handlers
         .get(method.nsid)
         .ok_or(XrpcError::MethodNotImplemented)?;
+    // Extracting an upgrade consumes its transport capability. Keep it behind
+    // the same authorization boundary as ordinary request bodies.
+    let websocket = if parts.headers.contains_key(header::UPGRADE) {
+        Some(
+            WebSocketUpgrade::from_request_parts(&mut parts, &())
+                .await
+                .map_err(|error| XrpcError::InvalidRequest(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let body = axum::body::to_bytes(body, method.max_body)
         .await
         .map_err(|_| XrpcError::PayloadTooLarge(method.max_body))?;
-    let params = parse_query(query)?;
-    handler(shared.state.clone(), caller, Input { params, body }).await
+    let params = parse_query(parts.uri.query())?;
+    handler(
+        shared.state.clone(),
+        caller,
+        Input {
+            params,
+            body,
+            headers: parts.headers,
+            websocket,
+        },
+    )
+    .await
+}
+
+fn preflight(registry: &Registry, nsid: &str, headers: &HeaderMap) -> Result<Response, XrpcError> {
+    let invalid = || XrpcError::InvalidRequest("invalid XRPC CORS preflight".into());
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    match (origins.next(), origins.next()) {
+        (Some(origin), None) if !origin.as_bytes().is_empty() => {}
+        _ => return Err(invalid()),
+    }
+    let mut methods = headers.get_all(header::ACCESS_CONTROL_REQUEST_METHOD).iter();
+    let (kind, verb) = match (methods.next().map(HeaderValue::as_bytes), methods.next()) {
+        (Some(b"GET"), None) => (Kind::Query, "GET"),
+        (Some(b"POST"), None) => (Kind::Procedure, "POST"),
+        _ => return Err(invalid()),
+    };
+    registry.resolve(nsid, kind)?;
+    for requested in headers.get_all(header::ACCESS_CONTROL_REQUEST_HEADERS) {
+        for name in requested.to_str().map_err(|_| invalid())?.split(',') {
+            if !CORS_REQUEST_HEADERS
+                .split(',')
+                .any(|allowed| allowed.eq_ignore_ascii_case(name.trim()))
+            {
+                return Err(invalid());
+            }
+        }
+    }
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    response
+        .headers_mut()
+        .insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static(verb));
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static(CORS_REQUEST_HEADERS),
+    );
+    Ok(response)
 }
 
 fn parse_query(query: Option<&str>) -> Result<Vec<(String, String)>, XrpcError> {

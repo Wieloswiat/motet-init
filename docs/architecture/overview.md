@@ -22,9 +22,13 @@ research and plan"); the decisions that shaped the code are in
   Motet's XRPC methods; its **outbox** carries writes to people's PDSes and
   admission requests to tenors until each has a final outcome.
 - **The tenor** (`crates/tenor`), which anyone can run. It hosts each World as
-  a group account. Every command for a World (an admission, a removal, a
-  roll) goes through that World's one command stream, kept as a fenced log in
-  the tenor's bucket.
+  a group account ([ADR 0013](../adr/0013-tenor-hosts-worlds.md)): the
+  World's `did:plc` (the owner holds the first rotation key), its signed
+  public repo and firehose, its Spaces as authority and host, and OAuth
+  sessions that let GMs act as the World. Every change for a World (an
+  admission, a repo commit, a Space write) runs on its shard's one writer,
+  is made durable in a fenced log in the tenor's bucket, then lands in the
+  shard's SlateDB ([ADR 0014](../adr/0014-tenor-state-in-slatedb.md)).
 - **Workers**: Typst rendering (`crates/render`) runs in a separate,
   resource-limited process because its input is untrusted. An image proxy,
   email and exports come later.
@@ -41,7 +45,7 @@ research and plan"); the decisions that shaped the code are in
 | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Repositories hold the truth; projections rebuild from the archive | `appview::projection::apply` is the only writer of projections, for the live indexer and for a rebuild alike; `tests/rebuild.rs`          |
 | A post counts once the World admits it                            | `rules::world` decides; `tenor::admission` reads the record back from its author's repo first; `rules::view` shows only what was admitted |
-| A World is a group account on its tenor                           | `tenor` (identity, keys and account hosting are still to come)                                                                            |
+| A World is a group account on its tenor                           | `tenor::{identity,keys,repo,sync,spaces,oauth}`: identity, hosted repositories, role-backed Spaces and GM-attributed sessions             |
 | Spaces are part of the design                                     | `spaces`: one Space per audience, per-reader serving decisions with a freshness bound                                                     |
 | Buckets for what must last, PostgreSQL for what must be queried   | `log`: group commit, fencing, read-back reconciliation; the tenor's shard and the AppView's archive both use it                           |
 
@@ -56,6 +60,10 @@ handlers can't forget it:
 - **Service auth**: `xrpc::service_auth` verifies the token against the
   issuer's `#atproto` key, the audience, the method (`lxm`) and a lifetime cap.
   A DID inside a request body is never the caller.
+- **World sessions**: `tenor::oauth` authenticates the GM at their own PDS,
+  then grants only scopes allowed by their World roles. The transport verifies
+  DPoP possession, nonce and replay identity. Every session write rechecks current
+  roles inside the shard transaction and appends an audit record in the GM Space.
 - **Serialized World commands** and **operations**: `rules::world::World::apply`
   with an `OperationId`; a retried operation returns its first outcome, a
   reused one is refused. `tenor::shard` makes outcomes durable before
@@ -66,12 +74,19 @@ handlers can't forget it:
   package mirror, with a fixed date; `render::supervisor::Supervisor` runs the worker with
   a clean environment, rlimits, a wall-clock timeout and an output cap.
 - **Per-reader authorization**: `spaces::serving::decide`.
+- **Tap ingestion**: `appview::tap` batches verified records and identity changes.
+  It acknowledges each delivery only after the archive and projections commit.
+  `motet-appview serve` starts the indexer and API together; set
+  `MOTET_APPVIEW_TAP_URL` to enable ingestion and optionally
+  `MOTET_APPVIEW_TAP_ADMIN_PASSWORD` for authentication. HTTPS selects TLS.
+  Without a Tap URL, the API still serves after archive catch-up.
 
 ## Still to come
 
-In rough order, following the plan's First World phase: Tap ingestion into
-the indexer; OAuth sign-in and sessions; the World's group account on the
-tenor (keys, repo, publishing admissions as records); Spaces over
-atproto-crates' unreleased crates; dice through the tenor; typst.ts vector
-artifacts instead of static SVG ([ADR 0008](../adr/0008-rendering.md)); the
-compose stack's Tap and Spaces PDS.
+The tenor's side of First World is in place except dice and the owner's
+export and recovery. Next, in rough order: the AppView projecting Worlds,
+scenes, admissions and Spaces content (it archives and projects generic
+records today, and reads no Spaces yet); people's sign-in to the AppView;
+wiring the web app's screens to the AppView; dice through the tenor; the
+owner's export and recovery onto a fresh tenor; typst.ts vector artifacts
+instead of static SVG ([ADR 0008](../adr/0008-rendering.md)).

@@ -12,10 +12,22 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-atproto-identity.workspace = true
-axum.workspace = true
+async-trait.workspace = true
+atproto-dasl.workspace = true
+atproto-identity = { workspace = true, features = ["hickory-dns"] }
+atproto-lexicon.workspace = true
+atproto-oauth.workspace = true
+atproto-record.workspace = true
+atproto-repo.workspace = true
+atproto-space.workspace = true
+atproto-xrpcs.workspace = true
+axum = { workspace = true, features = ["ws"] }
+base64.workspace = true
 bytes.workspace = true
+chrono.workspace = true
 clap.workspace = true
+chacha20poly1305.workspace = true
+futures.workspace = true
 getrandom.workspace = true
 motet-dice.workspace = true
 motet-lexicons.workspace = true
@@ -26,6 +38,8 @@ motet-xrpc.workspace = true
 object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_urlencoded.workspace = true
+slatedb.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net"] }
 tracing.workspace = true
@@ -33,9 +47,12 @@ tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+atproto-firehose = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
+atproto-testkit.workspace = true
 motet-testkit = { workspace = true, features = ["services"] }
 futures.workspace = true
 proptest.workspace = true
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

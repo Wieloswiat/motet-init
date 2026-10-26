@@ -1,35 +1,35 @@
 {
-  "lexicon": 1,
-  "id": "at.motet.pilot.tenor.createWorld",
-  "defs": {
-    "main": {
-      "type": "procedure",
-      "description": "Create a reserved World from its unchanged PLC genesis signed by the owner's rotation key. Service auth must come from the reserving owner, addressed to this tenor's did:web service with #motet_tenor. Retry the same reservation and signed operation after an uncertain response; accepted creation intents retain their keys until completion.",
-      "input": {
-        "encoding": "application/json",
-        "schema": {
-          "type": "object",
-          "required": ["reservation", "signedOperation"],
-          "properties": {
-            "reservation": { "type": "string" },
-            "signedOperation": {
-              "type": "unknown",
-              "description": "The reserved plc_operation with the owner's unpadded base64url signature in sig."
-            }
-          }
-        }
-      },
-      "output": {
-        "encoding": "application/json",
-        "schema": {
-          "type": "object",
-          "required": ["did", "handle"],
-          "properties": {
-            "did": { "type": "string", "format": "did" },
-            "handle": { "type": "string", "format": "handle" }
-          }
-        }
-      }
-    }
-  }
+	"lexicon": 1,
+	"id": "at.motet.pilot.tenor.createWorld",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Create a reserved World from its unchanged PLC genesis signed by the owner's rotation key. Service auth must come from the reserving owner, addressed to this tenor's did:web service with #motet_tenor. Retry the same reservation and signed operation after an uncertain response; accepted creation intents retain their keys until completion.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["reservation", "signedOperation"],
+					"properties": {
+						"reservation": { "type": "string" },
+						"signedOperation": {
+							"type": "unknown",
+							"description": "The reserved plc_operation with the owner's unpadded base64url signature in sig."
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["did", "handle"],
+					"properties": {
+						"did": { "type": "string", "format": "did" },
+						"handle": { "type": "string", "format": "handle" }
+					}
+				}
+			}
+		}
+	}
 }

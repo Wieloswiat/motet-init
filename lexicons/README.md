@@ -40,9 +40,13 @@ The tenor publishes `at.motet.pilot.admission` after a durable rules decision.
 Its `place` retains the epoch and sequence across edits; `replaces` names the
 previous post CID. The draft `at.motet.pilot.closing` pins the admission closed
 by deletion. A byte-identical recreation needs a new admission at a new place.
-Both records go to the scene record's unique location: the World's public
-repo or its Space. A missing or ambiguous scene location leaves publication
-queued, never public by default. Closings retain the admission's destination.
+Each admission captures the scene record's unique location at decision time:
+the World's public repo or a specific Space generation. Later scene moves
+and Space recreation cannot redirect queued records. A missing or ambiguous
+location stays unknown and queued; it is never inferred public later.
+Closings retain the admission's destination. Publication follows decision
+order for each post; a later accepted reversion to earlier bytes gets its
+own record, while retries of the same operation do not.
 
 ## Generated wire types
 

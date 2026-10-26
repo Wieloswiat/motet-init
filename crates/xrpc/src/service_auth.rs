@@ -92,8 +92,10 @@ pub fn check_claims(
     })
 }
 
-/// Verifies `token` end to end: resolves the issuer, checks the signature
-/// against its `#atproto` key, then [`check_claims`].
+/// Verifies `token` end to end using `now` for every time check.
+///
+/// Resolves the issuer, verifies its `#atproto` signature, then checks claims.
+/// Signed tokens with invalid time claims return [`ServiceAuthError::BadLifetime`].
 pub async fn verify(
     token: &str,
     resolver: &dyn IdentityResolver,
@@ -130,13 +132,11 @@ pub fn authenticate(
     resolver: Arc<dyn IdentityResolver>,
     accepts_audience: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 ) -> Authenticate {
-    Arc::new(move |headers| {
-        let token = headers.get(axum::http::header::AUTHORIZATION).map(|v| {
-            v.to_str()
-                .ok()
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(str::to_owned)
-        });
+    Arc::new(move |request| {
+        let token = request
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .map(|v| v.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")));
         let resolver = Arc::<dyn IdentityResolver>::clone(&resolver);
         let accepts_audience = Arc::<dyn Fn(&str) -> bool + Send + Sync>::clone(&accepts_audience);
         Box::pin(async move {
@@ -145,7 +145,7 @@ pub fn authenticate(
                 Some(None) => Err(XrpcError::AuthRequired),
                 Some(Some(token)) => {
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    verify(&token, resolver.as_ref(), |aud| accepts_audience(aud), now)
+                    verify(token, resolver.as_ref(), |aud| accepts_audience(aud), now)
                         .await
                         .map_err(|_| XrpcError::AuthRequired)
                 }

@@ -9,7 +9,7 @@ publish.workspace = true
 [dependencies]
 atproto-identity.workspace = true
 atproto-oauth.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["ws"] }
 base64.workspace = true
 futures.workspace = true
 serde.workspace = true

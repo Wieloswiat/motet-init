@@ -14,6 +14,7 @@ use std::sync::Arc;
 use motet_rules::view::{Op, RepoEvent};
 use motet_rules::world::Outcome;
 use motet_rules::{Did, OperationId};
+use motet_tenor::keys::MasterKey;
 use motet_tenor::shard::{Entry, Shard};
 use object_store::memory::InMemory;
 
@@ -33,8 +34,13 @@ impl Tenor {
     /// if its single begin entry does not produce one accepted outcome.
     /// The log starts empty and has no competing writer or existing World.
     pub async fn start(world: &str) -> Self {
-        let log = motet_log_on_memory();
-        let mut shard = Shard::open(log).await.expect("open shard");
+        let mut shard = Shard::open(
+            Arc::new(InMemory::new()),
+            "shard",
+            Arc::new(MasterKey::from_bytes(&[0; 32])),
+        )
+        .await
+        .expect("open shard");
         let world = Did::new(world);
         shard
             .commit(&[Entry::Begin {
@@ -99,8 +105,4 @@ impl Tenor {
     pub fn repo(&self) -> Vec<RepoEvent> {
         self.published.clone()
     }
-}
-
-fn motet_log_on_memory() -> motet_log::Log {
-    motet_log::Log::new(Arc::new(InMemory::new()), "shard")
 }
