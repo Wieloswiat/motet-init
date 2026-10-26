@@ -120,18 +120,21 @@ check clarity and truth; a word-count linter cannot check reasoning.
 Commands live in `nix/devenv.nix`, with descriptions shown by `devenv info`.
 Multi-command scripts stop on failure. A later successful command must never
 hide a failed lint or Rust test.
+The shell puts Motet's `fmt` script before the unrelated GNU coreutils command
+of the same name, including when direnv loads it.
 
-| Command                  | Required evidence                                                                           |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| `fmt`, `fmt-check`       | Canonical Rust, Nix, TOML, web and documentation formatting                                 |
-| `lint`                   | Clippy, rustdoc, cargo-deny policy, spelling, workflow lint, Oxlint, ESLint and type checks |
-| `lexgen-check`           | Checked-in generated code matches the lexicons                                              |
-| `tests`                  | Rust nextest suites and Vitest, including property and browser component tests              |
-| `tests-integration`      | Real PostgreSQL/S3 boundaries and production-build Playwright journeys                      |
-| `devenv test`            | Local service-backed CI gate                                                                |
-| `mutants`, `mutants-web` | Rust and TypeScript/Svelte mutation analysis                                                |
-| `soak [cases]`           | Larger Rust property runs; failures retain replay seeds                                     |
-| `audit`                  | Rust advisories and production npm dependency advisories                                    |
+| Command                  | Required evidence                                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------------------- |
+| `fmt`, `fmt-check`       | Canonical Rust, Nix, TOML, web and documentation formatting                                    |
+| `lint`                   | Clippy, rustdoc, cargo-deny policy, spelling, workflow lint, Oxlint, ESLint and type checks    |
+| `lexgen-check`           | Checked-in generated code matches the lexicons                                                 |
+| `tests`                  | Rust nextest suites and Vitest, including property and browser component tests                 |
+| `tests-integration`      | Real PostgreSQL/S3 boundaries and production-build Playwright journeys                         |
+| `network-smoke`          | Two Rust PDS accounts publish pilot profiles through PLC, relay and Tap's acknowledged channel |
+| `devenv test`            | Local service-backed CI gate                                                                   |
+| `mutants`, `mutants-web` | Rust and TypeScript/Svelte mutation analysis                                                   |
+| `soak [cases]`           | Larger Rust property runs; failures retain replay seeds                                        |
+| `audit`                  | Rust advisories and production npm dependency advisories                                       |
 
 CI runs the service-backed gate and hermetic `nix flake check`. Only after
 both succeed can a push to `main` publish images. Pull requests do not receive

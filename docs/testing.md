@@ -163,13 +163,14 @@ typo in a log message, needs no test.
 
 ## Suites
 
-| Suite       | Runs                                                                                 | Needs                                |
-| ----------- | ------------------------------------------------------------------------------------ | ------------------------------------ |
-| default     | `tests`; every change; `nix flake check`                                             | nothing                              |
-| integration | `tests-integration`; `devenv test`; CI                                               | `devenv up` (PostgreSQL, S3)         |
-| web         | `pnpm test` (vitest in Chromium), `pnpm test:e2e` (Playwright on a production build) | Chromium (the dev shell provides it) |
-| soak        | `soak [cases]`                                                                       | nothing; slow                        |
-| mutation    | `mutants` (Rust), `mutants-web` (TypeScript/Svelte); weekly in CI                    | Chromium for browser mutations       |
+| Suite       | Runs                                                                                 | Needs                                   |
+| ----------- | ------------------------------------------------------------------------------------ | --------------------------------------- |
+| default     | `tests`; every change; `nix flake check`                                             | nothing                                 |
+| integration | `tests-integration`; `devenv test`; CI                                               | `devenv up` (PostgreSQL, S3)            |
+| network     | `network-smoke`; `devenv test`; CI                                                   | `devenv up` (PLC, relay, Tap, Rust PDS) |
+| web         | `pnpm test` (vitest in Chromium), `pnpm test:e2e` (Playwright on a production build) | Chromium (the dev shell provides it)    |
+| soak        | `soak [cases]`                                                                       | nothing; slow                           |
+| mutation    | `mutants` (Rust), `mutants-web` (TypeScript/Svelte); weekly in CI                    | Chromium for browser mutations          |
 
 Integration tests are ordinary `#[test]`s marked
 `#[ignore = "integration: …"]`, so `cargo test` stays fast and a missing
@@ -350,6 +351,7 @@ more than one part of Motet live in `crates/acceptance`.
 | Choose themes by keyboard and pointer; rendered text stays legible and nested theme scopes stay isolated                                | `apps/web/src/lib/components/ThemeSwitch.svelte.test.ts`, `apps/web/e2e/design.e2e.ts`                                                                                                                                                                                                                                                                        |
 | The design page hydrates and changes its painted theme under the production Content Security Policy                                     | `apps/web/e2e/design.e2e.ts`                                                                                                                                                                                                                                                                                                                                  |
 | Every demo screen loads under the production Content Security Policy without errors; a World page paints its own art                    | `apps/web/e2e/screens.e2e.ts`                                                                                                                                                                                                                                                                                                                                 |
+| Two Rust PDS accounts deliver their exact pilot profiles through relay crawl and Tap's acknowledged channel                             | `network-smoke` (`nix/network-smoke.py`, needs `devenv up`)                                                                                                                                                                                                                                                                                                   |
 | Create a World with a complete opensocial creation set, then reopen the shard                                                           | `tenor/tests/world_spaces.rs`; owner/non-member credential boundary: `tenor/tests/space_http.rs`                                                                                                                                                                                                                                                              |
 | Persist full Space set-hash state, paginate one atomic batch and reject partial failed writes                                           | `tenor/tests/space_storage.rs`                                                                                                                                                                                                                                                                                                                                |
 | Refuse a non-writer's notification, deduplicate revisions and retain pending deliveries after replay                                    | `tenor::spaces::notify::tests`                                                                                                                                                                                                                                                                                                                                |

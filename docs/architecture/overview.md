@@ -90,3 +90,8 @@ records today, and reads no Spaces yet); people's sign-in to the AppView;
 wiring the web app's screens to the AppView; dice through the tenor; the
 owner's export and recovery onto a fresh tenor; typst.ts vector artifacts
 instead of static SVG ([ADR 0008](../adr/0008-rendering.md)).
+
+The [local network](../local-network.md) and compose stack now include PLC,
+relay, Tap and an atproto-crates PDS. The reference TypeScript Spaces-alpha PDS
+and cross-implementation coverage remain deferred
+([ADR 0017](../adr/0017-rust-pds-local-network.md)).
