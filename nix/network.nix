@@ -45,9 +45,4 @@ in
     tap-image = image "motet-tap" "${indigo}/bin/tap" [ ];
     pds-rs-image = image "motet-pds-rs" "${pds-rs}/bin/pds" [ "PDS_LEXICON_DIR=${../lexicons}" ];
   };
-  checks = {
-    network-plc = plc;
-    network-indigo = indigo;
-    network-pds-rs = pds-rs;
-  };
 }

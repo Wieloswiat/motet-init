@@ -67,8 +67,10 @@
               default = rust.packages.motet-appview;
             };
 
-          # `nix flake check`: everything that needs no running services.
-          checks = rust.checks // network.checks;
+          # `nix flake check`: everything that needs no running services. The
+          # local network's packages aren't checks: the gate builds them to
+          # start them, and `nix build` builds them on demand.
+          checks = rust.checks;
 
           devenv.shells.default = import ./nix/devenv.nix {
             inherit rustToolchain;

@@ -172,3 +172,11 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# What `nix flake check` builds clippy and the tests with: optimized like
+# release, without the link-time work only shipped binaries need. Thin LTO
+# with one codegen unit made linking each test binary take minutes.
+[profile.checks]
+inherits = "release"
+lto = false
+codegen-units = 16
