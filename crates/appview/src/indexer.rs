@@ -6,10 +6,8 @@
 //! applying whatever the archive holds past the last applied segment, so the
 //! projections never hold anything the archive doesn't.
 //!
-//! Lexicon validation, matching member records with the World records that
-//! make them count (admissions, approvals, roll results) and parking what
-//! can't be placed yet are stages that slot in before the archive append, as
-//! the record families arrive.
+//! Public admission matching happens in the projections after archiving.
+//! Lexicon validation and Space ingestion remain separate, future stages.
 
 use motet_log::Seq;
 use sqlx::PgPool;

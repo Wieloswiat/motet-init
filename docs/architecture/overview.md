@@ -83,16 +83,22 @@ handlers can't forget it:
 
 ## Still to come
 
-The tenor's side of First World is in place except dice and the owner's
-export and recovery. Next, in rough order: the AppView projecting Worlds,
-scenes, admissions and Spaces content (it archives and projects generic
-records today, and reads no Spaces yet); people's sign-in to the AppView;
-wiring the web app's screens to the AppView; dice through the tenor; the
-owner's export and recovery onto a fresh tenor; typst.ts vector artifacts
-instead of static SVG ([ADR 0008](../adr/0008-rendering.md)).
+The AppView projects public World declarations and scenes, and shows posts
+only when the World admits their exact version. It does not read Spaces, so
+profiles in a World's meta Space and private scenes are not available yet.
+A World with neither a public declaration nor a public scene cannot be
+looked up from its public repo. A declaration identifies a group but not
+necessarily a Motet World.
+Next, in rough order: Spaces ingestion;
+people's sign-in to the AppView; wiring the web app's screens to the AppView;
+dice through the tenor; the owner's export and recovery onto a fresh tenor;
+typst.ts vector artifacts instead of static SVG
+([ADR 0008](../adr/0008-rendering.md)).
 
-The [local network](../local-network.md) runs PLC, relay, Tap and an
-atproto-crates PDS under `devenv up`, checked end to end by `network-smoke`.
+The [local network](../local-network.md) runs PLC, relay, Tap, an
+atproto-crates PDS, the tenor and the AppView under `devenv up`.
+`network-smoke` writes two PDS profiles and reads their exact versions through
+the AppView after Tap delivers them.
 The compose stack has the same services; its images build and its
 configuration validates, but it hasn't been run as a stack yet. The reference
 TypeScript Spaces-alpha PDS and cross-implementation coverage remain deferred

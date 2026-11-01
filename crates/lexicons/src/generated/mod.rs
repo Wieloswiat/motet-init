@@ -4,8 +4,12 @@ pub mod at_motet_pilot_admission;
 pub mod at_motet_pilot_audit;
 pub mod at_motet_pilot_character;
 pub mod at_motet_pilot_closing;
+pub mod at_motet_pilot_getscene;
+pub mod at_motet_pilot_getworld;
+pub mod at_motet_pilot_listscenes;
 pub mod at_motet_pilot_post;
 pub mod at_motet_pilot_profile;
+pub mod at_motet_pilot_querydefs;
 pub mod at_motet_pilot_roll_request;
 pub mod at_motet_pilot_roll_result;
 pub mod at_motet_pilot_scene;
@@ -54,8 +58,12 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("at.motet.pilot.audit", include_str!("../../../../lexicons/at/motet/pilot/audit.json")),
     ("at.motet.pilot.character", include_str!("../../../../lexicons/at/motet/pilot/character.json")),
     ("at.motet.pilot.closing", include_str!("../../../../lexicons/at/motet/pilot/closing.json")),
+    ("at.motet.pilot.getScene", include_str!("../../../../lexicons/at/motet/pilot/getScene.json")),
+    ("at.motet.pilot.getWorld", include_str!("../../../../lexicons/at/motet/pilot/getWorld.json")),
+    ("at.motet.pilot.listScenes", include_str!("../../../../lexicons/at/motet/pilot/listScenes.json")),
     ("at.motet.pilot.post", include_str!("../../../../lexicons/at/motet/pilot/post.json")),
     ("at.motet.pilot.profile", include_str!("../../../../lexicons/at/motet/pilot/profile.json")),
+    ("at.motet.pilot.queryDefs", include_str!("../../../../lexicons/at/motet/pilot/queryDefs.json")),
     ("at.motet.pilot.roll.request", include_str!("../../../../lexicons/at/motet/pilot/roll/request.json")),
     ("at.motet.pilot.roll.result", include_str!("../../../../lexicons/at/motet/pilot/roll/result.json")),
     ("at.motet.pilot.scene", include_str!("../../../../lexicons/at/motet/pilot/scene.json")),

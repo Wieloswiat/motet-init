@@ -36,6 +36,7 @@ axum = { workspace = true, features = ["ws"] }
 motet-testkit = { workspace = true, features = ["services"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["time"] }
+tower.workspace = true
 
 [lints]
 workspace = true

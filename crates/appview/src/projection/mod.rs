@@ -20,7 +20,7 @@ use crate::archive::{Archive, ArchiveError};
 use crate::event::{Action, Event, RecordEvent};
 
 /// Bump with any change to `schema.sql` or to what [`apply`] writes.
-pub const PROJECTION_VERSION: i32 = 1;
+pub const PROJECTION_VERSION: i32 = 2;
 
 /// The schema the API reads.
 pub const LIVE: &str = "projection";

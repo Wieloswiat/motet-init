@@ -1,0 +1,25 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.getWorld",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get a public World by DID or handle. Returns NotFound when the World is unknown.",
+			"parameters": {
+				"type": "params",
+				"required": ["actor"],
+				"properties": {
+					"actor": {
+						"type": "string",
+						"format": "at-identifier",
+						"description": "The World's DID or handle."
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": { "type": "ref", "ref": "at.motet.pilot.queryDefs#world" }
+			}
+		}
+	}
+}

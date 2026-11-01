@@ -1,0 +1,42 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.listScenes",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "List a World's public scenes in record-key order. Returns NotFound when the World is unknown.",
+			"parameters": {
+				"type": "params",
+				"required": ["actor"],
+				"properties": {
+					"actor": {
+						"type": "string",
+						"format": "at-identifier",
+						"description": "The World's DID or handle."
+					},
+					"limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 },
+					"cursor": {
+						"type": "string",
+						"format": "record-key",
+						"description": "Continue after this scene record key."
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["scenes"],
+					"properties": {
+						"scenes": {
+							"type": "array",
+							"maxLength": 100,
+							"items": { "type": "ref", "ref": "at.motet.pilot.queryDefs#record" }
+						},
+						"cursor": { "type": "string", "format": "record-key" }
+					}
+				}
+			}
+		}
+	}
+}
