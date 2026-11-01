@@ -24,7 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use atproto_identity::key::identify_key;
 use atproto_identity::model::{Document, VerificationMethod};
 use atproto_identity::traits::IdentityResolver;
-use atproto_oauth::jwt::Claims;
+use atproto_oauth::errors::JWTError;
+use atproto_oauth::jwt::{Claims, JwtValidationConfig};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use thiserror::Error;
@@ -91,8 +92,10 @@ pub fn check_claims(
     })
 }
 
-/// Verifies `token` end to end: resolves the issuer, checks the signature
-/// against its `#atproto` key, then [`check_claims`].
+/// Verifies `token` end to end using `now` for every time check.
+///
+/// Resolves the issuer, verifies its `#atproto` signature, then checks claims.
+/// Signed tokens with invalid time claims return [`ServiceAuthError::BadLifetime`].
 pub async fn verify(
     token: &str,
     resolver: &dyn IdentityResolver,
@@ -107,7 +110,19 @@ pub async fn verify(
         .map_err(|_| ServiceAuthError::Unresolvable)?;
     let key = signing_key(&document).ok_or(ServiceAuthError::NoSigningKey)?;
     let key = identify_key(key).map_err(|_| ServiceAuthError::NoSigningKey)?;
-    let claims = atproto_oauth::jwt::verify(token, &key).map_err(|_| ServiceAuthError::BadSignature)?;
+    let config = JwtValidationConfig {
+        now: Some(now),
+        ..JwtValidationConfig::default()
+    };
+    let claims = atproto_oauth::jwt::verify_with_config(token, &key, &config).map_err(|error| {
+        match error.downcast_ref::<JWTError>() {
+            Some(JWTError::TokenExpired | JWTError::TokenNotValidYet | JWTError::InvalidTimestamp { .. }) => {
+                ServiceAuthError::BadLifetime
+            }
+            Some(JWTError::MissingClaim { claim }) if claim == "exp" || claim == "iat" => ServiceAuthError::BadLifetime,
+            _ => ServiceAuthError::BadSignature,
+        }
+    })?;
     check_claims(&claims, accepts_audience, now)
 }
 
@@ -117,13 +132,11 @@ pub fn authenticate(
     resolver: Arc<dyn IdentityResolver>,
     accepts_audience: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 ) -> Authenticate {
-    Arc::new(move |headers| {
-        let token = headers.get(axum::http::header::AUTHORIZATION).map(|v| {
-            v.to_str()
-                .ok()
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(str::to_owned)
-        });
+    Arc::new(move |request| {
+        let token = request
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .map(|v| v.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")));
         let resolver = Arc::<dyn IdentityResolver>::clone(&resolver);
         let accepts_audience = Arc::<dyn Fn(&str) -> bool + Send + Sync>::clone(&accepts_audience);
         Box::pin(async move {
@@ -132,7 +145,7 @@ pub fn authenticate(
                 Some(None) => Err(XrpcError::AuthRequired),
                 Some(Some(token)) => {
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    verify(&token, resolver.as_ref(), |aud| accepts_audience(aud), now)
+                    verify(token, resolver.as_ref(), |aud| accepts_audience(aud), now)
                         .await
                         .map_err(|_| XrpcError::AuthRequired)
                 }

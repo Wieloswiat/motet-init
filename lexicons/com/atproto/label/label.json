@@ -1,0 +1,42 @@
+{
+  "lexicon": 1,
+  "id": "com.atproto.label.label",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "Strawman. A label as a record, in the labeler's repo in the same space as its subject. The author is the issuer; deleting the record negates the label.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["uri", "val", "createdAt"],
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "The labeled account DID, or a record URI in this space.",
+            "format": "uri"
+          },
+          "cid": {
+            "type": "string",
+            "description": "A specific version of the record.",
+            "format": "cid"
+          },
+          "val": {
+            "type": "string",
+            "description": "The label value.",
+            "maxLength": 128
+          },
+          "cts": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Timestamp when this label was created."
+          },
+          "exp": {
+            "type": "string",
+            "description": "When the label stops applying.",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}

@@ -12,9 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+atproto-tap.workspace = true
 axum.workspace = true
 bytes.workspace = true
 clap.workspace = true
+futures.workspace = true
 motet-log.workspace = true
 motet-net.workspace = true
 motet-rules.workspace = true
@@ -30,6 +32,7 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+axum = { workspace = true, features = ["ws"] }
 motet-testkit = { workspace = true, features = ["services"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["time"] }

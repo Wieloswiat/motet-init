@@ -1,0 +1,22 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.closing",
+	"description": "DRAFT. Written by the tenor as the World after a post deletion. Closes the admission at this place; recreating identical bytes needs a new admission at a new place.",
+	"defs": {
+		"main": {
+			"type": "record",
+			"key": "tid",
+			"record": {
+				"type": "object",
+				"required": ["admission", "post", "scene", "place", "createdAt"],
+				"properties": {
+					"admission": { "type": "ref", "ref": "com.atproto.repo.strongRef" },
+					"post": { "type": "ref", "ref": "com.atproto.repo.strongRef" },
+					"scene": { "type": "string", "format": "record-key" },
+					"place": { "type": "ref", "ref": "at.motet.pilot.admission#place" },
+					"createdAt": { "type": "string", "format": "datetime" }
+				}
+			}
+		}
+	}
+}

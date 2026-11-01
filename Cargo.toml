@@ -22,19 +22,22 @@ motet-appview = { path = "crates/appview" }
 motet-testkit = { path = "crates/testkit" }
 motet-xrpc = { path = "crates/xrpc" }
 
-# atproto-crates. The released crates come from crates.io as one version;
-# bump them together. Tap's client is released (package `atproto-tap`). The
-# Spaces crates (atproto-space, atproto-space-client) and atproto-testkit
-# aren't released yet: they are added from git, at one pinned revision of
-# https://tangled.org/ngerakines.me/atproto-crates, by the change that first
-# uses them, and the released crates move to that same revision then so no
-# two copies of the core types meet (docs/adr/0004-atproto-crates.md).
-atproto-attestation = "0.14.5"
-atproto-client = "0.14.5"
-atproto-identity = { version = "0.14.5", default-features = false }
-atproto-lexicon = { version = "0.14.5", default-features = false }
-atproto-oauth = "0.14.5"
-atproto-record = "0.14.5"
+# atproto-crates, all from one pinned revision of
+# https://tangled.org/ngerakines.me/atproto-crates so no two copies of the
+# core types meet (docs/adr/0004-atproto-crates.md). 0.15 isn't on crates.io:
+# the Spaces, repo and Tap crates Motet needs exist only there. Bump the
+# revision for all of them at once.
+atproto-dasl = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-identity = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
+atproto-lexicon = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
+atproto-oauth = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
+atproto-record = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-repo = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-space = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-space-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-tap = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-testkit = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-xrpcs = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
 
 # Runtime and services.
 anyhow = "1"
@@ -42,14 +45,21 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures = "0.3"
 getrandom = "0.4"
 object_store = { version = "0.14", features = ["aws"] }
 rand = "0.10"
-# 0.12, the version atproto-crates uses, so their clients can be handed
+# 0.13, the version atproto-crates uses, so their clients can be handed
 # motet-net's hardened client instead of building their own.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "stream"] }
+# One database per tenor shard, with its own WAL off: the shard's log is the
+# only write-ahead log (docs/adr/0014-tenor-state-in-slatedb.md). Exact pin:
+# SlateDB promises storage compatibility only between adjacent versions.
+slatedb = { version = "=0.17.0", default-features = false, features = ["aws", "wal_disable"] }
+# Sealing World keys under the tenor's master key.
+chacha20poly1305 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_urlencoded = "0.7"

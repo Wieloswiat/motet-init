@@ -8,7 +8,8 @@ use motet_log::Log;
 use motet_rules::world::{Command, Outcome, Refusal};
 use motet_rules::{Cid, Did, OperationId, RecordUri, SceneId, StrongRef};
 use motet_tenor::admission::{Decision, FetchError, Fetched, Records, Request, admit};
-use motet_tenor::shard::{Entry, Handle, Shard, spawn};
+use motet_tenor::keys::MasterKey;
+use motet_tenor::shard::{Entry, Handle, Options, Shard, spawn};
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
 
@@ -59,7 +60,16 @@ fn request(op: &str, post: StrongRef) -> Request {
 
 /// A World with Alice in the cast of `open` and not of `elsewhere`.
 async fn world(store: Arc<dyn ObjectStore>) -> Handle {
-    let handle = spawn(Shard::open(Log::new(store, "shard")).await.expect("open"), 16);
+    let shard = Shard::open(store, "shard", Arc::new(MasterKey::from_bytes(&[0; 32])))
+        .await
+        .expect("open");
+    let handle = spawn(
+        shard,
+        Options {
+            max_batch: 16,
+            checkpoint_every: std::time::Duration::from_secs(3600),
+        },
+    );
     let setup = [
         Entry::Begin {
             world: Did::new(WORLD),

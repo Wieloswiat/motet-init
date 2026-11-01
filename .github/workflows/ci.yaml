@@ -38,6 +38,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # The runner's preinstalled SDKs leave about 14 GB free, and the Nix
+      # store plus the archive cache-nix-action writes when saving it need
+      # more. Nothing here uses them.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
@@ -59,6 +66,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # As in `checks`: room for the Nix store and its cache archive.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@v5
         with:
           persist-credentials: false

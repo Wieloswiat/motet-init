@@ -1,13 +1,20 @@
 //! The shard's promises: an acknowledged outcome is exactly what a replay
-//! reproduces, and a second writer can't acknowledge anything over the first.
+//! reproduces, whatever was checkpointed or flushed before the takeover; an
+//! operation that fails leaves nothing; and a second writer can't
+//! acknowledge anything over the first.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
+use bytes::Bytes;
 use motet_log::Log;
 use motet_rules::world::{Command, Outcome, ReadBack};
 use motet_rules::{Cid, Did, OperationId, RecordUri, SceneId, StrongRef};
-use motet_tenor::shard::{Entry, Rejected, Shard, ShardError, spawn};
+use motet_tenor::event::{Event, Sequenced};
+use motet_tenor::keys::MasterKey;
+use motet_tenor::shard::{Entry, Handle, Mutation, Op, Options, Rejected, Shard, ShardError, Txn, Write, spawn};
+use motet_tenor::store::keys::EVENTS;
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
 use proptest::prelude::*;
@@ -18,6 +25,14 @@ const SCENES: [&str; 2] = ["s1", "s2"];
 
 fn did(s: &str) -> Did {
     Did::new(s)
+}
+
+fn master() -> Arc<MasterKey> {
+    Arc::new(MasterKey::from_bytes(&[7; 32]))
+}
+
+async fn open(store: &Arc<dyn ObjectStore>) -> Shard {
+    Shard::open(Arc::clone(store), "shard", master()).await.expect("open")
 }
 
 fn command() -> impl Strategy<Value = Command> {
@@ -42,15 +57,34 @@ fn command() -> impl Strategy<Value = Command> {
     ]
 }
 
+/// A host operation's effects: a few keys set or deleted, and an event.
+fn write() -> impl Strategy<Value = Entry> {
+    let key = (0..4u8).prop_map(|k| Bytes::from(format!("test/{k}")));
+    let value = proptest::option::of((0..4u8).prop_map(|v| Bytes::from(format!("v{v}"))));
+    proptest::collection::vec((key, value), 0..3).prop_map(|kvs| {
+        Entry::Write(Write {
+            mutations: kvs.into_iter().map(|(key, value)| Mutation { key, value }).collect(),
+            events: vec![Event::Account {
+                did: did(WORLDS[0]),
+                active: true,
+                status: None,
+                time: "2026-10-26T00:00:00Z".into(),
+            }],
+        })
+    })
+}
+
 /// Entries for both Worlds, including some for a World that never began and
-/// some operation IDs reused, so rejections are replayed too.
+/// some operation IDs reused, so rejections are replayed too, mixed with
+/// host writes.
 fn entries() -> impl Strategy<Value = Vec<Entry>> {
     let apply = (0..3usize, 0..12u8, command()).prop_map(|(w, op, command)| Entry::Apply {
         world: did(WORLDS.get(w).copied().unwrap_or("did:plc:nowhere")),
         op: OperationId::new(format!("op-{op}")),
         command,
     });
-    proptest::collection::vec(apply, 0..60).prop_map(|mut entries| {
+    let entry = prop_oneof![4 => apply, 1 => write()];
+    proptest::collection::vec(entry, 0..60).prop_map(|mut entries| {
         let begins = WORLDS.iter().map(|w| Entry::Begin {
             world: did(w),
             epoch: 0,
@@ -67,23 +101,42 @@ fn runtime() -> tokio::runtime::Runtime {
         .expect("runtime")
 }
 
+/// Everything a reader can see that the shard's writes produced.
+async fn visible(shard: &Shard) -> Vec<(Bytes, Bytes)> {
+    let reader = shard.reader();
+    let mut out = reader.scan(b"test/", None, usize::MAX).await.expect("scan");
+    out.extend(reader.scan(EVENTS, None, usize::MAX).await.expect("scan"));
+    out
+}
+
 proptest! {
-    /// Commit in any batching, then open the shard elsewhere: every World is
-    /// in exactly the state the acknowledged outcomes describe, and the
-    /// outcomes don't depend on how entries were batched.
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    /// Commit in any batching, with checkpoints anywhere, then take the shard
+    /// over without a clean close: every World is in exactly the state the
+    /// acknowledged outcomes describe, readers see the same keys and the same
+    /// event numbering, and the outcomes don't depend on how entries were
+    /// batched. A bug in which segments the takeover replays, or in what it
+    /// re-applies versus re-runs, shows up here as a difference.
     #[test]
-    fn replay_reproduces_what_was_acknowledged(entries in entries(), cuts in proptest::collection::vec(1..8usize, 1..20)) {
+    fn replay_reproduces_what_was_acknowledged(
+        entries in entries(),
+        cuts in proptest::collection::vec((1..8usize, any::<bool>()), 1..20),
+    ) {
         runtime().block_on(async {
             let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-            let mut batched = Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open");
-            let mut one_by_one = Shard::open(Log::new(Arc::new(InMemory::new()), "shard")).await.expect("open");
+            let mut batched = open(&store).await;
+            let mut one_by_one = open(&(Arc::new(InMemory::new()) as Arc<dyn ObjectStore>)).await;
 
             let mut outcomes = Vec::new();
             let mut rest = entries.as_slice();
-            for cut in cuts.iter().cycle() {
+            for (cut, checkpoint) in cuts.iter().cycle() {
                 if rest.is_empty() { break; }
                 let (batch, tail) = rest.split_at((*cut).min(rest.len()));
                 outcomes.extend(batched.commit(batch).await.expect("commit"));
+                if *checkpoint {
+                    batched.checkpoint().await.expect("checkpoint");
+                }
                 rest = tail;
             }
             let mut sequential = Vec::new();
@@ -92,10 +145,13 @@ proptest! {
             }
             prop_assert_eq!(&outcomes, &sequential);
 
-            let replayed = Shard::open(Log::new(store, "shard")).await.expect("reopen");
+            let before = visible(&batched).await;
+            // No close: whatever wasn't flushed is lost with the process.
+            let replayed = open(&store).await;
             for world in WORLDS {
                 prop_assert_eq!(replayed.world(&did(world)), batched.world(&did(world)));
             }
+            prop_assert_eq!(visible(&replayed).await, before);
             Ok(())
         })?;
     }
@@ -104,7 +160,7 @@ proptest! {
 #[tokio::test]
 async fn entries_for_a_world_this_shard_doesnt_host_are_rejected_and_kept() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let mut shard = Shard::open(Log::new(store, "shard")).await.expect("open");
+    let mut shard = open(&store).await;
     let entry = Entry::Apply {
         world: did("did:plc:nowhere"),
         op: OperationId::new("op"),
@@ -118,6 +174,128 @@ async fn entries_for_a_world_this_shard_doesnt_host_are_rejected_and_kept() {
     );
 }
 
+/// An operation that writes, emits and changes rules, then fails.
+#[derive(Debug)]
+struct Fails;
+
+impl Op for Fails {
+    type Output = ();
+    type Error = &'static str;
+
+    fn run(self, txn: &mut Txn<'_>) -> impl Future<Output = Result<(), &'static str>> + Send {
+        txn.put(b"test/failed".to_vec(), Bytes::from_static(b"x"));
+        txn.emit(Event::Account {
+            did: did(WORLDS[0]),
+            active: false,
+            status: None,
+            time: "2026-10-26T00:00:00Z".into(),
+        });
+        let _ = txn.begin_world(did(WORLDS[1]), 0);
+        std::future::ready(Err("refused"))
+    }
+}
+
+/// An operation reads what the operations before it in the same batch wrote,
+/// and writes on top of it.
+#[derive(Debug)]
+struct Append(&'static str);
+
+impl Op for Append {
+    type Output = ();
+    type Error = std::convert::Infallible;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<(), std::convert::Infallible> {
+        let mut value = txn
+            .get(b"test/log")
+            .await
+            .expect("read")
+            .map(|b| b.to_vec())
+            .unwrap_or_default();
+        value.extend_from_slice(self.0.as_bytes());
+        txn.put(b"test/log".to_vec(), Bytes::from(value));
+        Ok(())
+    }
+}
+
+fn running(shard: Shard) -> Handle {
+    spawn(
+        shard,
+        Options {
+            max_batch: 8,
+            checkpoint_every: Duration::from_secs(3600),
+        },
+    )
+}
+
+/// A failed operation leaves nothing, not even in the batch it shared with
+/// operations that succeeded, and nothing of it survives a takeover.
+#[tokio::test]
+async fn a_failed_operation_leaves_nothing() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let handle = running(open(&store).await);
+    let mut events = handle.subscribe();
+
+    let (failed, first, second) = tokio::join!(handle.run(Fails), handle.run(Append("1")), handle.run(Append("2")));
+    assert_eq!(failed.expect("durable"), Err("refused"));
+    first.expect("durable").expect("appends");
+    second.expect("durable").expect("appends");
+
+    let reader = handle.reader().clone();
+    assert_eq!(reader.get(b"test/failed").await.expect("read"), None);
+    let log = reader.get(b"test/log").await.expect("read").expect("written");
+    assert!(log == "12" || log == "21", "each append saw the one before it: {log:?}");
+    assert!(
+        events.try_recv().is_err(),
+        "a failed operation's event reached subscribers"
+    );
+
+    drop(handle);
+    let replayed = open(&store).await;
+    assert!(replayed.world(&did(WORLDS[1])).is_none());
+    assert_eq!(replayed.reader().get(b"test/failed").await.expect("read"), None);
+}
+
+/// Live subscribers and stored events agree on numbering, so a consumer that
+/// reconnects with a cursor resumes exactly where it left off.
+#[tokio::test]
+async fn live_events_are_numbered_as_stored() {
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let mut shard = open(&store).await;
+    let account = |active| Event::Account {
+        did: did(WORLDS[0]),
+        active,
+        status: None,
+        time: "2026-10-26T00:00:00Z".into(),
+    };
+    let write = |events| {
+        Entry::Write(Write {
+            mutations: Vec::new(),
+            events,
+        })
+    };
+    shard
+        .commit(&[write(vec![account(true), account(false)])])
+        .await
+        .expect("commit");
+    let handle = running(shard);
+    let mut live = handle.subscribe();
+    handle
+        .submit(write(vec![account(true)]))
+        .await
+        .expect("durable")
+        .expect("applies");
+    let event = live.recv().await.expect("live event");
+    assert_eq!(event.seq, 2);
+
+    let stored = handle.reader().scan(EVENTS, None, usize::MAX).await.expect("scan");
+    let stored: Vec<Sequenced> = stored
+        .iter()
+        .map(|(_, v)| serde_json::from_slice(v).expect("stored event"))
+        .collect();
+    assert_eq!(stored.iter().map(|e| e.seq).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert_eq!(stored.last(), Some(&*event));
+}
+
 /// "Start a second writer against the same bucket": the older writer is
 /// fenced at its next commit, and nothing it staged becomes visible.
 #[tokio::test]
@@ -127,26 +305,25 @@ async fn a_second_writer_fences_the_first() {
         world: did(w),
         epoch: 0,
     };
-    let mut old = Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open");
+    let mut old = open(&store).await;
     old.commit(&[begin(WORLDS[0])]).await.expect("first commit");
 
-    let mut new = Shard::open(Log::new(Arc::clone(&store), "shard"))
-        .await
-        .expect("takeover");
+    let mut new = open(&store).await;
     new.commit(&[begin(WORLDS[1])]).await.expect("new writer commits");
 
-    let open = Command::OpenScene {
+    let open_scene = Command::OpenScene {
         scene: SceneId::new("s1"),
         cast: BTreeSet::new(),
     };
     let late = Entry::Apply {
         world: did(WORLDS[0]),
         op: OperationId::new("late"),
-        command: open,
+        command: open_scene,
     };
-    assert!(matches!(old.commit(&[late]).await, Err(ShardError::Fenced(1))));
+    let fenced = old.commit(&[late]).await.expect_err("the old writer is fenced");
+    assert!(matches!(*fenced, ShardError::Fenced(1)), "{fenced}");
 
-    let replayed = Shard::open(Log::new(store, "shard")).await.expect("replay");
+    let replayed = open(&store).await;
     assert!(replayed.world(&did(WORLDS[1])).is_some());
     assert_eq!(
         replayed
@@ -162,10 +339,7 @@ async fn a_second_writer_fences_the_first() {
 #[tokio::test]
 async fn group_commit_answers_each_submitter() {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let handle = spawn(
-        Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open"),
-        8,
-    );
+    let handle = running(open(&store).await);
     let begin = |w: &str| Entry::Begin {
         world: did(w),
         epoch: 0,
@@ -210,27 +384,60 @@ async fn group_commit_answers_each_submitter() {
     );
 }
 
-/// The same takeover against the real bucket (SeaweedFS under devenv).
+/// The same takeover against the real bucket (SeaweedFS under devenv), which
+/// also has to honour SlateDB's conditional writes.
 #[tokio::test]
 #[ignore = "integration: needs S3 (devenv up)"]
 async fn fault_takeover_against_real_bucket() {
     let store = motet_testkit::services::bucket();
-    let mut old = Shard::open(Log::new(Arc::clone(&store), "shard")).await.expect("open");
-    let mut new = Shard::open(Log::new(Arc::clone(&store), "shard"))
-        .await
-        .expect("takeover");
+    let mut old = open(&store).await;
+    let mut new = open(&store).await;
     new.commit(&[Entry::Begin {
         world: did(WORLDS[0]),
         epoch: 0,
     }])
     .await
     .expect("new writer commits");
-    assert!(matches!(
-        old.commit(&[Entry::Begin {
+    let fenced = old
+        .commit(&[Entry::Begin {
             world: did(WORLDS[1]),
-            epoch: 0
+            epoch: 0,
         }])
-        .await,
-        Err(ShardError::Fenced(0))
-    ));
+        .await
+        .expect_err("the old writer is fenced");
+    assert!(matches!(*fenced, ShardError::Fenced(0)), "{fenced}");
+}
+
+/// Checkpoint, flush and reopen on the real bucket: what a takeover reads
+/// back from SeaweedFS is what was written.
+#[tokio::test]
+#[ignore = "integration: needs S3 (devenv up)"]
+async fn checkpointed_state_reopens_from_the_real_bucket() {
+    let store = motet_testkit::services::bucket();
+    let mut shard = open(&store).await;
+    shard
+        .commit(&[
+            Entry::Begin {
+                world: did(WORLDS[0]),
+                epoch: 0,
+            },
+            Entry::Write(Write {
+                mutations: vec![Mutation {
+                    key: Bytes::from_static(b"test/k"),
+                    value: Some(Bytes::from_static(b"v")),
+                }],
+                events: Vec::new(),
+            }),
+        ])
+        .await
+        .expect("commit");
+    shard.checkpoint().await.expect("checkpoint");
+    shard.close().await.expect("close");
+
+    let reopened = open(&store).await;
+    assert!(reopened.world(&did(WORLDS[0])).is_some());
+    assert_eq!(
+        reopened.reader().get(b"test/k").await.expect("read"),
+        Some(Bytes::from_static(b"v"))
+    );
 }

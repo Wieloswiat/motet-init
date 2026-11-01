@@ -11,12 +11,12 @@ the decisions behind it are in [docs/adr](docs/adr/README.md).
 ## Getting started
 
 Everything comes from the nix flake: toolchains, PostgreSQL with pg_search,
-S3 storage, and the commands below. With [nix](https://nixos.org) and
-[direnv](https://direnv.net):
+S3 storage, and a [local atproto network](docs/local-network.md). With
+[nix](https://nixos.org) and [direnv](https://direnv.net):
 
 ```sh
 direnv allow          # or: nix develop --no-pure-eval
-devenv up             # PostgreSQL and S3, in another terminal
+devenv up             # PostgreSQL, S3 and the local atproto network, in another terminal
 tests                 # the default suites
 ```
 
@@ -28,6 +28,7 @@ tests                 # the default suites
 | `lint`                           | Clippy and rustdoc (warnings are errors), cargo-deny, typos, workflow and web lint, type checks |
 | `tests`                          | Pure, property and in-process tests; vitest. No services needed                                 |
 | `tests-integration`              | Tests against PostgreSQL and S3, and Playwright (needs `devenv up`)                             |
+| `network-smoke`                  | Two Rust PDS accounts publish pilot profiles through the relay and Tap (needs `devenv up`)      |
 | `lexgen`                         | Regenerate Rust and TypeScript types after editing `lexicons/`                                  |
 | `devenv test`                    | The whole CI gate, services included                                                            |
 | `stack`                          | The deployment-shaped stack in containers (`deploy/compose.yaml`)                               |

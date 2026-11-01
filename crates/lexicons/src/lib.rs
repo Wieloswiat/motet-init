@@ -3,9 +3,9 @@
 //! These are the shapes on the wire and nothing more: adapters convert them
 //! into `motet-rules` values at the edge, after validating them against the
 //! schemas in [`SCHEMAS`] (generated) (lengths, formats, known values) with
-//! `atproto-lexicon`. Every generated type keeps fields it doesn't know in
-//! `extra` and writes them back, so records from newer clients pass through
-//! untouched.
+//! `atproto-lexicon`. Every generated object keeps fields it doesn't know in
+//! `extra` and writes them back. Open unions also keep unknown `$type` variants,
+//! so data from newer clients passes through untouched.
 
 #[rustfmt::skip] // generated: lexgen-check compares it byte for byte
 mod generated;
@@ -37,4 +37,11 @@ pub struct Blob {
 pub struct CidLink {
     #[serde(rename = "$link")]
     pub link: String,
+}
+
+/// Bytes in DAG-JSON form: `{"$bytes": "<base64>"}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bytes {
+    #[serde(rename = "$bytes")]
+    pub bytes: String,
 }

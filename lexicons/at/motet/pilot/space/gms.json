@@ -1,0 +1,13 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.space.gms",
+	"description": "DRAFT. The World's GM-only Space. The tenor appends immutable audit records here; applications cannot author or rewrite them.",
+	"defs": {
+		"main": {
+			"type": "space",
+			"key": "literal:self",
+			"name": "World GMs",
+			"collections": ["group.opensocial.access", "at.motet.pilot.audit"]
+		}
+	}
+}

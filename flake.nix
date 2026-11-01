@@ -52,18 +52,28 @@
             crane = inputs.crane;
             src = ./.;
           };
+          network = import ./nix/network.nix {
+            inherit pkgs rustToolchain;
+            crane = inputs.crane;
+          };
         in
         {
           _module.args.pkgs = pkgs;
 
-          packages = rust.packages // {
-            default = rust.packages.motet-appview;
-          };
+          packages =
+            rust.packages
+            // network.packages
+            // {
+              default = rust.packages.motet-appview;
+            };
 
           # `nix flake check`: everything that needs no running services.
-          checks = rust.checks;
+          checks = rust.checks // network.checks;
 
-          devenv.shells.default = import ./nix/devenv.nix { inherit rustToolchain; };
+          devenv.shells.default = import ./nix/devenv.nix {
+            inherit rustToolchain;
+            networkPackages = network.packages;
+          };
 
           formatter = pkgs.nixfmt;
         };

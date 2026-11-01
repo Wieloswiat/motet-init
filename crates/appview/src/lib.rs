@@ -9,12 +9,20 @@
 //! - [`projection`]: the PostgreSQL tables pages are built from, rebuildable
 //!   from the archive alone.
 //! - [`indexer`]: archive, apply, acknowledge.
+//! - [`tap`]: verified record and identity input, acknowledged after indexing.
 //! - [`outbox`]: writes made on people's behalf, leased and retried safely.
 //! - [`api`]: the XRPC methods, each declared with who may call it.
 //!
+//! `serve` takes over the archive and catches projections up before serving.
+//! With `MOTET_APPVIEW_TAP_URL`, it also consumes Tap in batches of at most
+//! 100 deliveries or 25 milliseconds. HTTPS enables TLS; the optional
+//! `MOTET_APPVIEW_TAP_ADMIN_PASSWORD` authenticates the connection. Shutdown
+//! finishes the current batch before flushing acknowledgements. Without a
+//! Tap URL, the API runs without live ingestion.
+//!
 //! Still to come, each behind its own module: OAuth sign-in as a confidential
 //! client (sessions sealed outside the database, one refresh at a time per
-//! session), the Tap and Spaces inputs to the indexer, server-sent events
+//! session), the Spaces input to the indexer, server-sent events
 //! per reader (`LISTEN/NOTIFY` only as a wake-up), search with ParadeDB, and
 //! the render and image workers.
 
@@ -25,6 +33,7 @@ pub mod event;
 pub mod indexer;
 pub mod outbox;
 pub mod projection;
+pub mod tap;
 
 /// Service-state migrations (`migrations/`). Projections are not migrated;
 /// see [`projection`].

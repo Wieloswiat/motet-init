@@ -1,19 +1,33 @@
 # The development environment: toolchains, local services and git hooks.
 #
 #   nix develop --no-pure-eval   (or `direnv allow`)
-#   devenv up                    PostgreSQL with pg_search, SeaweedFS (S3)
+#   devenv up                    PostgreSQL, SeaweedFS and the local atproto network
 #   devenv test                  the whole CI gate, services included
 #   devenv info                  lists the scripts below with descriptions
 #
 # Commands live here as devenv scripts, so they're on PATH in the shell and
 # CI runs exactly the same ones (`nix develop --no-pure-eval -c <script>`).
-{ rustToolchain }:
-{ pkgs, lib, ... }:
+{ rustToolchain, networkPackages }:
+{
+  pkgs,
+  lib,
+  config,
+  ...
+}:
 let
   pgPort = 54329;
   s3Port = 9010;
   s3Key = "motet";
   s3Secret = "motet-dev-secret";
+  networkState = "${config.devenv.state}/network";
+  networkPassword = "motet-network-dev";
+  smokePython = pkgs.python3.withPackages (python: [ python.websockets ]);
+  # Leave readiness to process-compose; ready.timeout makes wrappers supervise dependencies.
+  httpReady = port: path: {
+    http.get = { inherit port path; };
+    period = 1;
+    failure_threshold = 180;
+  };
   s3Config = pkgs.writeText "seaweedfs-s3.json" (
     builtins.toJSON {
       identities = [
@@ -95,6 +109,81 @@ in
     done
   '';
 
+  processes.plc = {
+    # The shell's PostgreSQL URL belongs to Motet, not this ephemeral directory.
+    exec = ''
+      set -euo pipefail
+      unset DATABASE_URL
+      exec ${networkPackages.plc}/bin/plc-server
+    '';
+    env.PORT = "2582";
+    ready = httpReady 2582 "/_health";
+  };
+  processes.relay = {
+    after = [ "devenv:processes:plc" ];
+    exec = ''
+      set -euo pipefail
+      mkdir -p "${networkState}/relay"
+      exec ${networkPackages.indigo}/bin/relay serve
+    '';
+    env = {
+      RELAY_ALLOW_PRIVATE_HOSTS = "true";
+      RELAY_PLC_HOST = "http://localhost:2582";
+      RELAY_ADMIN_PASSWORD = networkPassword;
+      RELAY_API_BIND = "127.0.0.1:2470";
+      RELAY_METRICS_LISTEN = "127.0.0.1:2471";
+      DATABASE_URL = "sqlite://${networkState}/relay/relay.sqlite";
+      RELAY_PERSIST_DIR = "${networkState}/relay/persist";
+    };
+    ready = httpReady 2470 "/_health";
+  };
+  processes.tap = {
+    after = [ "devenv:processes:relay" ];
+    exec = ''
+      set -euo pipefail
+      mkdir -p "${networkState}/tap"
+      exec ${networkPackages.indigo}/bin/tap run
+    '';
+    env = {
+      TAP_BIND = "127.0.0.1:2480";
+      TAP_DATABASE_URL = "sqlite://${networkState}/tap/tap.sqlite";
+      TAP_RELAY_URL = "http://localhost:2470";
+      TAP_PLC_URL = "http://localhost:2582";
+      TAP_SIGNAL_COLLECTION = "at.motet.pilot.profile";
+      TAP_COLLECTION_FILTERS = "at.motet.pilot.*,group.opensocial.*";
+      TAP_DISABLE_ACKS = "false";
+      TAP_ADMIN_PASSWORD = networkPassword;
+    };
+    ready = {
+      exec = "${lib.getExe pkgs.curl} --fail --silent --user admin:${networkPassword} http://localhost:2480/health";
+      period = 1;
+      failure_threshold = 180;
+    };
+  };
+  processes.pds-rs = {
+    after = [ "devenv:processes:plc" ];
+    exec = ''
+      set -euo pipefail
+      mkdir -p "$PDS_DATA_DIRECTORY"
+      exec ${networkPackages.pds-rs}/bin/pds
+    '';
+    env = {
+      PDS_BIND = "127.0.0.1";
+      PDS_PORT = "4800";
+      # This implementation advertises HOSTNAME verbatim, without PDS_PORT.
+      PDS_HOSTNAME = "localhost:4800";
+      PDS_SERVICE_DID = "did:web:localhost%3A4800";
+      PDS_DID_PLC_URL = "http://localhost:2582";
+      PDS_CRAWLERS = "http://localhost:2470";
+      PDS_INVITE_REQUIRED = "false";
+      PDS_ALLOW_DEV_DEFAULTS = "true";
+      PDS_SERVICE_HANDLE_DOMAINS = ".test";
+      PDS_DATA_DIRECTORY = "${networkState}/pds-rs";
+      PDS_LEXICON_DIR = "${../lexicons}";
+    };
+    ready = httpReady 4800 "/xrpc/_health";
+  };
+
   env = {
     DATABASE_URL = "postgres://motet:motet@127.0.0.1:${toString pgPort}/motet";
     MOTET_TEST_DATABASE_URL = "postgres://motet:motet@127.0.0.1:${toString pgPort}/postgres";
@@ -102,6 +191,16 @@ in
     MOTET_TEST_S3_BUCKET = "motet-test";
     MOTET_TEST_S3_ACCESS_KEY = s3Key;
     MOTET_TEST_S3_SECRET_KEY = s3Secret;
+    MOTET_PLC_DIRECTORY = "http://localhost:2582";
+    MOTET_RELAY_URL = "http://localhost:2470";
+    MOTET_TAP_URL = "http://localhost:2480";
+    MOTET_PDS_RS_URL = "http://localhost:4800";
+    MOTET_TENOR_PUBLIC_URL = "http://localhost:2584";
+    MOTET_TENOR_HANDLE_DOMAINS = ".motet.test";
+    MOTET_TENOR_CRAWLERS = "http://localhost:2470";
+    MOTET_ALLOW_PRIVATE_NETWORK = "true";
+    MOTET_RELAY_ADMIN_PASSWORD = networkPassword;
+    MOTET_TAP_ADMIN_PASSWORD = networkPassword;
   }
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     # Vitest's browser mode and Playwright launch nixpkgs' Chromium (see
@@ -135,7 +234,7 @@ in
       exec = ''
         set -euo pipefail
         cargo fmt --all
-        nixfmt flake.nix nix/*.nix
+        nixfmt flake.nix nix/*.nix nix/pkgs/*.nix
         taplo fmt
         pnpm format
       '';
@@ -145,7 +244,7 @@ in
       exec = ''
         set -euo pipefail
         cargo fmt --all --check
-        nixfmt --check flake.nix nix/*.nix
+        nixfmt --check flake.nix nix/*.nix nix/pkgs/*.nix
         taplo fmt --check
         pnpm format:check
       '';
@@ -207,14 +306,21 @@ in
     };
 
     # Running.
-    stack = {
-      description = "Deployment-shaped stack (AppView, tenor, Tap, Spaces PDS, PostgreSQL, S3) in podman";
+    network-smoke = {
+      description = "Verify two local Rust PDS accounts publish pilot profiles through relay and Tap (needs devenv up)";
       exec = ''
         set -euo pipefail
-        nix build .#appview-image -o result-appview
-        ./result-appview | podman load
-        nix build .#tenor-image -o result-tenor
-        ./result-tenor | podman load
+        exec ${smokePython}/bin/python ${./network-smoke.py} "$@"
+      '';
+    };
+    stack = {
+      description = "Deployment-shaped stack with the local atproto network in podman";
+      exec = ''
+        set -euo pipefail
+        for service in appview tenor plc relay tap pds-rs; do
+          nix build ".#$service-image" -o "result-$service"
+          "./result-$service" | podman load
+        done
         podman-compose -f deploy/compose.yaml up "$@"
       '';
     };
@@ -233,6 +339,7 @@ in
             || { echo "port $port never opened; is devenv up running?" >&2; exit 1; }
         done
         tests-integration
+        network-smoke
       '';
     };
 
@@ -269,6 +376,8 @@ in
   enterTest = "ci";
 
   enterShell = ''
-    echo "Motet dev shell. 'devenv up' starts PostgreSQL and S3; 'devenv info' lists scripts."
+    # stdenv also supplies GNU fmt; prefer the repository's formatter command.
+    export PATH="${config.scripts.fmt.scriptPackage}/bin:$PATH"
+    echo "Motet dev shell. 'devenv up' starts PostgreSQL, S3 and the local atproto network; 'devenv info' lists scripts."
   '';
 }

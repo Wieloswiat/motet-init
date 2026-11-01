@@ -1,0 +1,52 @@
+# Local relay crawling needs private addresses and nonstandard PDS ports.
+# RELAY_ALLOW_PRIVATE_HOSTS=true opts in without changing default checks or admin auth.
+# Local initial replay from cursor zero prevents profile-before-crawl enrollment races.
+# Tap already uses plain HTTP/WebSocket clients at this revision; it needs no bypass.
+--- a/cmd/relay/relay/host.go
++++ b/cmd/relay/relay/host.go
+@@ -6,3 +6,4 @@ import (
+ 	"fmt"
+ 	"net/url"
++	"os"
+ 	"strings"
+@@ -167,3 +168,7 @@ func ParseHostname(raw string) (hostname string, noSSL bool, err error) {
+ 	}
+ 
++	if os.Getenv("RELAY_ALLOW_PRIVATE_HOSTS") == "true" && u.Hostname() != "" {
++		return strings.ToLower(u.Host), noSSL, nil
++	}
++
+ 	// 'localhost' (exact string) is allowed *with* a required port number; SSL is optional
+--- a/cmd/relay/relay/slurper.go
++++ b/cmd/relay/relay/slurper.go
+@@ -9,2 +9,3 @@ import (
+ 	"net/http"
++	"os"
+ 	"strings"
+@@ -320,4 +321,4 @@ func (s *Slurper) subscribeWithRedialer(ctx context.Context, host *models.Host, sub *Subscription) {
+ 		u := host.SubscribeReposURL()
+-		if cursor > 0 {
+-			u = fmt.Sprintf("%s?cursor=%d", u, cursor)
++		if cursor > 0 || os.Getenv("RELAY_ALLOW_PRIVATE_HOSTS") == "true" {
++			u = fmt.Sprintf("%s?cursor=%d", u, max(cursor, 0))
+ 		}
+--- a/util/ssrf/ssrf.go
++++ b/util/ssrf/ssrf.go
+@@ -21,3 +21,4 @@ import (
+ 	"net/http"
++	"os"
+ 	"syscall"
+ 	"time"
+@@ -105,3 +106,3 @@ func PublicOnlyDialer() *net.Dialer {
+ func PublicOnlyDialer() *net.Dialer {
+-	return &net.Dialer{
++	dialer := &net.Dialer{
+ 		Timeout:   30 * time.Second,
+@@ -111,3 +112,7 @@ func PublicOnlyDialer() *net.Dialer {
+ 	}
++	if os.Getenv("RELAY_ALLOW_PRIVATE_HOSTS") == "true" {
++		dialer.Control = nil
++	}
++	return dialer
+ }
+ 

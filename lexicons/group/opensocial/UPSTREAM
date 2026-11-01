@@ -1,0 +1,20 @@
+Repository: https://tangled.org/opensocial.group/proposal
+Commit: 2b41a9bf9171c03a1aa5ee26c6e39823ba27c79d
+Commit date: 2026-10-19
+
+All 31 JSON files in this directory are byte-identical to lexicons/group/opensocial/
+at that commit. ../../com/atproto/label/label.json also comes from that proposal:
+com.atproto.label.label is its strawman, not an adopted Bluesky lexicon.
+Its required list names createdAt, but its properties define cts instead; the
+vendored source retains this upstream inconsistency without modification.
+
+The proposal has no LICENSE file at this pin. The maintainers intend the proposal
+to be public; see https://atproto.com/blog/atmospheric-groups-intro (2026-10-22).
+Public availability is not a licence grant. Motet's maintainer will ask upstream
+for an explicit licence. No upstream issue has been opened for this vendoring.
+
+The referenced com.atproto.label.defs and com.atproto.moderation.defs are copied
+byte-identically from crates/atproto-pds/lexicons/com/atproto/ in
+https://tangled.org/ngerakines.me/atproto-crates at commit
+09a868cdde938c789326f1db16ffc30bbf38c15e (the local /tmp/atproto-crates checkout).
+They are Bluesky's upstream definitions, not proposal-owned lexicons.

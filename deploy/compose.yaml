@@ -2,14 +2,10 @@
 # will be, on one machine. `stack` in the dev shell builds the images with nix
 # and brings this up with podman-compose; `docker compose` works the same.
 #
-# Development credentials only. Day-to-day work doesn't need this: `devenv up`
-# runs PostgreSQL and S3 natively, and the binaries run with `cargo run`.
-#
-# Not here yet, each waiting on a pinned upstream image:
-#   - Tap (public sync), from bluesky-social/indigo.
-#   - The Spaces-alpha PDS Motet hosts for alpha players.
-# Both slot in as services below; the AppView and tenor find them through
-# environment variables that don't exist yet either.
+# Development credentials only. `devenv up` runs these dependencies natively.
+# The atproto services, AppView and tenor share PLC's network namespace so
+# their canonical localhost DID endpoints work inside and outside containers.
+# Do not run this stack beside `devenv up`: they use the same atproto ports.
 
 name: motet
 
@@ -53,6 +49,98 @@ services:
           echo "s3.bucket.create -name $$bucket" | weed shell -master=s3:9333 || exit 1
         done
 
+  plc:
+    image: localhost/motet-plc:dev
+    environment:
+      PORT: '2582'
+    healthcheck:
+      test: ['CMD', '/bin/curl', '--fail', '--silent', 'http://localhost:2582/_health']
+      interval: 2s
+      retries: 30
+    ports:
+      - 127.0.0.1:2470:2470
+      - 127.0.0.1:2471:2471
+      - 127.0.0.1:2480:2480
+      - 127.0.0.1:2582:2582
+      - 127.0.0.1:2583:2583
+      - 127.0.0.1:2584:2584
+      - 127.0.0.1:4800:4800
+
+  relay:
+    image: localhost/motet-relay:dev
+    network_mode: service:plc
+    command: serve
+    environment:
+      RELAY_ALLOW_PRIVATE_HOSTS: 'true'
+      RELAY_PLC_HOST: http://localhost:2582
+      RELAY_ADMIN_PASSWORD: motet-network-dev
+      RELAY_API_BIND: 0.0.0.0:2470
+      RELAY_METRICS_LISTEN: 0.0.0.0:2471
+      DATABASE_URL: sqlite:///data/relay.sqlite
+      RELAY_PERSIST_DIR: /data/persist
+    volumes:
+      - relay:/data
+    depends_on:
+      plc: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', '/bin/curl', '--fail', '--silent', 'http://localhost:2470/_health']
+      interval: 2s
+      retries: 30
+
+  tap:
+    image: localhost/motet-tap:dev
+    network_mode: service:plc
+    command: run
+    environment:
+      TAP_BIND: 0.0.0.0:2480
+      TAP_DATABASE_URL: sqlite:///data/tap.sqlite
+      TAP_RELAY_URL: http://localhost:2470
+      TAP_PLC_URL: http://localhost:2582
+      TAP_SIGNAL_COLLECTION: at.motet.pilot.profile
+      TAP_COLLECTION_FILTERS: at.motet.pilot.*,group.opensocial.*
+      TAP_DISABLE_ACKS: 'false'
+      TAP_ADMIN_PASSWORD: motet-network-dev
+    volumes:
+      - tap:/data
+    depends_on:
+      relay: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          'CMD',
+          '/bin/curl',
+          '--fail',
+          '--silent',
+          '--user',
+          'admin:motet-network-dev',
+          'http://localhost:2480/health'
+        ]
+      interval: 2s
+      retries: 30
+
+  pds-rs:
+    image: localhost/motet-pds-rs:dev
+    network_mode: service:plc
+    environment:
+      PDS_BIND: 0.0.0.0
+      PDS_PORT: '4800'
+      PDS_HOSTNAME: localhost:4800
+      PDS_SERVICE_DID: did:web:localhost%3A4800
+      PDS_DID_PLC_URL: http://localhost:2582
+      PDS_CRAWLERS: http://localhost:2470
+      PDS_INVITE_REQUIRED: 'false'
+      PDS_ALLOW_DEV_DEFAULTS: 'true'
+      PDS_SERVICE_HANDLE_DOMAINS: .test
+      PDS_DATA_DIRECTORY: /data
+    volumes:
+      - pds-rs:/data
+    depends_on:
+      relay: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', '/bin/curl', '--fail', '--silent', 'http://localhost:4800/_ready']
+      interval: 2s
+      retries: 30
+
   appview-migrate:
     image: localhost/motet-appview:dev
     command: migrate
@@ -67,6 +155,7 @@ services:
 
   appview:
     image: localhost/motet-appview:dev
+    network_mode: service:plc
     command: serve
     environment:
       DATABASE_URL: postgres://motet:motet@postgres/motet
@@ -77,28 +166,37 @@ services:
       MOTET_APPVIEW_LISTEN: 0.0.0.0:2583
       MOTET_APPVIEW_SERVICE_DID: did:web:localhost#motet_appview
       MOTET_ALLOW_PRIVATE_NETWORK: 'true'
+      MOTET_PLC_DIRECTORY: http://localhost:2582
+      MOTET_RELAY_URL: http://localhost:2470
+      MOTET_TAP_URL: http://localhost:2480
+      MOTET_TAP_ADMIN_PASSWORD: motet-network-dev
+      MOTET_PDS_RS_URL: http://localhost:4800
       RUST_LOG: info,motet=debug
     depends_on:
       appview-migrate: { condition: service_completed_successfully }
       buckets: { condition: service_completed_successfully }
-    ports:
-      - 127.0.0.1:2583:2583
 
   tenor:
     image: localhost/motet-tenor:dev
+    network_mode: service:plc
     command: serve
     environment:
       MOTET_TENOR_LISTEN: 0.0.0.0:2584
+      MOTET_TENOR_PUBLIC_URL: http://localhost:2584
+      MOTET_TENOR_HANDLE_DOMAINS: .motet.test
+      MOTET_TENOR_CRAWLERS: http://localhost:2470
       MOTET_TENOR_S3_ENDPOINT: http://s3:8333
       MOTET_TENOR_S3_BUCKET: motet-tenor
       MOTET_TENOR_S3_ACCESS_KEY: motet
       MOTET_TENOR_S3_SECRET_KEY: motet-dev-secret
       MOTET_ALLOW_PRIVATE_NETWORK: 'true'
+      MOTET_PLC_DIRECTORY: http://localhost:2582
+      MOTET_RELAY_URL: http://localhost:2470
+      MOTET_TAP_URL: http://localhost:2480
+      MOTET_PDS_RS_URL: http://localhost:4800
       RUST_LOG: info,motet=debug
     depends_on:
       buckets: { condition: service_completed_successfully }
-    ports:
-      - 127.0.0.1:2584:2584
 
 configs:
   s3-identities:
@@ -110,3 +208,6 @@ configs:
 volumes:
   postgres:
   s3:
+  relay:
+  tap:
+  pds-rs:
