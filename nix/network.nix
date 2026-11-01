@@ -43,6 +43,7 @@ in
     plc-image = image "motet-plc" "${plc}/bin/plc-server" [ ];
     relay-image = image "motet-relay" "${indigo}/bin/relay" [ ];
     tap-image = image "motet-tap" "${indigo}/bin/tap" [ ];
+    caddy-image = image "motet-caddy" "${lib.getExe pkgs.caddy}" [ "HOME=/tmp" ];
     pds-rs-image = image "motet-pds-rs" "${pds-rs}/bin/pds" [ "PDS_LEXICON_DIR=${../lexicons}" ];
   };
 }
