@@ -58,7 +58,7 @@ def main():
     # Fresh accounts exercise automatic enrollment even after PLC restarts.
     expected = {}
     for name in ("alice", "bob"):
-        handle = f"{name[0]}{run_id[:12]}.test"
+        handle = f"{name[0]}{run_id[:12]}.pds.motet.test"
         session = account(pds, handle, password)
         did = session["did"]
         record = {
