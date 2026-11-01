@@ -1,7 +1,7 @@
 # The development environment: toolchains, local services and git hooks.
 #
 #   nix develop --no-pure-eval   (or `direnv allow`)
-#   devenv up                    PostgreSQL, SeaweedFS and the local atproto network
+#   devenv up                    PostgreSQL, SeaweedFS, atproto network, AppView and tenor
 #   devenv test                  the whole CI gate, services included
 #   devenv info                  lists the scripts below with descriptions
 #
@@ -21,7 +21,6 @@ let
   s3Secret = "motet-dev-secret";
   networkState = "${config.devenv.state}/network";
   networkPassword = "motet-network-dev";
-  smokePython = pkgs.python3.withPackages (python: [ python.websockets ]);
   # Leave readiness to process-compose; ready.timeout makes wrappers supervise dependencies.
   httpReady = port: path: {
     http.get = { inherit port path; };
@@ -91,23 +90,53 @@ in
   };
 
   # Object storage: SeaweedFS's S3 gateway. (MinIO was abandoned upstream and
-  # nixpkgs marks it insecure.) The fencing tests in crates/log need
-  # conditional writes, so they double as a check that this store has them.
-  processes.seaweedfs.exec = ''
-    mkdir -p "$DEVENV_STATE/seaweedfs"
-    exec ${pkgs.seaweedfs}/bin/weed server \
-      -dir="$DEVENV_STATE/seaweedfs" -ip=127.0.0.1 -ip.bind=127.0.0.1 \
-      -master.port=9014 -volume.port=9012 -filer.port=9013 \
-      -s3 -s3.port=${toString s3Port} -s3.config=${s3Config}
-  '';
-  processes.seaweedfs-buckets.exec = ''
-    for bucket in motet-dev motet-test; do
-      until echo "s3.bucket.create -name $bucket" \
+  # nixpkgs marks it insecure.) Reserve enough volume slots for separate
+  # archive, test and tenor buckets; each new collection can allocate seven.
+  # The log's fencing tests also check this store's conditional writes.
+  processes.seaweedfs = {
+    exec = ''
+      mkdir -p "$DEVENV_STATE/seaweedfs"
+      exec ${pkgs.seaweedfs}/bin/weed server \
+        -dir="$DEVENV_STATE/seaweedfs" -ip=127.0.0.1 -ip.bind=127.0.0.1 \
+        -master.port=9014 -master.telemetry=false -volume.port=9012 -volume.max=32 -filer.port=9013 \
+        -s3 -s3.port=${toString s3Port} -s3.config=${s3Config}
+    '';
+    # S3 rejects anonymous requests, but any HTTP response means it is listening.
+    ready = {
+      exec = "${lib.getExe pkgs.curl} --silent --output /dev/null http://127.0.0.1:${toString s3Port}/";
+      period = 1;
+      failure_threshold = 180;
+    };
+  };
+  processes.seaweedfs-buckets = {
+    after = [ "devenv:processes:seaweedfs" ];
+    exec = ''
+      set -euo pipefail
+      marker="$DEVENV_RUNTIME/motet-buckets-ready"
+      rm -f "$marker"
+      until printf 's3.bucket.list\n' \
         | ${pkgs.seaweedfs}/bin/weed shell -master=127.0.0.1:9014 >/dev/null 2>&1; do
         sleep 1
       done
-    done
-  '';
+      for bucket in motet-dev motet-test motet-tenor; do
+        if ! output=$(printf 's3.bucket.create -name %s\n' "$bucket" \
+          | ${pkgs.seaweedfs}/bin/weed shell -master=127.0.0.1:9014 2>&1); then
+          # Creating an existing bucket fails; other errors must still stop startup.
+          printf 's3.bucket.list\n' \
+            | ${pkgs.seaweedfs}/bin/weed shell -master=127.0.0.1:9014 \
+            | grep -Eq "^[[:space:]]+$bucket[[:space:]]" \
+            || { echo "$output" >&2; exit 1; }
+        fi
+      done
+      touch "$marker"
+      exec sleep infinity
+    '';
+    ready = {
+      exec = ''test -f "$DEVENV_RUNTIME/motet-buckets-ready"'';
+      period = 1;
+      failure_threshold = 180;
+    };
+  };
 
   processes.plc = {
     # The shell's PostgreSQL URL belongs to Motet, not this ephemeral directory.
@@ -149,7 +178,8 @@ in
       TAP_DATABASE_URL = "sqlite://${networkState}/tap/tap.sqlite";
       TAP_RELAY_URL = "http://localhost:2470";
       TAP_PLC_URL = "http://localhost:2582";
-      TAP_SIGNAL_COLLECTION = "at.motet.pilot.profile";
+      # The isolated network contains both pilot and World repos.
+      TAP_FULL_NETWORK = "true";
       TAP_COLLECTION_FILTERS = "at.motet.pilot.*,group.opensocial.*";
       TAP_DISABLE_ACKS = "false";
       TAP_ADMIN_PASSWORD = networkPassword;
@@ -184,6 +214,80 @@ in
     ready = httpReady 4800 "/xrpc/_health";
   };
 
+  # Cargo shares the shell's incremental cache with tests, so edits do not
+  # require rebuilding the whole Nix package before a process can start.
+  processes.tenor = {
+    after = [
+      "devenv:processes:seaweedfs-buckets"
+      "devenv:processes:relay"
+    ];
+    exec = ''
+      set -euo pipefail
+      umask 077
+      mkdir -p "$(dirname "$MOTET_TENOR_MASTER_KEY_FILE")"
+      if [ ! -f "$MOTET_TENOR_MASTER_KEY_FILE" ]; then
+        temp=$(mktemp "$MOTET_TENOR_MASTER_KEY_FILE.XXXXXX")
+        trap 'rm -f "$temp"' EXIT
+        dd if=/dev/urandom of="$temp" bs=32 count=1 status=none
+        ln "$temp" "$MOTET_TENOR_MASTER_KEY_FILE" || test -f "$MOTET_TENOR_MASTER_KEY_FILE"
+        rm -f "$temp"
+        trap - EXIT
+      fi
+      chmod 600 "$MOTET_TENOR_MASTER_KEY_FILE"
+      cargo build --jobs "''${CARGO_BUILD_JOBS:-2}" -p motet-tenor --bin motet-tenor
+      exec "''${CARGO_TARGET_DIR:-target}/debug/motet-tenor" serve
+    '';
+    # A cold Cargo build can take longer than a service-only startup.
+    ready = (httpReady 2584 "/xrpc/com.atproto.server.describeServer") // {
+      failure_threshold = 1800;
+    };
+  };
+  # The public crawl endpoint refuses localhost; register both hosts as admin.
+  processes.relay-hosts = {
+    after = [
+      "devenv:processes:relay"
+      "devenv:processes:pds-rs"
+      "devenv:processes:tenor"
+    ];
+    exec = ''
+      set -euo pipefail
+      marker="$DEVENV_RUNTIME/motet-relay-hosts-ready"
+      rm -f "$marker"
+      for host in "$MOTET_PDS_RS_URL" "$MOTET_TENOR_PUBLIC_URL"; do
+        ${lib.getExe pkgs.curl} --fail-with-body --silent --show-error \
+          --user "admin:$MOTET_RELAY_ADMIN_PASSWORD" \
+          --header 'Content-Type: application/json' \
+          --data "{\"hostname\":\"$host\"}" \
+          "$MOTET_RELAY_URL/admin/pds/requestCrawl"
+      done
+      touch "$marker"
+      exec sleep infinity
+    '';
+    ready = {
+      exec = ''test -f "$DEVENV_RUNTIME/motet-relay-hosts-ready"'';
+      period = 1;
+      failure_threshold = 180;
+    };
+  };
+  processes.appview = {
+    after = [
+      "devenv:processes:postgres"
+      "devenv:processes:seaweedfs-buckets"
+      "devenv:processes:relay-hosts"
+      "devenv:processes:tap"
+    ];
+    exec = ''
+      set -euo pipefail
+      cargo build --jobs "''${CARGO_BUILD_JOBS:-2}" -p motet-appview --bin motet-appview
+      bin="''${CARGO_TARGET_DIR:-target}/debug/motet-appview"
+      "$bin" migrate
+      exec "$bin" serve
+    '';
+    ready = (httpReady 2583 "/_health") // {
+      failure_threshold = 1800;
+    };
+  };
+
   env = {
     DATABASE_URL = "postgres://motet:motet@127.0.0.1:${toString pgPort}/motet";
     MOTET_TEST_DATABASE_URL = "postgres://motet:motet@127.0.0.1:${toString pgPort}/postgres";
@@ -195,9 +299,21 @@ in
     MOTET_RELAY_URL = "http://localhost:2470";
     MOTET_TAP_URL = "http://localhost:2480";
     MOTET_PDS_RS_URL = "http://localhost:4800";
+    MOTET_APPVIEW_URL = "http://localhost:2583";
+    MOTET_APPVIEW_TAP_URL = "http://localhost:2480";
+    MOTET_APPVIEW_TAP_ADMIN_PASSWORD = networkPassword;
+    MOTET_APPVIEW_S3_ENDPOINT = "http://127.0.0.1:${toString s3Port}";
+    MOTET_APPVIEW_S3_BUCKET = "motet-dev";
+    MOTET_APPVIEW_S3_ACCESS_KEY = s3Key;
+    MOTET_APPVIEW_S3_SECRET_KEY = s3Secret;
     MOTET_TENOR_PUBLIC_URL = "http://localhost:2584";
     MOTET_TENOR_HANDLE_DOMAINS = ".motet.test";
     MOTET_TENOR_CRAWLERS = "http://localhost:2470";
+    MOTET_TENOR_S3_ENDPOINT = "http://127.0.0.1:${toString s3Port}";
+    MOTET_TENOR_S3_BUCKET = "motet-tenor";
+    MOTET_TENOR_S3_ACCESS_KEY = s3Key;
+    MOTET_TENOR_S3_SECRET_KEY = s3Secret;
+    MOTET_TENOR_MASTER_KEY_FILE = "${config.devenv.state}/tenor/master-key";
     MOTET_ALLOW_PRIVATE_NETWORK = "true";
     MOTET_RELAY_ADMIN_PASSWORD = networkPassword;
     MOTET_TAP_ADMIN_PASSWORD = networkPassword;
@@ -275,9 +391,14 @@ in
       '';
     };
     tests-integration = {
-      description = "Integration tests against PostgreSQL and S3, and Playwright (needs devenv up)";
+      description = "Integration tests and Playwright against the complete local stack (needs devenv up)";
       exec = ''
         set -euo pipefail
+        # A cold start builds the applications as well as starting the services.
+        for port in ${toString pgPort} ${toString s3Port} 2582 2470 2480 4800 2584 2583; do
+          timeout 1800 bash -c "until (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; do sleep 1; done" \
+            || { echo "port $port never opened; is devenv up running?" >&2; exit 1; }
+        done
         cargo nextest run --workspace --profile integration --run-ignored only "$@"
         pnpm test:e2e
       '';
@@ -307,10 +428,10 @@ in
 
     # Running.
     network-smoke = {
-      description = "Verify two local Rust PDS accounts publish pilot profiles through relay and Tap (needs devenv up)";
+      description = "Verify two local PDS profiles reach the AppView through relay and Tap (needs devenv up)";
       exec = ''
         set -euo pipefail
-        exec ${smokePython}/bin/python ${./network-smoke.py} "$@"
+        exec ${pkgs.python3}/bin/python ${./network-smoke.py} "$@"
       '';
     };
     stack = {
@@ -333,11 +454,6 @@ in
         lint
         lexgen-check
         tests --profile ci
-        # A cold start includes initdb and SeaweedFS's master election.
-        for port in ${toString pgPort} ${toString s3Port}; do
-          timeout 180 bash -c "until (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; do sleep 1; done" \
-            || { echo "port $port never opened; is devenv up running?" >&2; exit 1; }
-        done
         tests-integration
         network-smoke
       '';
@@ -378,6 +494,6 @@ in
   enterShell = ''
     # stdenv also supplies GNU fmt; prefer the repository's formatter command.
     export PATH="${config.scripts.fmt.scriptPackage}/bin:$PATH"
-    echo "Motet dev shell. 'devenv up' starts PostgreSQL, S3 and the local atproto network; 'devenv info' lists scripts."
+    echo "Motet dev shell. 'devenv up' starts the local network, AppView and tenor; 'devenv info' lists scripts."
   '';
 }

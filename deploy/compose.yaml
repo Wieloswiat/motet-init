@@ -2,7 +2,7 @@
 # will be, on one machine. `stack` in the dev shell builds the images with nix
 # and brings this up with podman-compose; `docker compose` works the same.
 #
-# Development credentials only. `devenv up` runs these dependencies natively.
+# Development credentials only. `devenv up` also runs these services natively.
 # The atproto services, AppView and tenor share PLC's network namespace so
 # their canonical localhost DID endpoints work inside and outside containers.
 # Do not run this stack beside `devenv up`: they use the same atproto ports.
@@ -29,7 +29,7 @@ services:
     # SeaweedFS's S3 gateway, as in the dev shell (it has the conditional
     # writes the log's fencing needs).
     image: docker.io/chrislusf/seaweedfs:latest
-    command: server -dir=/data -s3 -s3.config=/etc/seaweedfs/s3.json
+    command: server -dir=/data -master.telemetry=false -volume.max=32 -s3 -s3.config=/etc/seaweedfs/s3.json
     configs:
       - source: s3-identities
         target: /etc/seaweedfs/s3.json
@@ -45,9 +45,33 @@ services:
     entrypoint: ['sh', '-c']
     command:
       - |
-        for bucket in motet-archive motet-tenor; do
-          echo "s3.bucket.create -name $$bucket" | weed shell -master=s3:9333 || exit 1
+        set -eu
+        until echo 's3.bucket.list' | weed shell -master=s3:9333 >/dev/null 2>&1; do
+          sleep 1
         done
+        for bucket in motet-archive motet-tenor; do
+          if ! output=$$(echo "s3.bucket.create -name $$bucket" | weed shell -master=s3:9333 2>&1); then
+            echo 's3.bucket.list' | weed shell -master=s3:9333 | grep -Eq "^[[:space:]]+$$bucket[[:space:]]" \
+              || { echo "$$output" >&2; exit 1; }
+          fi
+        done
+
+  tenor-key:
+    image: docker.io/chrislusf/seaweedfs:latest
+    user: '0:0'
+    entrypoint: ['sh', '-c']
+    command:
+      - |
+        set -eu
+        umask 077
+        if [ ! -f /key/master-key ]; then
+          dd if=/dev/urandom of=/key/master-key.tmp bs=32 count=1
+          mv /key/master-key.tmp /key/master-key
+        fi
+        chown 65534:65534 /key/master-key
+        chmod 600 /key/master-key
+    volumes:
+      - tenor-key:/key
 
   plc:
     image: localhost/motet-plc:dev
@@ -96,7 +120,7 @@ services:
       TAP_DATABASE_URL: sqlite:///data/tap.sqlite
       TAP_RELAY_URL: http://localhost:2470
       TAP_PLC_URL: http://localhost:2582
-      TAP_SIGNAL_COLLECTION: at.motet.pilot.profile
+      TAP_FULL_NETWORK: 'true'
       TAP_COLLECTION_FILTERS: at.motet.pilot.*,group.opensocial.*
       TAP_DISABLE_ACKS: 'false'
       TAP_ADMIN_PASSWORD: motet-network-dev
@@ -140,6 +164,38 @@ services:
       test: ['CMD', '/bin/curl', '--fail', '--silent', 'http://localhost:4800/_ready']
       interval: 2s
       retries: 30
+  relay-hosts:
+    image: localhost/motet-relay:dev
+    network_mode: service:plc
+    entrypoint: ['/bin/curl']
+    command:
+      - --fail-early
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --user
+      - admin:motet-network-dev
+      - --header
+      - 'Content-Type: application/json'
+      - --data
+      - '{"hostname":"http://localhost:4800"}'
+      - http://localhost:2470/admin/pds/requestCrawl
+      - --next
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --user
+      - admin:motet-network-dev
+      - --header
+      - 'Content-Type: application/json'
+      - --data
+      - '{"hostname":"http://localhost:2584"}'
+      - http://localhost:2470/admin/pds/requestCrawl
+    restart: on-failure
+    depends_on:
+      relay: { condition: service_healthy }
+      pds-rs: { condition: service_healthy }
+      tenor: { condition: service_started }
 
   appview-migrate:
     image: localhost/motet-appview:dev
@@ -168,13 +224,15 @@ services:
       MOTET_ALLOW_PRIVATE_NETWORK: 'true'
       MOTET_PLC_DIRECTORY: http://localhost:2582
       MOTET_RELAY_URL: http://localhost:2470
-      MOTET_TAP_URL: http://localhost:2480
-      MOTET_TAP_ADMIN_PASSWORD: motet-network-dev
+      MOTET_APPVIEW_TAP_URL: http://localhost:2480
+      MOTET_APPVIEW_TAP_ADMIN_PASSWORD: motet-network-dev
       MOTET_PDS_RS_URL: http://localhost:4800
       RUST_LOG: info,motet=debug
     depends_on:
       appview-migrate: { condition: service_completed_successfully }
+      tap: { condition: service_healthy }
       buckets: { condition: service_completed_successfully }
+      relay-hosts: { condition: service_completed_successfully }
 
   tenor:
     image: localhost/motet-tenor:dev
@@ -189,14 +247,19 @@ services:
       MOTET_TENOR_S3_BUCKET: motet-tenor
       MOTET_TENOR_S3_ACCESS_KEY: motet
       MOTET_TENOR_S3_SECRET_KEY: motet-dev-secret
+      MOTET_TENOR_MASTER_KEY_FILE: /run/motet-key/master-key
       MOTET_ALLOW_PRIVATE_NETWORK: 'true'
       MOTET_PLC_DIRECTORY: http://localhost:2582
       MOTET_RELAY_URL: http://localhost:2470
       MOTET_TAP_URL: http://localhost:2480
       MOTET_PDS_RS_URL: http://localhost:4800
       RUST_LOG: info,motet=debug
+    volumes:
+      - tenor-key:/run/motet-key:ro
     depends_on:
       buckets: { condition: service_completed_successfully }
+      tenor-key: { condition: service_completed_successfully }
+      relay: { condition: service_healthy }
 
 configs:
   s3-identities:
@@ -211,3 +274,4 @@ volumes:
   relay:
   tap:
   pds-rs:
+  tenor-key:

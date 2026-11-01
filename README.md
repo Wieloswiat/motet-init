@@ -16,7 +16,7 @@ S3 storage, and a [local atproto network](docs/local-network.md). With
 
 ```sh
 direnv allow          # or: nix develop --no-pure-eval
-devenv up             # PostgreSQL, S3 and the local atproto network, in another terminal
+devenv up             # PostgreSQL, S3, atproto, AppView and tenor (another terminal)
 tests                 # the default suites
 ```
 
@@ -27,8 +27,8 @@ tests                 # the default suites
 | `fmt`                            | Format Rust, Nix, TOML and the web packages                                                     |
 | `lint`                           | Clippy and rustdoc (warnings are errors), cargo-deny, typos, workflow and web lint, type checks |
 | `tests`                          | Pure, property and in-process tests; vitest. No services needed                                 |
-| `tests-integration`              | Tests against PostgreSQL and S3, and Playwright (needs `devenv up`)                             |
-| `network-smoke`                  | Two Rust PDS accounts publish pilot profiles through the relay and Tap (needs `devenv up`)      |
+| `tests-integration`              | Service-backed tests and Playwright against the complete local stack (needs `devenv up`)        |
+| `network-smoke`                  | Two local PDS profiles reach the AppView through the relay and Tap (needs `devenv up`)          |
 | `lexgen`                         | Regenerate Rust and TypeScript types after editing `lexicons/`                                  |
 | `devenv test`                    | The whole CI gate, services included                                                            |
 | `stack`                          | The deployment-shaped stack in containers (`deploy/compose.yaml`)                               |

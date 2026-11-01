@@ -1,23 +1,38 @@
 # Local atproto network
 
-`devenv up` starts PLC, relay, Tap and the atproto-crates PDS beside PostgreSQL
-and SeaweedFS. No account, DID or record is sent to the public atproto network.
-All four service binaries come from pinned Nix derivations, not runtime `npx`
-or mutable container tags. `stack` builds OCI images from those same derivations.
+`devenv up` starts PLC, relay, Tap, the atproto-crates PDS, AppView and tenor
+beside PostgreSQL and SeaweedFS. No account, DID or record is sent to the
+public atproto network. The four network binaries come from pinned Nix
+derivations, not runtime `npx` or mutable container tags. `stack` builds OCI
+images from those same derivations.
+
+The native AppView and tenor processes build with Cargo in the dev shell.
+They share the incremental build cache and environment with tests, so a local
+edit does not require rebuilding the Nix packages. Restart the corresponding
+process after changing its code.
 
 ## Endpoints
 
 The dev shell exports these URLs for tests and clients:
 
-| Environment variable  | URL                     | Service                          |
-| --------------------- | ----------------------- | -------------------------------- |
-| `MOTET_PLC_DIRECTORY` | `http://localhost:2582` | In-memory DID PLC directory      |
-| `MOTET_RELAY_URL`     | `http://localhost:2470` | Relay; metrics on port 2471      |
-| `MOTET_TAP_URL`       | `http://localhost:2480` | Tap's acknowledged event channel |
-| `MOTET_PDS_RS_URL`    | `http://localhost:4800` | atproto-crates PDS               |
+| Environment variable        | URL                        | Service                      |
+| --------------------------- | -------------------------- | ---------------------------- |
+| `DATABASE_URL`              | `postgres://…:54329/motet` | AppView development database |
+| `MOTET_APPVIEW_S3_ENDPOINT` | `http://127.0.0.1:9010`    | SeaweedFS S3                 |
+| `MOTET_PLC_DIRECTORY`       | `http://localhost:2582`    | In-memory DID PLC directory  |
+| `MOTET_RELAY_URL`           | `http://localhost:2470`    | Relay; metrics on port 2471  |
+| `MOTET_TAP_URL`             | `http://localhost:2480`    | Tap's acknowledged channel   |
+| `MOTET_PDS_RS_URL`          | `http://localhost:4800`    | atproto-crates PDS           |
+| `MOTET_APPVIEW_URL`         | `http://localhost:2583`    | AppView                      |
+| `MOTET_TENOR_PUBLIC_URL`    | `http://localhost:2584`    | tenor                        |
 
-Ports 2583 and 2584 remain the AppView and tenor. `devenv up` does not start
-those two application binaries; `stack` does.
+The AppView uses the `motet` development database and `motet-dev` archive
+bucket. Integration tests create separate databases and use `motet-test`.
+The tenor uses the separate `motet-tenor` bucket. Its 32-byte master key is
+created once at `$DEVENV_STATE/tenor/master-key` with mode `0600`.
+Keep that file with the tenor state: losing it prevents the tenor from
+using existing Worlds' keys.
+
 The shell and compose set `MOTET_TENOR_PUBLIC_URL=http://localhost:2584`,
 `MOTET_TENOR_HANDLE_DOMAINS=.motet.test` and
 `MOTET_TENOR_CRAWLERS=http://localhost:2470`. Worlds can therefore use handles
@@ -37,20 +52,21 @@ In one dev shell, run `devenv up`. In another, run:
 network-smoke
 ```
 
-The check creates `alice.test` and `bob.test` on the Rust PDS. It writes each
-account's `at.motet.pilot.profile/self` record, requests a relay crawl of that
-PDS, and waits for Tap to deliver both exact records and CIDs.
-It acknowledges every channel event. A second run reuses only accounts
-with the smoke password and writes new records, so stale events cannot pass.
+The check creates fresh Alice and Bob accounts on the Rust PDS, writes each
+account's `at.motet.pilot.profile/self` record, and requests a relay crawl of
+the PDS. It waits for the AppView's `getRecordVersion` query to return both
+exact record URIs, CIDs and values. Fresh accounts and values ensure old
+projections or PLC identities cannot make a later run pass.
 
 This protects the cross-service ingestion property: a private-address dialer,
-missed crawl or wrong collection filter must not silently lose a pilot's
-profile. It does not test a second PDS implementation, OAuth sign-in, private
-Space access, or the AppView's indexer. Do not run another Tap channel consumer:
-consumers share events rather than receive independent broadcasts.
+missed crawl, wrong collection filter or stalled AppView consumer must not
+silently lose a pilot's profile. Tap's acknowledged channel is shared rather
+than broadcast, so only the AppView consumes it. The smoke check never opens
+the channel itself. It does not test a second PDS implementation, OAuth
+sign-in or private Space access.
 
-The relay administrator registers the Rust PDS through the authenticated admin
-endpoint. `network-smoke` does this; no relay or Tap database is seeded.
+The local stack registers the Rust PDS and tenor through the relay's
+authenticated admin endpoint. `network-smoke` also requests the PDS crawl.
 For another local PDS, use its full HTTP URL in the same call:
 
 ```sh
@@ -61,18 +77,20 @@ curl --fail-with-body \
   "$MOTET_RELAY_URL/admin/pds/requestCrawl"
 ```
 
-PDSes also announce writes to `PDS_CRAWLERS=http://localhost:2470`, but these
+The PDS and tenor also announce to `http://localhost:2470`, but these
 announcements do not replace administrator registration of local hosts. A
 public relay's public crawl endpoint is not intended for localhost URLs.
 
-Tap enrolls repositories when it sees `at.motet.pilot.profile` on the relay
-firehose, then backfills them through `com.atproto.sync.getRepo`. Its comma-
-separated collection filters are `at.motet.pilot.*,group.opensocial.*`.
+Tap runs in full-network mode on this isolated network. It enrolls every
+repository seen on the relay, including Worlds' group repos, and backfills it
+through `com.atproto.sync.getRepo`. A pilot-profile signal alone would miss
+Worlds because their repos need not contain that collection. The output
+collection filters remain `at.motet.pilot.*,group.opensocial.*`. Full-network
+mode is suitable for this small local network, not for a public relay.
+
 `TAP_DISABLE_ACKS=false` keeps acknowledgments enabled. Tap health, `/channel`
 and `/info/:did` require Basic auth with user `admin` and the dev password in
-`MOTET_TAP_ADMIN_PASSWORD` (`motet-network-dev`). The pinned relay does not
-implement `listReposByCollection`; Tap's periodic enumeration can report 404.
-Fresh signal records, rather than that enumeration, enroll local repositories.
+`MOTET_TAP_ADMIN_PASSWORD` (`motet-network-dev`).
 
 ## State and restart
 
@@ -83,7 +101,8 @@ Motet records.
 
 PLC deliberately has no `DATABASE_URL`: it keeps DIDs in memory. Stopping PLC
 therefore loses identity state, while the other services retain their files.
-For a fresh network after stopping **all** processes, remove only its generated
+Existing accounts and Worlds cannot resolve against the new directory. For a
+fresh network after stopping **all** processes, remove only its generated
 state, then start `devenv up` again:
 
 ```sh
@@ -100,8 +119,10 @@ The compose services share PLC's network namespace. This preserves canonical
 the AppView and tenor, while keeping PostgreSQL and S3 on the compose bridge.
 Do not start compose and native services together: they use the same ports.
 After stopping compose, remove its three network volumes before starting a new
-PLC instance (`motet_relay`, `motet_tap`, `motet_pds-rs`). Do not remove the
-PostgreSQL or S3 volumes unless their data should also be discarded.
+PLC instance (`motet_relay`, `motet_tap`, `motet_pds-rs`). Compose keeps the
+tenor's master key in the `motet_tenor-key` volume. Keep that volume with the
+tenor's S3 data; removing the key loses access to existing Worlds' keys. Do not
+remove the PostgreSQL or S3 volumes unless their data should also be discarded.
 
 ## Reproducible sources and compatibility
 
@@ -138,9 +159,10 @@ Build just the network packages without the workspace gates:
 nix build --no-pure-eval .#plc .#indigo .#pds-rs
 ```
 
-`nix flake check` also includes these three package builds. `stack` builds and
-loads `plc-image`, `relay-image`, `tap-image` and `pds-rs-image`, as well as the
-AppView and tenor images.
+`nix flake check` does not build these packages. The service-backed CI gate
+builds them to start the local network. `stack` builds and loads `plc-image`,
+`relay-image`, `tap-image` and `pds-rs-image`, as well as the AppView and
+tenor images.
 
 ## Deferred reference TypeScript PDS
 
