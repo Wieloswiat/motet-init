@@ -7,8 +7,8 @@
 //!
 //! - HTTPS only, no redirects followed, no ambient proxy.
 //! - Names resolve through [`PublicOnly`], which refuses private, loopback,
-//!   link-local and other non-public addresses *after* DNS, so rebinding a
-//!   public name to an internal address doesn't get through.
+//!   link-local and other non-public addresses *after* DNS. Fetcher GETs also
+//!   refuse non-public IP literals, which bypass DNS resolution.
 //! - Bounded time and response size.
 //!
 //! Development against a local PDS needs the opposite policy; that is an
@@ -58,6 +58,8 @@ pub enum FetchError {
     TooLarge(u64),
     #[error("the server answered {0}")]
     Status(reqwest::StatusCode),
+    #[error("the address {0} is not public")]
+    NonPublicAddress(IpAddr),
 }
 
 /// The client every outbound request goes through.
@@ -84,8 +86,9 @@ impl Fetcher {
     }
 
     /// The underlying client, for SDKs that take one (atproto-crates' clients
-    /// accept a `reqwest::Client`; the workspace pins the same reqwest), so
-    /// they inherit this policy.
+    /// accept a `reqwest::Client`; the workspace pins the same reqwest).
+    /// DNS filtering applies, but callers must use [`Self::check_destination`]
+    /// on untrusted URLs: reqwest connects to IP literals without resolving them.
     #[must_use]
     pub fn client(&self) -> &reqwest::Client {
         &self.client
@@ -97,6 +100,12 @@ impl Fetcher {
     #[must_use]
     pub fn allows_private_network(&self) -> bool {
         self.policy.allow_private
+    }
+
+    /// Maximum response body size for SDK calls using this fetcher's client.
+    #[must_use]
+    pub fn max_response_bytes(&self) -> u64 {
+        self.policy.max_response_bytes
     }
 
     /// GETs `url` and returns the body of a successful response, refusing
@@ -112,7 +121,9 @@ impl Fetcher {
     /// GETs `url` and returns the status and body whatever the status, for
     /// protocols whose error bodies mean something (XRPC's `RecordNotFound`).
     pub async fn get(&self, url: &str) -> Result<Response, FetchError> {
-        let mut response = self.client.get(url).send().await?;
+        let request = self.client.get(url).build()?;
+        self.check_destination(request.url())?;
+        let mut response = self.client.execute(request).await?;
         let status = response.status();
         let limit = self.policy.max_response_bytes;
         if response.content_length().is_some_and(|n| n > limit) {
@@ -126,6 +137,25 @@ impl Fetcher {
             }
         }
         Ok(Response { status, body })
+    }
+
+    /// Refuses non-public literal IP hosts unless private access is enabled.
+    ///
+    /// Call this before passing an untrusted URL to an SDK using [`Self::client`].
+    /// This does not validate the URL's scheme or other protocol requirements.
+    pub fn check_destination(&self, url: &reqwest::Url) -> Result<(), FetchError> {
+        if !self.policy.allow_private
+            && let Some(ip) = url.host_str().and_then(|host| {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<IpAddr>()
+                    .ok()
+            })
+            && !is_public(ip)
+        {
+            return Err(FetchError::NonPublicAddress(ip));
+        }
+        Ok(())
     }
 }
 
@@ -199,6 +229,67 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Literal hosts must not bypass the DNS address policy and reach private networks.
+    #[tokio::test]
+    async fn non_public_literal_hosts_are_refused_before_connecting() {
+        let fetcher = Fetcher::new(Policy::default()).expect("client builds");
+        for host in [
+            "0.1.2.3",
+            "0.0.0.0",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "192.0.0.1",
+            "192.0.2.1",
+            "198.18.0.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "[::]",
+            "[::1]",
+            "[ff02::1]",
+            "[fc00::1]",
+            "[fe80::1]",
+            "[2001:db8::1]",
+            "[64:ff9b::a9fe:a9fe]",
+            "[2002:7f00:1::]",
+            "[::ffff:127.0.0.1]",
+            "[::ffff:169.254.169.254]",
+            "2130706433",
+            "0177.0.0.1",
+            "0x7f000001",
+        ] {
+            let url = format!("https://{host}/");
+            let parsed = reqwest::Url::parse(&url).expect("URL parses");
+            assert!(
+                matches!(fetcher.check_destination(&parsed), Err(FetchError::NonPublicAddress(_))),
+                "{url} must be refused before an SDK request"
+            );
+            assert!(
+                matches!(fetcher.get(&url).await, Err(FetchError::NonPublicAddress(_))),
+                "{url} must be refused before connecting"
+            );
+        }
+    }
+
+    /// The literal guard must not reject public hosts or the explicit local-development opt-in.
+    #[test]
+    fn literal_host_policy_preserves_public_and_opted_in_addresses() {
+        let production = Fetcher::new(Policy::default()).expect("client builds");
+        let local = Fetcher::new(Policy::default().allow_private()).expect("client builds");
+        for host in ["1.1.1.1", "8.8.8.8", "[2606:4700:4700::1111]", "[::ffff:8.8.8.8]"] {
+            let url = reqwest::Url::parse(&format!("https://{host}/")).expect("URL parses");
+            assert!(production.check_destination(&url).is_ok(), "{host} is public");
+        }
+        for host in ["127.0.0.1", "[::1]", "[::ffff:127.0.0.1]"] {
+            let url = reqwest::Url::parse(&format!("http://{host}/")).expect("URL parses");
+            assert!(local.check_destination(&url).is_ok(), "{host} is explicitly permitted");
+        }
+    }
 
     #[test]
     fn known_internal_addresses_are_refused() {
