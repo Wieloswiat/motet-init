@@ -137,7 +137,10 @@ services:
       MOTET_WEB_UPSTREAM: host.docker.internal:4174
     volumes:
       - ../nix/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ../.devenv/state/tls:/run/motet-tls:ro
+      - *local-ca
+      - ../.devenv/state/tls/rootCA.crt:/run/motet-tls/rootCA.crt:ro
+      - ../.devenv/state/tls/server.crt:/run/motet-tls/server.crt:ro
+      - ../.devenv/state/tls/server.key:/run/motet-tls/server.key:ro
     depends_on:
       plc: { condition: service_healthy }
     healthcheck:
