@@ -35,7 +35,7 @@ use crate::shard::{self, Entry, Handle, Op, Options, Shard, Txn};
 use crate::store::keys;
 use crate::world::{Status, WorldInfo};
 
-use super::feed::{Feed, Subscription};
+use super::feed::{Feed, StartError, Subscription};
 use super::frame;
 
 const WORLD: &str = "did:plc:abcdefghijklmnopqrstuvwx";
@@ -594,6 +594,25 @@ async fn cursor_backfill_and_live_delivery_have_no_gaps_or_duplicates() {
     }
     emit(&handle, 360, 1).await;
     assert_eq!(next_sequence(&mut feed).await, 360);
+}
+
+/// A relay may subscribe at cursor zero before the first event exists and at
+/// the current head later. An off-by-one future-cursor check would disconnect
+/// it permanently or skip the first World on a fresh tenor.
+#[tokio::test]
+async fn empty_and_current_head_cursors_deliver_new_events() {
+    let handle = running().await;
+    assert!(matches!(
+        Subscription::new(&handle).start(Some(1)).await,
+        Err(StartError::FutureCursor)
+    ));
+    let mut from_empty = Subscription::new(&handle).start(Some(0)).await.expect("empty cursor");
+    emit(&handle, 0, 1).await;
+    assert_eq!(next_sequence(&mut from_empty).await, 0);
+
+    let mut from_head = Subscription::new(&handle).start(Some(0)).await.expect("head cursor");
+    emit(&handle, 1, 1).await;
+    assert_eq!(next_sequence(&mut from_head).await, 1);
 }
 
 /// Overflow the real shard's broadcast buffer, then resume through more than
