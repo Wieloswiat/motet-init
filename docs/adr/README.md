@@ -23,6 +23,7 @@ Superseded.
 | [0013](0013-tenor-hosts-worlds.md)             | The tenor hosts Worlds itself, on atproto-crates' protocol crates        | Accepted; World sessions superseded by 0018               |
 | [0014](0014-tenor-state-in-slatedb.md)         | Tenor state in SlateDB, with the shard log as its only WAL               | Accepted                                                  |
 | [0015](0015-opensocial-group.md)               | Adopt opensocial.group at a pinned revision                              | Provisional; group OAuth assumption superseded by 0018    |
-| [0016](0016-local-atproto-network.md)          | A local atproto network in the dev shell, with patched indigo            | Accepted; PDS coverage and patch scope superseded by 0017 |
-| [0017](0017-rust-pds-local-network.md)         | Ship the local network with the Rust PDS; defer reference PDS coverage   | Accepted                                                  |
+| [0016](0016-local-atproto-network.md)          | A local atproto network in the dev shell, with patched indigo            | Accepted; PDS/patch by 0017; HTTP endpoints by 0019       |
+| [0017](0017-rust-pds-local-network.md)         | Ship the local network with the Rust PDS; defer reference PDS coverage   | Accepted; HTTP endpoints superseded by 0019               |
 | [0018](0018-world-service-auth.md)             | Member service tokens authorize World actions                            | Accepted                                                  |
+| [0019](0019-local-tls-for-oauth.md)            | Local HTTPS origins for PDS OAuth                                        | Accepted                                                  |
