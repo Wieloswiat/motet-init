@@ -20,8 +20,9 @@ Superseded.
 | [0010](0010-lexicon-codegen.md)                | Our own lexicon code generator                                           | Accepted                                                  |
 | [0011](0011-flaky-tests-fail.md)               | A test that passes only on its retry fails CI                            | Accepted                                                  |
 | [0012](0012-design-system-and-demo-screens.md) | The exported design system, and demo screens in the web app              | Provisional                                               |
-| [0013](0013-tenor-hosts-worlds.md)             | The tenor hosts Worlds itself, on atproto-crates' protocol crates        | Accepted                                                  |
+| [0013](0013-tenor-hosts-worlds.md)             | The tenor hosts Worlds itself, on atproto-crates' protocol crates        | Accepted; World sessions superseded by 0018               |
 | [0014](0014-tenor-state-in-slatedb.md)         | Tenor state in SlateDB, with the shard log as its only WAL               | Accepted                                                  |
-| [0015](0015-opensocial-group.md)               | Adopt opensocial.group at a pinned revision                              | Provisional                                               |
+| [0015](0015-opensocial-group.md)               | Adopt opensocial.group at a pinned revision                              | Provisional; group OAuth assumption superseded by 0018    |
 | [0016](0016-local-atproto-network.md)          | A local atproto network in the dev shell, with patched indigo            | Accepted; PDS coverage and patch scope superseded by 0017 |
 | [0017](0017-rust-pds-local-network.md)         | Ship the local network with the Rust PDS; defer reference PDS coverage   | Accepted                                                  |
+| [0018](0018-world-service-auth.md)             | Member service tokens authorize World actions                            | Accepted                                                  |

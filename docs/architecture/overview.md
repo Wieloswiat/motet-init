@@ -24,11 +24,12 @@ research and plan"); the decisions that shaped the code are in
 - **The tenor** (`crates/tenor`), which anyone can run. It hosts each World as
   a group account ([ADR 0013](../adr/0013-tenor-hosts-worlds.md)): the
   World's `did:plc` (the owner holds the first rotation key), its signed
-  public repo and firehose, its Spaces as authority and host, and OAuth
-  sessions that let GMs act as the World. Every change for a World (an
-  admission, a repo commit, a Space write) runs on its shard's one writer,
-  is made durable in a fenced log in the tenor's bucket, then lands in the
-  shard's SlateDB ([ADR 0014](../adr/0014-tenor-state-in-slatedb.md)).
+  public repo and firehose, and its Spaces as authority and host. Members act
+  as the World using service tokens from their own PDS
+  ([ADR 0018](../adr/0018-world-service-auth.md)). Every change for a World
+  runs on its shard's one writer, is made durable in a fenced log in the
+  tenor's bucket, then lands in the shard's SlateDB
+  ([ADR 0014](../adr/0014-tenor-state-in-slatedb.md)).
 - **Workers**: Typst rendering (`crates/render`) runs in a separate,
   resource-limited process because its input is untrusted. An image proxy,
   email and exports come later.
@@ -45,7 +46,7 @@ research and plan"); the decisions that shaped the code are in
 | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | Repositories hold the truth; projections rebuild from the archive | `appview::projection::apply` is the only writer of projections, for the live indexer and for a rebuild alike; `tests/rebuild.rs`          |
 | A post counts once the World admits it                            | `rules::world` decides; `tenor::admission` reads the record back from its author's repo first; `rules::view` shows only what was admitted |
-| A World is a group account on its tenor                           | `tenor::{identity,keys,repo,sync,spaces,oauth}`: identity, hosted repositories, role-backed Spaces and GM-attributed sessions             |
+| A World is a group account on its tenor                           | `tenor::{identity,keys,repo,sync,spaces,authorization}`: hosted repos, role-backed Spaces and member-attributed service writes            |
 | Spaces are part of the design                                     | `spaces`: one Space per audience, per-reader serving decisions with a freshness bound                                                     |
 | Buckets for what must last, PostgreSQL for what must be queried   | `log`: group commit, fencing, read-back reconciliation; the tenor's shard and the AppView's archive both use it                           |
 
@@ -73,8 +74,8 @@ handlers can't forget it:
   each with `aud=*`. The [permission specification](https://atproto.com/specs/permission#rpc)
   permits a wildcard audience when the method is specific. The pinned Rust
   PDS checks the requested method and audience when minting
-  `com.atproto.server.getServiceAuth` tokens. The AppView requests an exact
-  tenor service DID reference and method; the tenor verifies both.
+  `com.atproto.server.getServiceAuth` tokens. The AppView requests the World
+  or tenor DID audience and exact method required by the endpoint.
 - **OAuth key custody**: `MOTET_APPVIEW_PUBLIC_ORIGIN` is the canonical public
   HTTPS origin, and `MOTET_APPVIEW_DEFAULT_PDS` selects the PDS for signup.
   `MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE` names a P-256 private scalar, and
@@ -82,10 +83,14 @@ handlers can't forget it:
   file accepts raw bytes or standard base64. Keep both keys private, persistent
   and backed up outside PostgreSQL. Losing or replacing the sealing key
   invalidates stored sessions and pending logins.
-- **World sessions**: `tenor::oauth` authenticates the GM at their own PDS,
-  then grants only scopes allowed by their World roles. The transport verifies
-  DPoP possession, nonce and replay identity. Every session write rechecks current
-  roles inside the shard transaction and appends an audit record in the GM Space.
+- **World authorization**: `tenor::authorization` checks the verified member
+  issuer's current World roles and opensocial grants in the shard transaction,
+  and appends the member-attributed audit record in the GM Space atomically.
+  World write tokens name the hosted World's DID, bare or with its
+  `#motet_tenor` fragment, and the exact XRPC method. World creation instead
+  names the tenor's bare service DID. The tenor issues no World OAuth
+  sessions. Typed procedures create public scenes and change their casts; the
+  World publishes the cast with the scene.
 - **Serialized World commands** and **operations**: `rules::world::World::apply`
   with an `OperationId`; a retried operation returns its first outcome, a
   reused one is refused. `tenor::shard` makes outcomes durable before
