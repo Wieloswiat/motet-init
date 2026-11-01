@@ -60,6 +60,28 @@ handlers can't forget it:
 - **Service auth**: `xrpc::service_auth` verifies the token against the
   issuer's `#atproto` key, the audience, the method (`lxm`) and a lifetime cap.
   A DID inside a request body is never the caller.
+- **AppView sessions**: `appview::auth` is the confidential atproto OAuth
+  client for the reader's PDS. The web app and AppView share one HTTPS
+  origin, with `/oauth/*` and `/xrpc/*` routed to the AppView. The browser
+  receives an opaque, host-only, HttpOnly, Secure, SameSite=Lax cookie;
+  tokens, DPoP keys and pending PKCE state are sealed before they reach
+  PostgreSQL. Session refresh is serialized across instances. Sign-out first
+  revokes the local session and also requests remote revocation when the PDS
+  advertises it.
+- **AppView write grants**: OAuth requests `atproto`, repo access for Motet
+  posts, profiles and characters, and one `rpc:` permission per tenor method,
+  each with `aud=*`. The [permission specification](https://atproto.com/specs/permission#rpc)
+  permits a wildcard audience when the method is specific. The pinned Rust
+  PDS checks the requested method and audience when minting
+  `com.atproto.server.getServiceAuth` tokens. The AppView requests an exact
+  tenor service DID reference and method; the tenor verifies both.
+- **OAuth key custody**: `MOTET_APPVIEW_PUBLIC_ORIGIN` is the canonical public
+  HTTPS origin, and `MOTET_APPVIEW_DEFAULT_PDS` selects the PDS for signup.
+  `MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE` names a P-256 private scalar, and
+  `MOTET_APPVIEW_SESSION_KEY_FILE` names a separate 32-byte sealing key. Each
+  file accepts raw bytes or standard base64. Keep both keys private, persistent
+  and backed up outside PostgreSQL. Losing or replacing the sealing key
+  invalidates stored sessions and pending logins.
 - **World sessions**: `tenor::oauth` authenticates the GM at their own PDS,
   then grants only scopes allowed by their World roles. The transport verifies
   DPoP possession, nonce and replay identity. Every session write rechecks current
@@ -89,8 +111,7 @@ profiles in a World's meta Space and private scenes are not available yet.
 A World with neither a public declaration nor a public scene cannot be
 looked up from its public repo. A declaration identifies a group but not
 necessarily a Motet World.
-Next, in rough order: Spaces ingestion;
-people's sign-in to the AppView; wiring the web app's screens to the AppView;
+Next, in rough order: Spaces ingestion; wiring the web app's screens to the AppView;
 dice through the tenor; the owner's export and recovery onto a fresh tenor;
 typst.ts vector artifacts instead of static SVG
 ([ADR 0008](../adr/0008-rendering.md)).
