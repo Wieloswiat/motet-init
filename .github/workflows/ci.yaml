@@ -4,10 +4,10 @@
 #   checks   `nix flake check`: fmt, clippy, the default test suites, cargo-deny
 #            (bans, licences, sources) and lexicon freshness, all hermetic and
 #            cached per derivation.
-#   gate     starts PostgreSQL and S3 from nix/devenv.nix, then runs its `ci`
-#            script (what `devenv test` runs locally): everything above plus
-#            rustdoc's lints, the web packages, and the integration and
-#            end-to-end suites.
+#   gate     sets up local TLS and starts the development services, then runs
+#            the `ci` script (what `devenv test` runs locally): everything
+#            above plus rustdoc's lints, the web packages, and the integration
+#            and end-to-end suites.
 #   images   on a push to main, once both pass: builds the container images
 #            with nix (no Dockerfile) and publishes them.
 name: CI
@@ -82,7 +82,9 @@ jobs:
         with:
           primary-key: devenv-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'pnpm-lock.yaml') }}
           restore-prefixes-first-match: devenv-${{ runner.os }}-
-      - name: Start PostgreSQL and S3
+      - name: Set up local TLS
+        run: nix develop --no-pure-eval --command tls-setup
+      - name: Start development services
         run: |
           # devenv-up is a script, not a package with a bin/ directory. It runs
           # inside the dev shell so processes see the same environment as
@@ -94,7 +96,7 @@ jobs:
       - name: Service logs
         if: ${{ failure() }}
         run: |
-          tail -n 100 services.log
+          if [[ -f services.log ]]; then tail -n 100 services.log; fi
           tail -n 200 .devenv/state/process-compose/process-compose.log || true
       - name: Test report
         if: ${{ !cancelled() }}
