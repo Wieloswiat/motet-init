@@ -59,9 +59,10 @@ handlers can't forget it:
 - **Endpoint authorization**: `xrpc::Registry` declares every method with its
   access rule; `xrpc::server` checks verb, caller and access before reading a
   body. A method can't be served without being declared.
-- **Service auth**: `xrpc::service_auth` verifies the token against the
-  issuer's `#atproto` key, the audience, the method (`lxm`) and a lifetime cap.
-  A DID inside a request body is never the caller.
+- **Service auth**: `xrpc::service_auth` checks audience, method (`lxm`) and
+  lifetime before resolving the issuer, then verifies its `#atproto` key.
+  DID documents are cached for at most five seconds; a DID inside a request
+  body is never the caller.
 - **AppView sessions**: `appview::auth` is the confidential atproto OAuth
   client for the reader's PDS. The web app and AppView share one HTTPS
   origin, with `/oauth/*` and `/xrpc/*` routed to the AppView. The browser
@@ -101,11 +102,15 @@ handlers can't forget it:
 - **World authorization**: `tenor::authorization` checks the verified member
   issuer's current World roles and opensocial grants in the shard transaction,
   and appends the member-attributed audit record in the GM Space atomically.
-  World write tokens name the hosted World's DID, bare or with its
-  `#motet_tenor` fragment, and the exact XRPC method. World creation instead
-  names the tenor's bare service DID. The tenor issues no World OAuth
-  sessions. Typed procedures create public scenes and change their casts; the
-  World publishes the cast with the scene.
+  World mutations and creation consume a service-token `jti` once in that
+  transaction; tokens live at most 60 seconds and retries use fresh tokens
+  ([ADR 0021](../adr/0021-single-use-member-tokens.md)). World write tokens
+  name the hosted World's DID, bare or with `#motet_tenor`, and the exact
+  XRPC method. World creation instead names the tenor's bare service DID.
+  The tenor issues no World OAuth sessions. Typed procedures create public
+  scenes and change their casts; the World publishes the cast with the scene.
+  Locally issued delegations for hosted Spaces retain their requesting member
+  for revocation. A remote Space host cannot read that local origin binding.
 - **Serialized World commands** and **operations**: `rules::world::World::apply`
   with an `OperationId`; a retried operation returns its first outcome, a
   reused one is refused. `tenor::shard` makes outcomes durable before
