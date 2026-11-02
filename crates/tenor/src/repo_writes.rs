@@ -24,7 +24,7 @@ use crate::store::keys;
 
 /// Register World-repo mutations authenticated by the member's PDS.
 #[must_use]
-pub fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard: &Handle) -> Service<S> {
+pub(crate) fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard: &Handle) -> Service<S> {
     for nsid in [
         "com.atproto.repo.createRecord",
         "com.atproto.repo.putRecord",

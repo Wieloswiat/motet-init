@@ -50,7 +50,7 @@ const METHODS: [Method; 3] = [
 
 /// Add the typed public-scene procedures to the service-auth registry.
 #[must_use]
-pub fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard: &Handle) -> Service<S> {
+pub(crate) fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard: &Handle) -> Service<S> {
     for method in METHODS {
         let shard = shard.clone();
         let nsid = method.nsid;
@@ -293,6 +293,79 @@ fn require_open(record: &Value) -> Result<(), XrpcError> {
     }
 }
 
+async fn prepare(
+    change: Change,
+    actor: &Actor,
+    txn: &Txn<'_>,
+) -> Result<(String, Value, Command, Option<Cid>), XrpcError> {
+    let world = &actor.world;
+    Ok(match change {
+        Change::Open {
+            title,
+            location,
+            arc,
+            mut cast,
+        } => {
+            cast.insert(actor.actor.clone());
+            if cast.len() > MAX_CAST {
+                return Err(invalid("cast including the opener exceeds 100 members"));
+            }
+            let scene = Tid::new().to_string();
+            let mut record = json!({
+                "$type": SCENE, "title": title, "state": "open", "cast": cast,
+                "openedBy": actor.actor, "createdAt": Datetime::now().to_string(),
+            });
+            let fields = record
+                .as_object_mut()
+                .ok_or_else(|| internal("scene record must be an object"))?;
+            if let Some(location) = location {
+                fields.insert("location".into(), location.into());
+            }
+            if let Some(arc) = arc {
+                fields.insert("arc".into(), arc.into());
+            }
+            let command = Command::OpenScene {
+                scene: SceneId::new(&scene),
+                cast,
+            };
+            (scene, record, command, None)
+        }
+        Change::Cast { scene, mut cast, swap } => {
+            let mut record = existing(txn, world, &scene, swap).await?;
+            require_open(&record)?;
+            let opener = record
+                .get("openedBy")
+                .and_then(Value::as_str)
+                .ok_or_else(|| internal("scene has no opener"))?;
+            cast.insert(Did::new(opener));
+            if cast.len() > MAX_CAST {
+                return Err(invalid("cast including the opener exceeds 100 members"));
+            }
+            record
+                .as_object_mut()
+                .ok_or_else(|| internal("scene record must be an object"))?
+                .insert("cast".into(), json!(cast));
+            let command = Command::SetSceneCast {
+                scene: SceneId::new(&scene),
+                cast,
+            };
+            (scene, record, command, Some(swap))
+        }
+        Change::Close { scene, swap } => {
+            let mut record = existing(txn, world, &scene, swap).await?;
+            require_open(&record)?;
+            record
+                .as_object_mut()
+                .ok_or_else(|| internal("scene record must be an object"))?
+                .insert("state".into(), "closed".into());
+            let command = Command::CloseScene {
+                scene: SceneId::new(&scene),
+            };
+            (scene, record, command, Some(swap))
+        }
+    })
+}
+
 impl Op for Mutate {
     type Output = Changed;
     type Error = XrpcError;
@@ -316,71 +389,7 @@ impl Op for Mutate {
             }
             return Ok(receipt.result);
         }
-        let (scene, record, command, swap) = match self.change {
-            Change::Open {
-                title,
-                location,
-                arc,
-                mut cast,
-            } => {
-                cast.insert(self.actor.actor.clone());
-                if cast.len() > MAX_CAST {
-                    return Err(invalid("cast including the opener exceeds 100 members"));
-                }
-                let scene = Tid::new().to_string();
-                let mut record = json!({
-                    "$type": SCENE, "title": title, "state": "open", "cast": cast,
-                    "openedBy": self.actor.actor, "createdAt": Datetime::now().to_string(),
-                });
-                let fields = record
-                    .as_object_mut()
-                    .ok_or_else(|| internal("scene record must be an object"))?;
-                if let Some(location) = location {
-                    fields.insert("location".into(), location.into());
-                }
-                if let Some(arc) = arc {
-                    fields.insert("arc".into(), arc.into());
-                }
-                let command = Command::OpenScene {
-                    scene: SceneId::new(&scene),
-                    cast,
-                };
-                (scene, record, command, None)
-            }
-            Change::Cast { scene, mut cast, swap } => {
-                let mut record = existing(txn, world, &scene, swap).await?;
-                require_open(&record)?;
-                let opener = record
-                    .get("openedBy")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| internal("scene has no opener"))?;
-                cast.insert(Did::new(opener));
-                if cast.len() > MAX_CAST {
-                    return Err(invalid("cast including the opener exceeds 100 members"));
-                }
-                record
-                    .as_object_mut()
-                    .ok_or_else(|| internal("scene record must be an object"))?
-                    .insert("cast".into(), json!(cast));
-                let command = Command::SetSceneCast {
-                    scene: SceneId::new(&scene),
-                    cast,
-                };
-                (scene, record, command, Some(swap))
-            }
-            Change::Close { scene, swap } => {
-                let mut record = existing(txn, world, &scene, swap).await?;
-                require_open(&record)?;
-                record
-                    .as_object_mut()
-                    .ok_or_else(|| internal("scene record must be an object"))?
-                    .insert("state".into(), "closed".into());
-                let command = Command::CloseScene {
-                    scene: SceneId::new(&scene),
-                };
-                (scene, record, command, Some(swap))
-            }
-        };
+        let (scene, record, command, swap) = prepare(self.change, &self.actor, txn).await?;
         let collection = repo::Nsid::new(SCENE).map_err(repo_error)?;
         let encoded = repo::record_from_json(&record).map_err(repo_error)?;
         let write = if let Some(swap) = swap {

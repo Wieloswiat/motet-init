@@ -177,10 +177,14 @@ impl Fixture {
             "tenorRotationKey": tenor_rotation,
         });
         if let Some(visibility) = visibility {
-            body["visibility"] = json!(visibility);
+            body.as_object_mut()
+                .expect("reservation body is an object")
+                .insert("visibility".into(), json!(visibility));
         }
         if let Some(name) = name {
-            body["name"] = json!(name);
+            body.as_object_mut()
+                .expect("reservation body is an object")
+                .insert("name".into(), json!(name));
         }
         let request: ReserveWorldInput = serde_json::from_value(body).expect("generated reservation input contract");
         let (status, body) = self
@@ -260,6 +264,73 @@ async fn mint_anonymous(f: &Fixture, space: &str, holder: &KeyData) -> (StatusCo
         ))
         .expect("mint request");
     response_json(f.router().oneshot(request).await.expect("mint response")).await
+}
+
+async fn read_public_profile(
+    f: &Fixture,
+    reserved: &ReserveWorldOutput,
+    did: &str,
+    meta: &str,
+    holder: &KeyData,
+) -> Value {
+    let (status, minted) = mint_anonymous(f, meta, holder).await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let credential = minted
+        .get("credential")
+        .and_then(Value::as_str)
+        .expect("public reader credential");
+    let signed_headers = sign_credential_use(credential, did, holder).expect("reader proof");
+    let kem_key = identify_key(
+        reserved
+            .operation
+            .get("verificationMethods")
+            .and_then(|methods| methods.get("atproto_kem"))
+            .and_then(Value::as_str)
+            .expect("reserved public KEM key"),
+    )
+    .expect("KEM did:key");
+    let kem = encapsulate(&kem_key).expect("reader encapsulates to the World's public KEM key");
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("space", meta)
+        .append_pair("repo", did)
+        .append_pair("collection", "group.opensocial.profile")
+        .append_pair("rkey", "self")
+        .finish();
+    let mut request = Request::get(format!("/xrpc/com.atproto.space.getRecord?{params}"))
+        .body(Body::empty())
+        .expect("public profile query");
+    for (name, value) in signed_headers.iter() {
+        request.headers_mut().insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_str(value).expect("credential proof header"),
+        );
+    }
+    request.headers_mut().insert(
+        WANT_MAC_HEADER,
+        HeaderValue::from_str(&format_want_mac_header(MacType::Record, &kem.key_share).expect("MAC request"))
+            .expect("MAC header"),
+    );
+    let response = f.router().oneshot(request).await.expect("profile response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mac = parse_mac_header(
+        response.headers().get(MAC_HEADER).and_then(|value| value.to_str().ok()),
+        MacType::Record,
+    )
+    .expect("profile MAC");
+    let (_, profile) = response_json(response).await;
+    verify_record_mac(
+        &kem.shared_secret,
+        profile.get("uri").and_then(Value::as_str).expect("profile URI"),
+        &profile
+            .get("cid")
+            .and_then(Value::as_str)
+            .expect("profile CID")
+            .parse()
+            .expect("CID"),
+        &mac,
+    )
+    .expect("profile MAC verifies against the reserved KEM key");
+    profile
 }
 
 /// A new client can discover the tenor before any World exists and use its DID
@@ -426,7 +497,7 @@ async fn p256_genesis_accepts_only_the_owner_low_s_signature_over_raw_signing_by
     let signing = SigningKey::from_slice(f.rotation.bytes()).expect("owner P-256 key");
     let low: Signature = signing.sign(&bytes);
     let low = low.normalize_s();
-    let high = Signature::from_scalars(low.r().to_owned(), -low.s().to_owned()).expect("high-S twin");
+    let high = Signature::from_scalars(low.r(), -low.s()).expect("high-S twin");
     signing
         .verifying_key()
         .verify(&bytes, &high)
@@ -434,7 +505,10 @@ async fn p256_genesis_accepts_only_the_owner_low_s_signature_over_raw_signing_by
 
     let operation_with = |sig: String| -> Operation {
         let mut operation = reserved.operation.clone();
-        operation["sig"] = json!(sig);
+        operation
+            .as_object_mut()
+            .expect("PLC operation is an object")
+            .insert("sig".into(), json!(sig));
         serde_json::from_value(operation).expect("signed PLC operation")
     };
     let high = operation_with(URL_SAFE_NO_PAD.encode(high.to_bytes()));
@@ -545,52 +619,7 @@ async fn public_world_creation_publishes_its_named_meta_after_retry_and_replay()
 
     // An unrelated reader obtains a public credential without a delegation.
     let holder = generate_key(KeyType::P256Private).expect("reader credential key");
-    let (status, minted) = mint_anonymous(&f, &meta, &holder).await;
-    assert_eq!(status, StatusCode::OK, "{minted}");
-    let credential = minted["credential"].as_str().expect("public reader credential");
-    let signed_headers = sign_credential_use(credential, &created.did, &holder).expect("reader proof");
-    let kem_key = identify_key(
-        reserved.operation["verificationMethods"]["atproto_kem"]
-            .as_str()
-            .expect("reserved public KEM key"),
-    )
-    .expect("KEM did:key");
-    let kem = encapsulate(&kem_key).expect("reader encapsulates to the World's public KEM key");
-    let params = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("space", &meta)
-        .append_pair("repo", &created.did)
-        .append_pair("collection", "group.opensocial.profile")
-        .append_pair("rkey", "self")
-        .finish();
-    let mut request = Request::get(format!("/xrpc/com.atproto.space.getRecord?{params}"))
-        .body(Body::empty())
-        .expect("public profile query");
-    for (name, value) in signed_headers.iter() {
-        request.headers_mut().insert(
-            HeaderName::from_static(name),
-            HeaderValue::from_str(value).expect("credential proof header"),
-        );
-    }
-    request.headers_mut().insert(
-        WANT_MAC_HEADER,
-        HeaderValue::from_str(&format_want_mac_header(MacType::Record, &kem.key_share).expect("MAC request"))
-            .expect("MAC header"),
-    );
-    let response = f.router().oneshot(request).await.expect("profile response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let mac = parse_mac_header(
-        response.headers().get(MAC_HEADER).and_then(|value| value.to_str().ok()),
-        MacType::Record,
-    )
-    .expect("profile MAC");
-    let (_, profile) = response_json(response).await;
-    verify_record_mac(
-        &kem.shared_secret,
-        profile["uri"].as_str().expect("profile URI"),
-        &profile["cid"].as_str().expect("profile CID").parse().expect("CID"),
-        &mac,
-    )
-    .expect("profile MAC verifies against the reserved KEM key");
+    let profile = read_public_profile(&f, &reserved, &created.did, &meta, &holder).await;
     assert_eq!(profile["value"]["displayName"], "The Lantern – Étoile");
     for space_type in [motet_tenor::spaces::MEMBERS, motet_tenor::spaces::GMS] {
         let private = motet_tenor::spaces::world_space(&world, space_type)

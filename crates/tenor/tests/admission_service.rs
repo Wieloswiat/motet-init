@@ -512,7 +512,7 @@ async fn automatic_decisions_are_not_reattributed_by_later_member_retries() {
         let (status, result) = send(&member, body(author, "one", "automatic"), &token).await;
         assert_eq!(status, StatusCode::OK, "{result}");
         assert_eq!(result["status"], expected);
-        assert!(fixture.audits().await.is_empty());
+        assert_eq!(fixture.audits().await, [] as [Value; 0]);
     }
     assert_eq!(fixture.drain().await, (1, 0));
     assert_eq!(fixture.published_admissions().await, 1);
@@ -549,7 +549,7 @@ async fn role_revoked_during_readback_prevents_admission_and_does_not_consume_th
     gate.release.notify_one();
     let (status, refused) = waiting.await.expect("request task completes");
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
-    assert!(fixture.audits().await.is_empty());
+    assert_eq!(fixture.audits().await, [] as [Value; 0]);
     assert_eq!(fixture.drain().await, (0, 0));
     assert_eq!(fixture.published_admissions().await, 0);
     fixture
@@ -619,7 +619,7 @@ async fn verified_issuer_and_readback_are_both_required_before_any_decision() {
         let (status, result) = send(&alice, body(ALICE, "one", "invalid-token"), &invalid).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{result}");
     }
-    assert!(fixture.audits().await.is_empty());
+    assert_eq!(fixture.audits().await, [] as [Value; 0]);
     assert_eq!(fixture.drain().await, (0, 0));
     assert_eq!(fixture.published_admissions().await, 0);
     assert_eq!(fixture.segments().await, before, "nothing reached the World's log");

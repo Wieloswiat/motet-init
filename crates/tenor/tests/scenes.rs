@@ -60,8 +60,8 @@ impl Records for AuthorRepos {
     }
 }
 
-fn write(collection: &str, rkey: &str, value: Value) -> SpaceWrite {
-    SpaceWrite::create(collection, rkey, &value).expect("fixture record encodes")
+fn write(collection: &str, rkey: &str, value: &Value) -> SpaceWrite {
+    SpaceWrite::create(collection, rkey, value).expect("fixture record encodes")
 }
 
 fn membership(actor: &str, roles: &[&str]) -> Value {
@@ -102,11 +102,11 @@ impl Op for Setup {
             txn,
             &spaces::world_space(&world, spaces::MEMBERS)?,
             vec![
-                write("group.opensocial.role", "player", json!({"displayName": "Player"})),
-                write("group.opensocial.role", "member", json!({"displayName": "Member"})),
-                write("group.opensocial.membership", GM, membership(GM, &["gm"])),
-                write("group.opensocial.membership", PLAYER, membership(PLAYER, &["player"])),
-                write("group.opensocial.membership", MEMBER, membership(MEMBER, &["member"])),
+                write("group.opensocial.role", "player", &json!({"displayName": "Player"})),
+                write("group.opensocial.role", "member", &json!({"displayName": "Member"})),
+                write("group.opensocial.membership", GM, &membership(GM, &["gm"])),
+                write("group.opensocial.membership", PLAYER, &membership(PLAYER, &["player"])),
+                write("group.opensocial.membership", MEMBER, &membership(MEMBER, &["member"])),
             ],
         )
         .await?;
@@ -147,7 +147,7 @@ impl Op for CheckCast {
     type Output = Result<(), Refusal>;
     type Error = SpaceError;
 
-    async fn run(self, txn: &mut Txn<'_>) -> Result<Self::Output, SpaceError> {
+    fn run(self, txn: &mut Txn<'_>) -> impl Future<Output = Result<Self::Output, SpaceError>> + Send {
         let post = ReadBack {
             post: StrongRef::new(
                 RecordUri::new(format!("at://{}/at.motet.pilot.post/check", self.author)),
@@ -156,10 +156,10 @@ impl Op for CheckCast {
             author: Did::new(self.author),
             scene: SceneId::new(self.scene),
         };
-        Ok(txn
+        std::future::ready(Ok(txn
             .world(&Did::new(WORLD))
             .expect("fixture World exists")
-            .check(&post, None))
+            .check(&post, None)))
     }
 }
 
@@ -337,16 +337,20 @@ impl Fixture {
             .expect("permissions read")
             .expect("bootstrap permissions");
         let mut permissions = atproto_dasl::from_slice_to_json(&row.value).expect("permissions DRISL");
-        permissions["grants"].as_array_mut().expect("grants array").push(json!({
-            "role":"player", "assignable":[], "scopes":["rpc:at.motet.pilot.play.openScene"]
-        }));
-        let mut updated = write("group.opensocial.permissions", "self", permissions);
+        permissions
+            .get_mut("grants")
+            .and_then(Value::as_array_mut)
+            .expect("grants array")
+            .push(json!({
+                "role":"player", "assignable":[], "scopes":["rpc:at.motet.pilot.play.openScene"]
+            }));
+        let mut updated = write("group.opensocial.permissions", "self", &permissions);
         updated.action = OpAction::Update;
         self.admin(vec![updated]).await;
     }
 
     async fn admit(&self, scene: &str, actor: &str, op: &str) -> Value {
-        *self.repos.scene.lock().expect("fixture scene mutex") = scene.to_owned();
+        scene.clone_into(&mut self.repos.scene.lock().expect("fixture scene mutex"));
         let cid = atproto_dasl::cid::compute_cid(op.as_bytes()).to_string();
         let (status, body) = self
             .post(
@@ -408,7 +412,7 @@ async fn scene_open_uses_verified_issuer_current_exact_grant_and_adds_the_opener
         "an unhosted World does not expose its existence"
     );
     assert_eq!(f.post(OPEN, body.clone(), PLAYER).await.0, StatusCode::FORBIDDEN);
-    assert!(f.audit().await.is_empty());
+    assert_eq!(f.audit().await, [] as [Value; 0]);
 
     f.grant_player_open().await;
     let token = f.token(PLAYER, &format!("{WORLD}#motet_tenor"), OPEN);
@@ -438,7 +442,7 @@ async fn scene_open_uses_verified_issuer_current_exact_grant_and_adds_the_opener
             .any(|a| a["actor"] == PLAYER && a["action"] == OPEN && a["subject"] == opened["uri"])
     );
 
-    let mut revoked = write("group.opensocial.membership", PLAYER, membership(PLAYER, &["member"]));
+    let mut revoked = write("group.opensocial.membership", PLAYER, &membership(PLAYER, &["member"]));
     revoked.action = OpAction::Update;
     f.admin(vec![revoked]).await;
     assert_eq!(
@@ -455,21 +459,10 @@ async fn scene_open_uses_verified_issuer_current_exact_grant_and_adds_the_opener
     );
 }
 
-/// Published cast and rules must move together and survive a restart. Catches a
-/// repo-only cast change, a rules-only closure, and unreplayed rule commands.
-#[tokio::test]
-async fn public_cast_and_closure_govern_admission_before_and_after_replay() {
-    let mut f = Fixture::new().await;
-    let open_body = json!({"op":"gm-open","world":WORLD,"title":"The Reach","cast":[MEMBER]});
-    let (status, opened) = f.post(OPEN, open_body.clone(), GM).await;
-    assert_eq!(status, StatusCode::OK, "{opened}");
-    let scene = opened["scene"].as_str().expect("scene key").to_owned();
-    let initial = f.get_scene(&scene).await;
-    assert_eq!(initial["value"]["cast"], json!([GM, MEMBER]));
-    assert_eq!(initial["value"]["openedBy"], GM);
+async fn assert_open_retry_contract(f: &Fixture, open_body: &Value, opened: &Value, scene: &str) {
     let (retry_status, retry) = f.post(OPEN, open_body.clone(), GM).await;
     assert_eq!(retry_status, StatusCode::OK);
-    assert_eq!(retry, opened, "an uncertain opening returns its first scene and CID");
+    assert_eq!(retry, *opened, "an uncertain opening returns its first scene and CID");
     assert_eq!(
         f.post(OPEN, json!({"op":"gm-open","world":WORLD,"title":"different"}), GM)
             .await
@@ -490,6 +483,21 @@ async fn public_cast_and_closure_govern_admission_before_and_after_replay() {
         StatusCode::BAD_REQUEST,
         "operation IDs cannot be reused across scene methods"
     );
+}
+
+/// Published cast and rules must move together and survive a restart. Catches a
+/// repo-only cast change, a rules-only closure, and unreplayed rule commands.
+#[tokio::test]
+async fn public_cast_and_closure_govern_admission_before_and_after_replay() {
+    let mut f = Fixture::new().await;
+    let open_body = json!({"op":"gm-open","world":WORLD,"title":"The Reach","cast":[MEMBER]});
+    let (status, opened) = f.post(OPEN, open_body.clone(), GM).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let scene = opened["scene"].as_str().expect("scene key").to_owned();
+    let initial = f.get_scene(&scene).await;
+    assert_eq!(initial["value"]["cast"], json!([GM, MEMBER]));
+    assert_eq!(initial["value"]["openedBy"], GM);
+    assert_open_retry_contract(&f, &open_body, &opened, &scene).await;
     assert_eq!(f.admit(&scene, GM, "before-gm").await["status"], "admitted");
     assert_eq!(f.admit(&scene, MEMBER, "before-member").await["status"], "admitted");
     let refused = f.admit(&scene, PLAYER, "before-player").await;
