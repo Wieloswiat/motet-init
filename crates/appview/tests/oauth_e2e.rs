@@ -47,8 +47,11 @@ async fn assert_session_identity(get_session: &Url, signed_in: &OAuthSession) {
         .expect("read the AppView session on a separate request");
     assert_eq!(session.status(), StatusCode::OK, "the browser session authenticates");
     let session: Value = session.json().await.expect("getSession returns JSON");
-    assert_eq!(session["did"].as_str(), Some(signed_in.did.as_str()));
-    assert_eq!(session["handle"].as_str(), Some(signed_in.handle.as_str()));
+    assert_eq!(session.get("did").and_then(Value::as_str), Some(signed_in.did.as_str()));
+    assert_eq!(
+        session.get("handle").and_then(Value::as_str),
+        Some(signed_in.handle.as_str())
+    );
 }
 
 // A signup must authenticate the new PDS identity and persist its session.
