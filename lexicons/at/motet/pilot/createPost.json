@@ -13,8 +13,8 @@
 					"properties": {
 						"op": {
 							"type": "string",
-							"format": "record-key",
-							"description": "An author-chosen operation ID, reused for retries of the same post."
+							"format": "tid",
+							"description": "An author-chosen TID, reused for retries of the same post and used as its record key."
 						},
 						"world": { "type": "string", "format": "did" },
 						"scene": { "type": "string", "format": "record-key" },

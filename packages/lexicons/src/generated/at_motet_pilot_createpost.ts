@@ -6,7 +6,7 @@ export const CreatePostNsid = 'at.motet.pilot.createPost' as const;
 export interface CreatePostInput {
   /** Typst source. */
   body: string;
-  /** An author-chosen operation ID, reused for retries of the same post. */
+  /** An author-chosen TID, reused for retries of the same post and used as its record key. */
   op: string;
   register: string;
   scene: string;

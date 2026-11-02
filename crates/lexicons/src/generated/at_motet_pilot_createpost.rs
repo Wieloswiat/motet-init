@@ -12,7 +12,7 @@ pub const NSID: &str = "at.motet.pilot.createPost";
 pub struct CreatePostInput {
     /// Typst source.
     pub body: String,
-    /// An author-chosen operation ID, reused for retries of the same post.
+    /// An author-chosen TID, reused for retries of the same post and used as its record key.
     pub op: String,
     pub register: String,
     pub scene: String,
