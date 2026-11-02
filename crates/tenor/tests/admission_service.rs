@@ -447,7 +447,8 @@ async fn signed_player_admission_is_attributed_and_retries_publish_once() {
         }])
         .await;
     let (status, denied) = send(&alice, request, &token).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{denied}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+    assert_eq!(denied["error"], "Forbidden");
     assert_eq!(fixture.audits().await, audits);
     assert_eq!(fixture.drain().await, (1, 0));
     assert_eq!(fixture.published_admissions().await, 1);
@@ -548,7 +549,8 @@ async fn role_revoked_during_readback_prevents_admission_and_does_not_consume_th
         .await;
     gate.release.notify_one();
     let (status, refused) = waiting.await.expect("request task completes");
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert_eq!(refused["error"], "Forbidden");
     assert_eq!(fixture.audits().await, [] as [Value; 0]);
     assert_eq!(fixture.drain().await, (0, 0));
     assert_eq!(fixture.published_admissions().await, 0);

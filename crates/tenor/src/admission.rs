@@ -74,6 +74,8 @@ pub enum Decision {
 
 #[derive(Debug, Error)]
 pub enum AdmitError {
+    #[error("the authenticated actor does not match the requested World or post author")]
+    ActorMismatch,
     #[error(transparent)]
     Shard(#[from] SubmitError),
     #[error(transparent)]
@@ -102,7 +104,7 @@ async fn admit_inner(
     actor: Option<Actor>,
 ) -> Result<Decision, AdmitError> {
     if actor.as_ref().is_some_and(|actor| actor.world != request.world) {
-        return Err(SpaceError::NotAuthorized.into());
+        return Err(AdmitError::ActorMismatch);
     }
     let fetched = match records.fetch(&request.post).await {
         Ok(Some(fetched)) => fetched,
@@ -121,7 +123,7 @@ async fn admit_inner(
         return Ok(Decision::OtherWorld);
     }
     if actor.as_ref().is_some_and(|actor| actor.actor != fetched.author) {
-        return Err(SpaceError::NotAuthorized.into());
+        return Err(AdmitError::ActorMismatch);
     }
     let read_back = ReadBack {
         post: request.post,

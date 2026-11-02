@@ -59,6 +59,10 @@
 				}
 			},
 			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The authenticated author lacks current World membership."
+				},
 				{ "name": "NotFound", "description": "The fetched post belongs to another World." },
 				{
 					"name": "InvalidRequest",

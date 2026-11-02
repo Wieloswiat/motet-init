@@ -171,15 +171,17 @@ async fn submit_admission<R: Records>(
         crate::authorization::Actor::from_caller(caller, request.world.clone()).map_err(|_| XrpcError::AuthRequired)?;
     let decision = admission::admit_as(&state.shard, &state.records, request, actor)
         .await
-        .map_err(|e| {
-            if matches!(
-                &e,
-                admission::AdmitError::Space(crate::spaces::SpaceError::NotAuthorized)
-            ) {
-                return XrpcError::AuthRequired;
+        .map_err(|error| match error {
+            admission::AdmitError::ActorMismatch => XrpcError::AuthRequired,
+            admission::AdmitError::Space(crate::spaces::SpaceError::NotAuthorized) => XrpcError::Protocol {
+                status: StatusCode::FORBIDDEN,
+                name: "Forbidden",
+                message: "current World membership is required".into(),
+            },
+            error => {
+                tracing::error!(%error, "admission failed");
+                XrpcError::Internal
             }
-            tracing::error!(error = %e, "admission failed");
-            XrpcError::Internal
         })?;
     let submitted = match decision {
         Decision::Decided(Ok(Outcome::Admitted(a))) => Submitted::Admitted {
