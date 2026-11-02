@@ -182,6 +182,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atproto-client"
+version = "0.15.0-rc.6"
+source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "atproto-dasl",
+ "atproto-identity",
+ "atproto-oauth",
+ "atproto-record",
+ "bytes",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "atproto-dasl"
 version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
@@ -3101,11 +3121,19 @@ name = "motet-appview"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "atproto-client",
+ "atproto-identity",
+ "atproto-oauth",
+ "atproto-record",
  "atproto-tap",
  "axum",
+ "base64 0.22.1",
  "bytes",
+ "chacha20poly1305",
+ "chrono",
  "clap",
  "futures",
+ "getrandom 0.4.3",
  "motet-log",
  "motet-net",
  "motet-rules",
@@ -3113,14 +3141,17 @@ dependencies = [
  "motet-xrpc",
  "object_store",
  "proptest",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "sqlx",
  "thiserror 2.0.21",
  "tokio",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -3248,6 +3279,7 @@ dependencies = [
  "motet-testkit",
  "motet-xrpc",
  "object_store",
+ "p256",
  "proptest",
  "serde",
  "serde_json",
