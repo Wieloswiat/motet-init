@@ -580,11 +580,11 @@ async fn fault_busy_session_retries_the_unsubmitted_pds_write() {
         .fetch_one(&fixture.pool)
         .await
         .expect("session lock key");
-    let [a, b, c, d, e, f, g, h] = advisory_key.to_be_bytes();
+    let [first, second, third, fourth, fifth, sixth, seventh, eighth] = advisory_key.to_be_bytes();
     let mut lock = fixture.pool.begin().await.expect("lock transaction");
     sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-        .bind(i32::from_be_bytes([a, b, c, d]))
-        .bind(i32::from_be_bytes([e, f, g, h]))
+        .bind(i32::from_be_bytes([first, second, third, fourth]))
+        .bind(i32::from_be_bytes([fifth, sixth, seventh, eighth]))
         .execute(&mut *lock)
         .await
         .expect("hold another instance's session lock");
