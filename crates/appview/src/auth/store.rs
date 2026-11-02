@@ -505,10 +505,10 @@ impl SessionStore {
                     tx.commit().await?;
                     return Ok(None);
                 };
-                let [a, b, c, d, e, f, g, h] = key.to_be_bytes();
+                let [first, second, third, fourth, fifth, sixth, seventh, eighth] = key.to_be_bytes();
                 let (acquired,): (bool,) = sqlx::query_as("SELECT pg_try_advisory_xact_lock($1, $2)")
-                    .bind(i32::from_be_bytes([a, b, c, d]))
-                    .bind(i32::from_be_bytes([e, f, g, h]))
+                    .bind(i32::from_be_bytes([first, second, third, fourth]))
+                    .bind(i32::from_be_bytes([fifth, sixth, seventh, eighth]))
                     .fetch_one(&mut *tx)
                     .await?;
                 if acquired {
@@ -599,6 +599,7 @@ impl<'a> SessionWaiter<'a> {
             return Err(StoreError::Busy);
         }
         *count += 1;
+        drop(counts);
         Ok(Self { waiters, id: *id })
     }
 }
