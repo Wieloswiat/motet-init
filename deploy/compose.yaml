@@ -15,6 +15,10 @@ x-local-network-env: &local-network-env
 
 x-local-ca: &local-ca '../.devenv/state/tls/ca-bundle.crt:/run/motet-tls/ca-bundle.crt:ro'
 
+x-local-resolver: &local-resolver
+  - source: local-resolver
+    target: /etc/resolv.conf
+
 services:
   postgres:
     # PostgreSQL with pg_search (ParadeDB). Pin a tag that matches the
@@ -104,6 +108,7 @@ services:
       <<: *local-network-env
       NODE_EXTRA_CA_CERTS: /run/motet-tls/rootCA.crt
       PORT: '2582'
+    configs: *local-resolver
     volumes:
       - *local-ca
       - ../.devenv/state/tls/rootCA.crt:/run/motet-tls/rootCA.crt:ro
@@ -123,6 +128,30 @@ services:
       retries: 30
     ports:
       - 127.0.0.1:443:443
+      - 127.0.0.1:53535:53/tcp
+      - 127.0.0.1:53535:53/udp
+
+  dns:
+    image: localhost/motet-dnsmasq:dev
+    network_mode: service:plc
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    command:
+      - --keep-in-foreground
+      - --conf-file=
+      - --user=
+      - --group=
+      - --pid-file=
+      - --no-hosts
+      - --log-facility=-
+      - --address=/motet.test/127.0.0.1
+      - --local=/motet.test/
+    depends_on:
+      plc: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', '/bin/busybox', 'nslookup', '-type=A', 'dns-ready.motet.test', '127.0.0.1']
+      interval: 2s
+      retries: 30
 
   caddy:
     image: localhost/motet-caddy:dev
@@ -135,6 +164,7 @@ services:
       MOTET_TLS_KEY: /run/motet-tls/server.key
       MOTET_CADDY_BIND: 0.0.0.0
       MOTET_WEB_UPSTREAM: host.docker.internal:4174
+    configs: *local-resolver
     volumes:
       - ../nix/Caddyfile:/etc/caddy/Caddyfile:ro
       - *local-ca
@@ -143,6 +173,7 @@ services:
       - ../.devenv/state/tls/server.key:/run/motet-tls/server.key:ro
     depends_on:
       plc: { condition: service_healthy }
+      dns: { condition: service_healthy }
     healthcheck:
       test: ['CMD', '/bin/curl', '--fail', '--silent', '--cacert', '/run/motet-tls/rootCA.crt', 'https://plc.motet.test/_health']
       interval: 2s
@@ -161,6 +192,7 @@ services:
       RELAY_METRICS_LISTEN: 0.0.0.0:2471
       DATABASE_URL: sqlite:///data/relay.sqlite
       RELAY_PERSIST_DIR: /data/persist
+    configs: *local-resolver
     volumes:
       - *local-ca
       - relay:/data
@@ -186,6 +218,7 @@ services:
       TAP_COLLECTION_FILTERS: at.motet.pilot.*,group.opensocial.*
       TAP_DISABLE_ACKS: 'false'
       TAP_ADMIN_PASSWORD: motet-network-dev
+    configs: *local-resolver
     volumes:
       - *local-ca
       - tap:/data
@@ -219,8 +252,10 @@ services:
       PDS_CRAWLERS: https://relay.motet.test
       PDS_INVITE_REQUIRED: 'false'
       PDS_ALLOW_DEV_DEFAULTS: 'true'
+      PDS_SIGNUP_EMAIL_VERIFICATION: 'false'
       PDS_SERVICE_HANDLE_DOMAINS: .pds.motet.test
       PDS_DATA_DIRECTORY: /data
+    configs: *local-resolver
     volumes:
       - *local-ca
       - pds-rs:/data
@@ -235,6 +270,7 @@ services:
     network_mode: service:plc
     environment:
       <<: *local-network-env
+    configs: *local-resolver
     volumes:
       - *local-ca
     entrypoint: ['/bin/curl']
@@ -303,6 +339,7 @@ services:
       MOTET_APPVIEW_TAP_ADMIN_PASSWORD: motet-network-dev
       MOTET_PDS_RS_URL: https://pds.motet.test
       RUST_LOG: info,motet=debug
+    configs: *local-resolver
     volumes:
       - *local-ca
       - appview-oauth-key:/run/motet-oauth-key:ro
@@ -334,6 +371,7 @@ services:
       MOTET_TAP_URL: https://tap.motet.test
       MOTET_PDS_RS_URL: https://pds.motet.test
       RUST_LOG: info,motet=debug
+    configs: *local-resolver
     volumes:
       - *local-ca
       - tenor-key:/run/motet-key:ro
@@ -343,6 +381,12 @@ services:
       relay: { condition: service_healthy }
 
 configs:
+  # Keep the engine's original resolver in the dns service; using `dns:`
+  # would make Docker's embedded resolver forward back to dnsmasq.
+  local-resolver:
+    content: |
+      nameserver 127.0.0.1
+
   s3-identities:
     content: |
       {"identities": [{"name": "motet",
