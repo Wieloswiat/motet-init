@@ -25,6 +25,7 @@ Superseded.
 | [0015](0015-opensocial-group.md)               | Adopt opensocial.group at a pinned revision                              | Provisional; group OAuth assumption superseded by 0018 |
 | [0016](0016-local-atproto-network.md)          | A local atproto network in the dev shell, with patched indigo            | Accepted; PDS/patch by 0017; HTTP endpoints by 0019    |
 | [0017](0017-rust-pds-local-network.md)         | Ship the local network with the Rust PDS; defer reference PDS coverage   | Accepted; HTTP endpoints superseded by 0019            |
-| [0018](0018-world-service-auth.md)             | Member service tokens authorize World actions                            | Accepted                                               |
+| [0018](0018-world-service-auth.md)             | Member service tokens authorize World actions                            | Accepted; replay protection added by 0021              |
 | [0019](0019-local-tls-for-oauth.md)            | Local HTTPS origins for PDS OAuth                                        | Accepted                                               |
 | [0020](0020-appview-backed-web-screens.md)     | AppView-backed World and scene screens                                   | Accepted; demo routes and data supersede 0012          |
+| [0021](0021-single-use-member-tokens.md)       | Consume member service tokens once                                       | Accepted                                               |
