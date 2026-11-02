@@ -49,6 +49,8 @@ from the local PDS. Signup uses the PDS authorization flow with
 `PDS_SERVICE_DID=did:web:pds.motet.test` and `PDS_TRUSTED_PROXY_HOPS=1`.
 The tenor's `MOTET_TENOR_HANDLE_DOMAINS=.motet.test` serves World handles;
 `PDS_SERVICE_HANDLE_DOMAINS=.pds.motet.test` serves PDS account handles.
+The PDS requires the account-name label to have 3–18 characters and refuses
+reserved names.
 These names need local DNS as well as proxy routes and certificate coverage;
 see [Host setup](#host-setup).
 
