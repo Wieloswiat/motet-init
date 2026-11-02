@@ -57,6 +57,10 @@ fn string<'a>(value: &'a Value, field: &str) -> &'a str {
 // service grant must not leave the owner's World or post incomplete.
 #[tokio::test]
 #[ignore = "integration: full HTTPS PDS, AppView, tenor, relay, Tap, PLC, PostgreSQL and S3 stack"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered journey shares state across every step"
+)]
 async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
     let session = oauth_support::create_session(None).await;
     let current = session
@@ -180,11 +184,11 @@ async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
             .is_some_and(|value| !value.is_empty())
     );
 
-    let mut scene_url = session
+    let mut query_url = session
         .app
         .join("/xrpc/at.motet.pilot.getScene")
         .expect("the AppView scene URL is valid");
-    scene_url
+    query_url
         .query_pairs_mut()
         .append_pair("actor", world)
         .append_pair("scene", scene);
@@ -194,7 +198,7 @@ async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
         let request = async {
             let response = session
                 .client
-                .get(scene_url.clone())
+                .get(query_url.clone())
                 .header(COOKIE, &session.session_cookie)
                 .send()
                 .await?;
@@ -204,7 +208,9 @@ async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
         let (status, body) = match timeout_at(deadline, request).await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => panic!("getScene request failed: {error}; last observed: {last_observed}"),
-            Err(_) => panic!("timed out waiting for the World name and admitted post; last observed: {last_observed}"),
+            Err(error) => panic!(
+                "timed out waiting for the World name and admitted post: {error}; last observed: {last_observed}"
+            ),
         };
         last_observed = format!("HTTP {status}: {body}");
         match status {
