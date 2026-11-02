@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.
+/// Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. A different op from the same owner supersedes an unsigned draft for the handle and invalidates its keys. A submitted genesis cannot be superseded. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.
 pub const NSID: &str = "at.motet.pilot.tenor.reserveWorld";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

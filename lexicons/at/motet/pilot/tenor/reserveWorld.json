@@ -4,7 +4,7 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.",
+			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. A different op from the same owner supersedes an unsigned draft for the handle and invalidates its keys. A submitted genesis cannot be superseded. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
@@ -60,7 +60,7 @@
 				}
 			},
 			"errors": [
-				{ "name": "HandleTaken", "description": "The handle is already in use or reserved by another operation." },
+				{ "name": "HandleTaken", "description": "The handle is already in use, reserved by another owner, or has a submitted genesis." },
 				{ "name": "InvalidRequest", "description": "The operation ID is invalid or was reused with different fields." },
 				{ "name": "UpstreamFailure", "description": "The issuer's DID document could not be resolved; retry with a fresh service token." }
 			]
