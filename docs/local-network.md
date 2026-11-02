@@ -84,6 +84,10 @@ in production. The relay's separate `RELAY_ALLOW_PRIVATE_HOSTS=true` patch is
 also for the local network only. Without these development opt-ins, production
 outbound policy retains HTTPS, address filtering and TLS verification.
 
+The AppView selects rustls's ring crypto provider before starting TLS clients.
+Its dependencies enable more than one provider; without an explicit selection,
+the Tap connection panics at startup.
+
 These are development services, not an internet-facing deployment. PDS signup
 is open, email verification is disabled, and credentials are public fixtures.
 The upstream PLC server binds all interfaces; keep this network behind a local
