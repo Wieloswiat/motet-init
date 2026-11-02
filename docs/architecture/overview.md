@@ -33,10 +33,11 @@ research and plan"); the decisions that shaped the code are in
 - **Workers**: Typst rendering (`crates/render`) runs in a separate,
   resource-limited process because its input is untrusted. An image proxy,
   email and exports come later.
-- **The web app** (`apps/web`) talks only to the AppView. For now its
-  screens show demo content ported from the design export (ADR 0012). A
-  World's look comes from `@motet/design`'s engine, which compiles the World's
-  theme record into custom properties on the World's part of the page.
+- **The web app** (`apps/web`) talks only to the AppView. Sign-in, World
+  creation and public scenes use real data; the remaining design-export
+  studies are labelled on `/design` ([ADR 0020](../adr/0020-appview-backed-web-screens.md)).
+  Real screens use Motet's default appearance until World theme records are
+  projected; the design engine can compile those records into custom properties.
 - **The Theme Creator** (`apps/theme-creator`) edits a theme record. It is
   the exported tool, not yet connected to anything.
 
@@ -69,6 +70,10 @@ handlers can't forget it:
   PostgreSQL. Session refresh is serialized across instances. Sign-out first
   revokes the local session and also requests remote revocation when the PDS
   advertises it.
+  Sign-in and signup start with a same-origin, form-encoded POST; the AppView
+  checks `Origin` and returns `authorizeUrl` as JSON. The browser navigates to
+  that URL separately, so the web app keeps `form-action 'self'`. A callback
+  consumes browser-bound state and revokes any session it replaces.
 - **AppView write grants**: OAuth requests `atproto`, repo access for Motet
   posts, profiles and characters, and one `rpc:` permission per tenor method,
   each with `aud=*`. The [permission specification](https://atproto.com/specs/permission#rpc)
@@ -76,6 +81,16 @@ handlers can't forget it:
   PDS checks the requested method and audience when minting
   `com.atproto.server.getServiceAuth` tokens. The AppView requests the World
   or tenor DID audience and exact method required by the endpoint.
+- **AppView write routing**: `MOTET_APPVIEW_TENOR_URL` and
+  `MOTET_APPVIEW_TENOR_DID` select the default tenor for World creation.
+  The browser supplies the sole rotation key; the AppView does not opt in to
+  a tenor recovery key. A creation retry uses the same reservation and signed
+  genesis. Later World-scoped calls resolve the World's `#motet_tenor`
+  service and check its destination. The open-scene API generates an
+  operation ID for each request, so a retry after a lost response may create
+  a second scene. Posting first publishes to the author's PDS. The outbox
+  retries pending or uncertain admissions with the same operation ID and
+  exact post version; a failed PDS write cannot trigger admission.
 - **OAuth key custody**: `MOTET_APPVIEW_PUBLIC_ORIGIN` is the canonical public
   HTTPS origin, and `MOTET_APPVIEW_DEFAULT_PDS` selects the PDS for signup.
   `MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE` names a P-256 private scalar, and
@@ -111,14 +126,18 @@ handlers can't forget it:
 ## Still to come
 
 The AppView projects public World declarations and scenes, and shows posts
-only when the World admits their exact version. It does not read Spaces, so
-profiles in a World's meta Space and private scenes are not available yet.
+only when the World admits their exact version. It reads a public World's
+current meta Space profile through a credential-bound Space request and
+archives the snapshot before projecting it. A previously public name can
+remain cached until Tap delivers the declaration's removal; private profile
+updates are not read. Private Spaces and private scenes are not indexed yet.
 A World with neither a public declaration nor a public scene cannot be
 looked up from its public repo. A declaration identifies a group but not
 necessarily a Motet World.
-Next, in rough order: Spaces ingestion; wiring the web app's screens to the AppView;
-dice through the tenor; the owner's export and recovery onto a fresh tenor;
-typst.ts vector artifacts instead of static SVG
+
+Next, in rough order: private Spaces ingestion and World themes; dice through
+the tenor; recovery of the owner's exported key onto a fresh tenor; typst.ts
+vector artifacts instead of static SVG
 ([ADR 0008](../adr/0008-rendering.md)).
 
 The [local network](../local-network.md) runs PLC, relay, Tap, an
