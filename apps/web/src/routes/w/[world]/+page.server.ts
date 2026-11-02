@@ -17,9 +17,8 @@ export const load: PageServerLoad = async ({ params, request }) => {
 	} catch (cause) {
 		if (cause instanceof XrpcError && cause.status === 404) error(404, 'World not found');
 
-		const status = cause instanceof XrpcError && cause.status >= 400 && cause.status <= 599
-			? cause.status
-			: 503;
+		const status =
+			cause instanceof XrpcError && cause.status >= 400 && cause.status <= 599 ? cause.status : 503;
 
 		error(status, 'Could not load this World from the AppView. Please try again.');
 	}

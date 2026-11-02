@@ -53,10 +53,12 @@ browser trust, DNS, service origins and how to reset state.
 | `stack`                          | The deployment-shaped stack in containers (`deploy/compose.yaml`)                               |
 | `mutants`, `mutants-web`, `soak` | Rust and TypeScript/Svelte mutation testing; larger Rust property runs                          |
 
-The reverse proxy shares `https://motet.test` between the web app and AppView.
-The AppView is the OAuth client of the user's PDS; signup goes through the
-PDS. This describes the intended local flow, not a claim that it has passed an
-end-to-end check. The Theme Creator runs separately with `theme-creator`.
+The web app and AppView share `https://motet.test`; the AppView is the OAuth
+client of the user's PDS. The web journey uses real World and scene reads and
+writes, and keeps the owner's rotation key in the browser. The web server
+requires `MOTET_APPVIEW_PUBLIC_ORIGIN` to name the trusted AppView origin
+(the dev shell sets it); it never forwards session cookies to a request's
+Host header. The Theme Creator runs separately with `theme-creator`.
 
 ## Layout
 

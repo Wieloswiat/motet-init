@@ -15,6 +15,10 @@
 <div {@attach world(data.pageRef)} class="m-page__root">
 	<Chrome account="iga" inbox={data.inboxCount} />
 	<main class="m-page__main">
+		<p role="note">
+			Design demo: the Worlds, activity and account menu on this page are examples, not your
+			account.
+		</p>
 		<div style="display: flex; flex-direction: column; gap: 48px">
 			<section aria-labelledby="h-yours" style="display: flex; flex-direction: column; gap: 16px">
 				<div

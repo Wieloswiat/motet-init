@@ -88,10 +88,12 @@
 			}
 
 			openedScene = result.scene;
-			await goto(resolve('/w/[world]/play/[scene]', {
-				world: worldParam,
-				scene: encodeURIComponent(openedScene)
-			}));
+			await goto(
+				resolve('/w/[world]/play/[scene]', {
+					world: worldParam,
+					scene: encodeURIComponent(openedScene)
+				})
+			);
 		} catch (cause) {
 			message = openedScene
 				? 'The scene was opened, but navigation failed. Use the link below to open it.'
@@ -164,10 +166,12 @@
 			</section>
 
 			{#if message}<p role="alert">{message}</p>{/if}
-			{#if openedScene}<a href={resolve('/w/[world]/play/[scene]', {
-					world: worldParam,
-					scene: encodeURIComponent(openedScene)
-				})}>Go to scene</a>{/if}
+			{#if openedScene}<a
+					href={resolve('/w/[world]/play/[scene]', {
+						world: worldParam,
+						scene: encodeURIComponent(openedScene)
+					})}>Go to scene</a
+				>{/if}
 			<button
 				type="submit"
 				class="m-button m-button--variant_filled"

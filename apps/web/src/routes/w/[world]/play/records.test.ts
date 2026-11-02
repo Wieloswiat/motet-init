@@ -3,6 +3,7 @@ import type { at_motet_pilot_querydefs } from '@motet/lexicons';
 import { decodePost, decodeScene } from './records.js';
 
 const world = 'did:plc:world';
+
 const scene: at_motet_pilot_querydefs.Record = {
 	uri: 'at://did:plc:world/at.motet.pilot.scene/scene1',
 	cid: 'bafy-scene',
@@ -47,6 +48,7 @@ describe('public scene record boundaries', () => {
 				openedBy: 'did:plc:opener'
 			}
 		};
+
 		expect(decodeScene(invalid, world)).toBeNull();
 	});
 

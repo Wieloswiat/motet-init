@@ -171,10 +171,6 @@
 					<a class="m-menu__item" role="menuitem" href={resolve('/settings')}
 						><span class="m-icon" aria-hidden="true">settings</span>Settings</a
 					>
-					<hr class="m-menu__separator" />
-					<a class="m-menu__item" role="menuitem" href={resolve('/sign-in')}
-						><span class="m-icon" aria-hidden="true">logout</span>Sign out</a
-					>
 				</div>
 			{/if}
 		</div>

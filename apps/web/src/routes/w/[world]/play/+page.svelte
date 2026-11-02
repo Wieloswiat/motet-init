@@ -42,10 +42,12 @@
 				{@const scene = decodeScene(record, data.world.did)}
 				<li>
 					{#if scene}
-						<a href={resolve('/w/[world]/play/[scene]', {
-							world: worldParam,
-							scene: encodeURIComponent(scene.key)
-						})}>{scene.title}</a>
+						<a
+							href={resolve('/w/[world]/play/[scene]', {
+								world: worldParam,
+								scene: encodeURIComponent(scene.key)
+							})}>{scene.title}</a
+						>
 						<span>{scene.state}</span>
 					{:else}
 						<span>A scene could not be displayed because its record is invalid.</span>
@@ -56,9 +58,11 @@
 	{/if}
 
 	{#if data.listing.cursor}
-		<a href={resolve(`/w/[world]/play?cursor=${encodeURIComponent(data.listing.cursor)}`, {
-			world: worldParam
-		})}>More scenes</a>
+		<a
+			href={resolve(`/w/[world]/play?cursor=${encodeURIComponent(data.listing.cursor)}`, {
+				world: worldParam
+			})}>More scenes</a
+		>
 	{/if}
 </main>
 

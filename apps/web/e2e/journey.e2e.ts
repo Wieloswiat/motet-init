@@ -1,4 +1,10 @@
-import { createDecipheriv, createECDH, createPrivateKey, pbkdf2Sync, randomBytes } from 'node:crypto';
+import {
+	createDecipheriv,
+	createECDH,
+	createPrivateKey,
+	pbkdf2Sync,
+	randomBytes
+} from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
 import {
@@ -90,8 +96,7 @@ async function signUp(page: Page): Promise<Account> {
 	// A normal PDS authorization request must lead to its signup page:
 	// the PDS only selects that page for the PAR's prompt=create.
 	const authorization = page.waitForRequest(
-		(request) =>
-			request.method() === 'GET' && request.url().startsWith(`${pds}/oauth/authorize?`),
+		(request) => request.method() === 'GET' && request.url().startsWith(`${pds}/oauth/authorize?`),
 		{ timeout: interactionTimeout }
 	);
 
@@ -208,10 +213,17 @@ function backupSecrets(
 	expect(jwk.kty).toBe('EC');
 	expect(jwk.crv).toBe('P-256');
 	const scalar = Buffer.from(jwk.d, 'base64url');
-	expect(scalar.length, 'the downloaded backup must contain an actual P-256 private scalar').toBe(32);
+	expect(scalar.length, 'the downloaded backup must contain an actual P-256 private scalar').toBe(
+		32
+	);
 	const curve = createECDH('prime256v1');
 	curve.setPrivateKey(scalar);
-	const publicKey = Buffer.concat([Buffer.from([0x80, 0x24]), curve.getPublicKey(undefined, 'compressed')]);
+
+	const publicKey = Buffer.concat([
+		Buffer.from([0x80, 0x24]),
+		curve.getPublicKey(undefined, 'compressed')
+	]);
+
 	expect(`did:key:z${base58(publicKey)}`).toBe(rotationKey);
 	expect(backup.didKey).toBe(rotationKey);
 
@@ -230,13 +242,19 @@ function backupSecrets(
 	}
 
 	for (const value of [passphrase, wrongPassphrase]) {
-		patterns.push(Buffer.from(encodeURIComponent(value)), Buffer.from(JSON.stringify(value).slice(1, -1)));
+		patterns.push(
+			Buffer.from(encodeURIComponent(value)),
+			Buffer.from(JSON.stringify(value).slice(1, -1))
+		);
 	}
 
 	patterns.push(Buffer.from(JSON.stringify([...scalar])));
 
 	for (const secret of patterns) {
-		expect(Buffer.from(file).includes(secret), 'the downloaded backup must not contain plaintext secrets').toBe(false);
+		expect(
+			Buffer.from(file).includes(secret),
+			'the downloaded backup must not contain plaintext secrets'
+		).toBe(false);
 	}
 
 	return patterns;
@@ -250,8 +268,14 @@ function assertNoSecrets(observed: ObservedRequest[], secrets: Buffer[]): void {
 		const where = `${request.method} ${url.origin}${url.pathname}`;
 
 		for (const secret of secrets) {
-			expect(request.body.includes(secret), `a browser request body leaked an owner secret: ${where}`).toBe(false);
-			expect(Buffer.from(request.url).includes(secret), `a browser URL leaked an owner secret: ${where}`).toBe(false);
+			expect(
+				request.body.includes(secret),
+				`a browser request body leaked an owner secret: ${where}`
+			).toBe(false);
+			expect(
+				Buffer.from(request.url).includes(secret),
+				`a browser URL leaked an owner secret: ${where}`
+			).toBe(false);
 		}
 	}
 }
@@ -286,12 +310,16 @@ async function createWorld(page: Page): Promise<World> {
 	await page.getByLabel('Backup passphrase').fill(passphrase);
 
 	const reservationResponse = page.waitForResponse(
-		(response) => response.request().method() === 'POST' && response.url() === `${app}/xrpc/${beginWorld.BeginWorldNsid}`,
+		(response) =>
+			response.request().method() === 'POST' &&
+			response.url() === `${app}/xrpc/${beginWorld.BeginWorldNsid}`,
 		{ timeout: interactionTimeout }
 	);
 
 	const creationResponse = page.waitForResponse(
-		(response) => response.request().method() === 'POST' && response.url() === `${app}/xrpc/${finishWorld.FinishWorldNsid}`,
+		(response) =>
+			response.request().method() === 'POST' &&
+			response.url() === `${app}/xrpc/${finishWorld.FinishWorldNsid}`,
 		{ timeout: interactionTimeout }
 	);
 
@@ -325,7 +353,15 @@ async function createWorld(page: Page): Promise<World> {
 
 	if (path === null) throw new Error('the encrypted owner backup was not saved');
 	const file = await readFile(path, 'utf8');
-	const secrets = backupSecrets(file, passphrase, wrongPassphrase, created.did, reservationInput.rotationKey);
+
+	const secrets = backupSecrets(
+		file,
+		passphrase,
+		wrongPassphrase,
+		created.did,
+		reservationInput.rotationKey
+	);
+
 	await page.getByLabel('Backup file').setInputFiles(path);
 	await page.getByLabel('Backup passphrase').fill(wrongPassphrase);
 	await page.getByRole('button', { name: 'Verify backup' }).click();
@@ -347,7 +383,11 @@ async function createWorld(page: Page): Promise<World> {
 	return world;
 }
 
-async function sceneProjection(page: Page, world: World, scene: string): Promise<getScene.GetSceneOutput> {
+async function sceneProjection(
+	page: Page,
+	world: World,
+	scene: string
+): Promise<getScene.GetSceneOutput> {
 	const params = new URLSearchParams({ actor: world.did, scene });
 	const response = await page.request.get(`${app}/xrpc/${getScene.GetSceneNsid}?${params}`);
 	expect(response.status(), 'the projected scene must be readable').toBe(200);
@@ -357,12 +397,16 @@ async function sceneProjection(page: Page, world: World, scene: string): Promise
 
 async function openPublicScene(page: Page, world: World, owner: Account): Promise<string> {
 	await page.getByRole('link', { name: 'Open scene', exact: true }).click();
-	await expect(page.getByRole('region', { name: 'Cast' }).getByText(owner.did, { exact: true })).toBeVisible();
+	await expect(
+		page.getByRole('region', { name: 'Cast' }).getByText(owner.did, { exact: true })
+	).toBeVisible();
 	const title = `Scene ${uniqueLabel('s')}`;
 	await page.getByLabel('Scene title').fill(title);
 
 	const responseEvent = page.waitForResponse(
-		(response) => response.request().method() === 'POST' && response.url() === `${app}/xrpc/${openScene.OpenSceneNsid}`,
+		(response) =>
+			response.request().method() === 'POST' &&
+			response.url() === `${app}/xrpc/${openScene.OpenSceneNsid}`,
 		{ timeout: interactionTimeout }
 	);
 
@@ -370,9 +414,12 @@ async function openPublicScene(page: Page, world: World, owner: Account): Promis
 	const response = await responseEvent;
 	expect(response.status(), 'opening the scene as the owner must succeed').toBe(200);
 	const opened: openScene.OpenSceneOutput = await response.json();
-	await page.waitForURL((url) => url.pathname.endsWith(`/play/${encodeURIComponent(opened.scene)}`), {
-		timeout: interactionTimeout
-	});
+	await page.waitForURL(
+		(url) => url.pathname.endsWith(`/play/${encodeURIComponent(opened.scene)}`),
+		{
+			timeout: interactionTimeout
+		}
+	);
 	const params = new URLSearchParams({ actor: world.did, scene: opened.scene });
 	await expect
 		.poll(
@@ -389,8 +436,12 @@ async function openPublicScene(page: Page, world: World, owner: Account): Promis
 		)
 		.toBe(opened.uri);
 	await page.reload();
-	await expect(page.getByRole('heading', { name: title })).toBeVisible({ timeout: interactionTimeout });
-	await expect(page.getByRole('region', { name: 'Cast' }).getByText(owner.did, { exact: true })).toBeVisible();
+	await expect(page.getByRole('heading', { name: title })).toBeVisible({
+		timeout: interactionTimeout
+	});
+	await expect(
+		page.getByRole('region', { name: 'Cast' }).getByText(owner.did, { exact: true })
+	).toBeVisible();
 
 	return opened.scene;
 }
@@ -399,7 +450,9 @@ async function post(page: Page, text: string): Promise<createPost.CreatePostOutp
 	await page.getByLabel('Write a post').fill(text);
 
 	const responseEvent = page.waitForResponse(
-		(response) => response.request().method() === 'POST' && response.url() === `${app}/xrpc/${createPost.CreatePostNsid}`,
+		(response) =>
+			response.request().method() === 'POST' &&
+			response.url() === `${app}/xrpc/${createPost.CreatePostNsid}`,
 		{ timeout: interactionTimeout }
 	);
 
@@ -429,7 +482,11 @@ async function assertTenorHost(page: Page, world: World, tenorDid: string): Prom
 		await documentResponse.json();
 
 	expect(document.id).toBe(world.did);
-	const service = document.service.find((entry) => entry.id === `${world.did}#motet_tenor` || entry.id === '#motet_tenor');
+
+	const service = document.service.find(
+		(entry) => entry.id === `${world.did}#motet_tenor` || entry.id === '#motet_tenor'
+	);
+
 	expect(service, 'the World DID must name the actual tenor as its host').toMatchObject({
 		type: 'MotetTenor',
 		serviceEndpoint: tenor
@@ -440,22 +497,34 @@ async function assertTenorHost(page: Page, world: World, tenorDid: string): Prom
 	);
 
 	expect(repo.status(), 'the named tenor must actually host the World repository').toBe(200);
-	const descriptionOfRepo: { did: string; handle: string; handleIsCorrect: boolean } = await repo.json();
-	expect(descriptionOfRepo).toMatchObject({ did: world.did, handle: world.handle, handleIsCorrect: true });
+
+	const descriptionOfRepo: { did: string; handle: string; handleIsCorrect: boolean } =
+		await repo.json();
+
+	expect(descriptionOfRepo).toMatchObject({
+		did: world.did,
+		handle: world.handle,
+		handleIsCorrect: true
+	});
 }
 
 test.setTimeout(420_000);
 
 // A broken PAR continuation or cookie binding could make signup appear to
 // succeed while the new account is not the authenticated identity.
-test('PDS prompt=create signs in the new account and sign-out requires a real sign-in', async ({ page }) => {
+test('PDS prompt=create signs in the new account and sign-out requires a real sign-in', async ({
+	page
+}) => {
 	const account = await signUp(page);
 	await signOutAndIn(page, account);
 });
 
 // A plaintext export or a request containing the actual scalar would leak the
 // key even if its field were renamed to something other than privateKey.
-test('World backup requires the right passphrase and sends no actual owner secret', async ({ page, context }) => {
+test('World backup requires the right passphrase and sends no actual owner secret', async ({
+	page,
+	context
+}) => {
 	const observed = requestsFrom(context);
 	await signUp(page);
 	const world = await createWorld(page);
@@ -484,14 +553,23 @@ async function admitFirstPost(
 			async () => {
 				const projection = await sceneProjection(page, world, scene);
 
-				return projection.posts.some((entry) => entry.uri === admitted.uri && entry.cid === admitted.cid);
+				return projection.posts.some(
+					(entry) => entry.uri === admitted.uri && entry.cid === admitted.cid
+				);
 			},
-			{ message: 'the exact owner post version must be admitted and projected', timeout: projectionTimeout }
+			{
+				message: 'the exact owner post version must be admitted and projected',
+				timeout: projectionTimeout
+			}
 		)
 		.toBe(true);
 	const projection = await sceneProjection(page, world, scene);
 	expect(projection.posts).toHaveLength(1);
-	expect(projection.posts[0]).toMatchObject({ uri: admitted.uri, cid: admitted.cid, author: owner.did });
+	expect(projection.posts[0]).toMatchObject({
+		uri: admitted.uri,
+		cid: admitted.cid,
+		author: owner.did
+	});
 	await page.reload();
 	const posts = page.getByRole('region', { name: 'Admitted posts' });
 	await expect(posts.getByRole('article')).toHaveCount(1);
@@ -521,7 +599,9 @@ test('the first admitted post is place 1 and a nonmember is refused without appe
 		await outsider.goto(`/w/${encodeURIComponent(world.did)}/play/${encodeURIComponent(scene)}`);
 		const outsiderText = `Refused outsider post ${uniqueLabel('p')}`;
 		const refused = await post(outsider, outsiderText);
-		expect(refused.status, 'a signed-in person outside this World and cast must be refused').toBe('refused');
+		expect(refused.status, 'a signed-in person outside this World and cast must be refused').toBe(
+			'refused'
+		);
 		expect(refused.reason, 'the tenor must explicitly deny the nonmember').toBe('Forbidden');
 		await expect(outsider.getByText('Refused: Forbidden', { exact: true })).toBeVisible({
 			timeout: interactionTimeout
@@ -532,7 +612,11 @@ test('the first admitted post is place 1 and a nonmember is refused without appe
 		await expect(outsiderPosts.getByText(outsiderText, { exact: true })).toHaveCount(0);
 		const afterRefusal = await sceneProjection(page, world, scene);
 		expect(afterRefusal.posts).toHaveLength(1);
-		expect(afterRefusal.posts[0]).toMatchObject({ uri: admitted.uri, cid: admitted.cid, author: owner.did });
+		expect(afterRefusal.posts[0]).toMatchObject({
+			uri: admitted.uri,
+			cid: admitted.cid,
+			author: owner.did
+		});
 	} finally {
 		await outsiderContext.close();
 	}

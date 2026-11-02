@@ -11,6 +11,7 @@ export const load: PageServerLoad = async ({ request, params, url }) => {
 			at_motet_pilot_getworld.GetWorldNsid,
 			{ actor: params.world }
 		);
+
 		return { world, returnTo: url.pathname + url.search };
 	} catch (cause) {
 		if (cause instanceof XrpcError && cause.status === 404) error(404, 'World not found');
