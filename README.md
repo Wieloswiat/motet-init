@@ -2,8 +2,8 @@
 
 Play-by-forum roleplaying on atproto. People's posts and characters live in
 their own repositories; each World is a group account hosted by a **tenor**,
-which admits posts into the World's scenes, rolls dice and keeps the World's
-private Spaces. Motet's **AppView** indexes all of it and serves the web app.
+which admits posts into the World's scenes and hosts its Spaces. Motet's
+**AppView** indexes public Worlds and scenes and serves the web app.
 
 The design is in [docs/architecture/overview.md](docs/architecture/overview.md);
 the decisions behind it are in [docs/adr](docs/adr/README.md).
@@ -20,7 +20,7 @@ the previous port setting. With [nix](https://nixos.org) and
 ```sh
 direnv allow          # or: nix develop --no-pure-eval
 tls-setup             # local DNS, port 443 and CA trust; uses sudo, rerun after reboot
-devenv up             # in a terminal: database, storage, atproto services and proxy
+devenv up             # PostgreSQL, storage, local network, tenor, AppView and proxy
 ```
 
 In another dev shell, start the web upstream and open
@@ -29,6 +29,12 @@ In another dev shell, start the web upstream and open
 ```sh
 pnpm --filter @motet/web dev --host 127.0.0.1 --port 4174 --strictPort
 ```
+
+The local network exposes the PDS, tenor, PLC directory, relay and Tap at
+`https://pds.motet.test`, `https://tenor.motet.test`,
+`https://plc.motet.test`, `https://relay.motet.test` and
+`https://tap.motet.test`. The web server runs separately; the proxy routes
+AppView requests and web pages through `https://motet.test`.
 
 Run `tests` for the default suites. Run `tests-integration` with `devenv up`
 running, or stop the stack and run `devenv test` to start its services for the
@@ -51,6 +57,8 @@ browser trust, DNS, service origins and how to reset state.
 | `lexgen`                         | Regenerate Rust and TypeScript types after editing `lexicons/`                                  |
 | `devenv test`                    | The whole CI gate, services included                                                            |
 | `stack`                          | The deployment-shaped stack in containers (`deploy/compose.yaml`)                               |
+| `ci`                             | Run the CI gate against the running local stack                                                 |
+| `audit`, `coverage`              | Check dependency advisories; generate default-suite line coverage                               |
 | `mutants`, `mutants-web`, `soak` | Rust and TypeScript/Svelte mutation testing; larger Rust property runs                          |
 
 The web app and AppView share `https://motet.test`; the AppView is the OAuth

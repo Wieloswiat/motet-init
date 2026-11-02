@@ -7,20 +7,19 @@ research and plan"); the decisions that shaped the code are in
 
 ## The parts
 
-```
-          people's PDSes  ──(relay, Tap)──┐        ┌── Spaces (sync, notifications)
-                 ▲                        ▼        ▼
- web app ──► AppView API ──admission──► tenor ── World's repo and Spaces
-   (SvelteKit)   │  indexer ◄──────────────────────┘
-                 ▼
-     archive (bucket) ──► projections (PostgreSQL)
+```text
+ people's PDSes and World's public repo ──► relay ──► Tap ──► indexer
+                                                              │
+                                               projections ◄── archive
+ web app ◄── HTTPS ──► AppView API ──► outbox worker ──► PDSes / tenor
+                            └── member service auth ──► tenor ──► World's repo and Spaces
 ```
 
 - **The AppView** (`crates/appview`), which Motet runs. Its indexer verifies
-  every record, appends it to the **archive** in object storage, then applies
-  it to the PostgreSQL **projections** pages are built from. Its API serves
-  Motet's XRPC methods; its **outbox** carries writes to people's PDSes and
-  admission requests to tenors until each has a final outcome.
+  records, appends them to the **archive** in object storage, then applies
+  them to the PostgreSQL **projections** pages are built from. Its API serves
+  Motet's XRPC methods. Its outbox worker carries writes to people's PDSes
+  and admission requests to tenors until each has a final outcome.
 - **The tenor** (`crates/tenor`), which anyone can run. It hosts each World as
   a group account ([ADR 0013](../adr/0013-tenor-hosts-worlds.md)): the
   World's `did:plc` (the owner holds the first rotation key), its signed
@@ -48,7 +47,7 @@ research and plan"); the decisions that shaped the code are in
 | Repositories hold the truth; projections rebuild from the archive | `appview::projection::apply` is the only writer of projections, for the live indexer and for a rebuild alike; `tests/rebuild.rs`          |
 | A post counts once the World admits it                            | `rules::world` decides; `tenor::admission` reads the record back from its author's repo first; `rules::view` shows only what was admitted |
 | A World is a group account on its tenor                           | `tenor::{identity,keys,repo,sync,spaces,authorization}`: hosted repos, role-backed Spaces and member-attributed service writes            |
-| Spaces are part of the design                                     | `spaces`: one Space per audience, per-reader serving decisions with a freshness bound                                                     |
+| Spaces are part of the design                                     | `spaces` defines audiences and per-reader serving decisions; private AppView ingestion and serving remain future work                     |
 | Buckets for what must last, PostgreSQL for what must be queried   | `log`: group commit, fencing, read-back reconciliation; the tenor's shard and the AppView's archive both use it                           |
 
 ## Contracts and their code
@@ -87,9 +86,9 @@ handlers can't forget it:
   The browser supplies the sole rotation key; the AppView does not opt in to
   a tenor recovery key. A creation retry uses the same reservation and signed
   genesis. Later World-scoped calls resolve the World's `#motet_tenor`
-  service and check its destination. The open-scene API generates an
-  operation ID for each request, so a retry after a lost response may create
-  a second scene. Posting first publishes to the author's PDS. The outbox
+  service and check its destination. The open-scene API forwards a
+  client-chosen operation ID, so retries of the same request return the
+  original scene. Posting first publishes to the author's PDS. The outbox
   retries pending or uncertain admissions with the same operation ID and
   exact post version; a failed PDS write cannot trigger admission.
 - **OAuth key custody**: `MOTET_APPVIEW_PUBLIC_ORIGIN` is the canonical public
@@ -115,15 +114,17 @@ handlers can't forget it:
   with an `OperationId`; a retried operation returns its first outcome, a
   reused one is refused. `tenor::shard` makes outcomes durable before
   returning them.
-- **Outbound HTTP**: `net::Fetcher`, the only client: HTTPS only, no redirects, non-public
-  addresses refused after DNS, bounded time and size.
+- **Outbound HTTP**: `net::Fetcher` uses HTTPS, refuses redirects and non-public
+  addresses after DNS, and bounds time and size. The local network opts into
+  private addresses and HTTP for development only.
 - **Rendering**: `render::world::Sandbox` sees only the post, bundled fonts and the
   package mirror, with a fixed date; `render::supervisor::Supervisor` runs the worker with
   a clean environment, rlimits, a wall-clock timeout and an output cap.
-- **Per-reader authorization**: `spaces::serving::decide`.
+- **Per-reader authorization**: `spaces::serving::decide` defines the
+  freshness decision; private AppView serving does not yet use it.
 - **Tap ingestion**: `appview::tap` batches verified records and identity changes.
   It acknowledges each delivery only after the archive and projections commit.
-  `motet-appview serve` starts the indexer and API together; set
+  `motet-appview serve` starts the indexer, API and outbox worker; set
   `MOTET_APPVIEW_TAP_URL` to enable ingestion and optionally
   `MOTET_APPVIEW_TAP_ADMIN_PASSWORD` for authentication. HTTPS selects TLS.
   Without a Tap URL, the API still serves after archive catch-up.
@@ -140,16 +141,17 @@ A World with neither a public declaration nor a public scene cannot be
 looked up from its public repo. A declaration identifies a group but not
 necessarily a Motet World.
 
-Next, in rough order: private Spaces ingestion and World themes; dice through
-the tenor; recovery of the owner's exported key onto a fresh tenor; typst.ts
-vector artifacts instead of static SVG
-([ADR 0008](../adr/0008-rendering.md)).
+Next, in rough order: private scene and Space ingestion in the AppView; World
+themes; dice through the tenor; World export and recovery of the owner's
+exported key onto a fresh tenor; and typst.ts vector artifacts instead of
+static SVG ([ADR 0008](../adr/0008-rendering.md)). Deferred Space security
+findings also need resolution before private scenes can be relied on; a remote
+Space host cannot read the local delegation origin binding noted above.
 
-The [local network](../local-network.md) runs PLC, relay, Tap, an
-atproto-crates PDS, the tenor and the AppView under `devenv up`.
+The [local network](../local-network.md) runs PostgreSQL, SeaweedFS, DNS,
+the HTTPS proxy, PLC, relay, Tap, an atproto-crates PDS, the tenor and the
+AppView under `devenv up`. The web server runs separately.
 `network-smoke` writes two PDS profiles and reads their exact versions through
 the AppView after Tap delivers them.
-The compose stack has the same services; its images build and its
-configuration validates, but it hasn't been run as a stack yet. The reference
-TypeScript Spaces-alpha PDS and cross-implementation coverage remain deferred
-([ADR 0017](../adr/0017-rust-pds-local-network.md)).
+The reference TypeScript Spaces-alpha PDS and cross-implementation coverage
+remain deferred ([ADR 0017](../adr/0017-rust-pds-local-network.md)).
