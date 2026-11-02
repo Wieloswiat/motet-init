@@ -14,9 +14,10 @@
 		if (starting) return;
 		starting = true;
 		authError = '';
-		const params = new URLSearchParams({ returnTo });
 
-		if (!signup) params.set('identifier', identifier);
+		const params = signup
+			? new URLSearchParams({ returnTo })
+			: new URLSearchParams({ returnTo, identifier });
 
 		try {
 			const response = await fetch(signup ? '/oauth/sign-up' : '/oauth/sign-in', {
