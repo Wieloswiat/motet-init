@@ -17,6 +17,7 @@
 	},
 	"dependencies": {
 		"@ark-ui/svelte": "^5.24.3",
+		"@ipld/dag-cbor": "^10.0.2",
 		"@motet/design": "workspace:*",
 		"@motet/lexicons": "workspace:*"
 	},

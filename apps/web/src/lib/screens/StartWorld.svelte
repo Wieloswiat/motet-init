@@ -9,6 +9,7 @@
 	import { onDestroy } from 'svelte';
 	import { procedure, query, XrpcError } from '#lib/api.js';
 	import { didKey, exportBackup, generate, sign, verifyBackup } from '#lib/owner-key/index.js';
+	import { signGenesis } from '#lib/plc/index.js';
 
 	let { signedIn }: { signedIn: boolean } = $props();
 
@@ -23,9 +24,11 @@
 
 	type Attempt = {
 		key: CryptoKeyPair;
+		op: string;
 		rotationKey: string;
 		reservation?: beginWorld.BeginWorldOutput;
 		finish?: finishWorld.FinishWorldInput;
+		expectedDid?: string;
 	};
 
 	let phase = $state<Phase>('details');
@@ -39,7 +42,7 @@
 	let downloaded = $state(false);
 	let canEdit = $state(false);
 	let message = $state('');
-	let attempt: Attempt | null = null;
+	let attempt = $state.raw<Attempt | null>(null);
 	let disposed = false;
 	let polling: AbortController | null = null;
 
@@ -56,29 +59,6 @@
 				: 1
 	);
 
-	function decodeSigningBytes(value: string): Uint8Array<ArrayBuffer> {
-		if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) {
-			throw new Error('The tenor returned invalid signing bytes.');
-		}
-
-		const encoded = value.replaceAll('-', '+').replaceAll('_', '/');
-		const binary = atob(encoded + '='.repeat((4 - (encoded.length % 4)) % 4));
-
-		return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-	}
-
-	// The unsigned operation is an untrusted JSON value at the XRPC boundary.
-	/* oxlint-disable anti-slop/no-runtime-typeof */
-	function isUnsignedOperation(operation: unknown): operation is object {
-		return (
-			typeof operation === 'object' &&
-			operation !== null &&
-			!Array.isArray(operation) &&
-			!('sig' in operation)
-		);
-	}
-	/* oxlint-enable anti-slop/no-runtime-typeof */
-
 	async function createWorld(): Promise<void> {
 		if (busy || (phase !== 'details' && phase !== 'creation-error')) return;
 
@@ -89,7 +69,12 @@
 		try {
 			if (attempt === null) {
 				const key = await generate();
-				attempt = { key, rotationKey: await didKey(key.publicKey) };
+
+				attempt = {
+					key,
+					op: crypto.randomUUID(),
+					rotationKey: await didKey(key.publicKey)
+				};
 
 				if (disposed) return;
 			}
@@ -104,6 +89,7 @@
 					handle: handle.trim(),
 					name: name.trim(),
 					visibility: 'public',
+					op: current.op,
 					rotationKey: current.rotationKey
 				});
 			}
@@ -111,30 +97,35 @@
 			if (disposed) return;
 
 			if (current.finish === undefined) {
-				const operation = current.reservation.operation;
-
-				if (!isUnsignedOperation(operation)) {
-					throw new Error('The tenor returned an invalid unsigned operation.');
-				}
-
-				const signature = await sign(
-					current.key.privateKey,
-					decodeSigningBytes(current.reservation.signingBytes)
+				const result = await signGenesis(
+					current.reservation.operation,
+					current.reservation.signingBytes,
+					current.rotationKey,
+					handle.trim(),
+					current.reservation.tenorUrl,
+					(bytes) => sign(current.key.privateKey, bytes)
 				);
 
+				current.expectedDid = result.did;
 				current.finish = {
 					reservation: current.reservation.reservation,
-					signedOperation: { ...operation, sig: signature }
+					signedOperation: result.signedOperation
 				};
 			}
 
 			if (disposed) return;
 
 			// Retrying this exact signed reservation is safe even if the first response was lost.
-			created = await procedure<finishWorld.FinishWorldInput, finishWorld.FinishWorldOutput>(
+			const result = await procedure<finishWorld.FinishWorldInput, finishWorld.FinishWorldOutput>(
 				finishWorld.FinishWorldNsid,
 				current.finish
 			);
+
+			if (result.did !== current.expectedDid) {
+				throw new Error('The returned World DID does not match the signed genesis.');
+			}
+
+			created = result;
 
 			phase = 'backup';
 		} catch (error) {
@@ -355,6 +346,7 @@
 										type="text"
 										bind:value={name}
 										maxlength="640"
+										disabled={attempt !== null}
 										required
 									/>
 								</div>
@@ -370,6 +362,7 @@
 										placeholder="your-world.motet.test"
 										autocomplete="off"
 										autocapitalize="none"
+										disabled={attempt !== null}
 										spellcheck="false"
 										aria-describedby="world-handle-help"
 										required
