@@ -11,7 +11,11 @@
 					"type": "object",
 					"required": ["op", "handle", "rotationKey", "tenorRotationKey"],
 					"properties": {
-						"op": { "type": "string", "format": "record-key", "description": "Client-chosen operation ID, unique per owner." },
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "Client-chosen operation ID, unique per owner."
+						},
 						"handle": { "type": "string", "format": "handle" },
 						"rotationKey": {
 							"type": "string",
@@ -60,9 +64,18 @@
 				}
 			},
 			"errors": [
-				{ "name": "HandleTaken", "description": "The handle is already in use, reserved by another owner, or has a submitted genesis." },
-				{ "name": "InvalidRequest", "description": "The operation ID is invalid or was reused with different fields." },
-				{ "name": "UpstreamFailure", "description": "The issuer's DID document could not be resolved; retry with a fresh service token." }
+				{
+					"name": "HandleTaken",
+					"description": "The handle is already in use, reserved by another owner, or has a submitted genesis."
+				},
+				{
+					"name": "InvalidRequest",
+					"description": "The operation ID is invalid or was reused with different fields."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The issuer's DID document could not be resolved; retry with a fresh service token."
+				}
 			]
 		}
 	}
