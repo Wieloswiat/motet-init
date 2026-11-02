@@ -40,15 +40,31 @@ impl DidResolver {
             let valid = !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
             return valid.then(|| format!("{}/{did}", self.plc_directory));
         }
-        let host = did.strip_prefix("did:web:")?;
-        // atproto allows only a hostname (no path, no port) in did:web.
+        let authority = did.strip_prefix("did:web:")?;
+        // A did:web port uses an encoded colon; no other URL syntax is allowed.
+        let (host, port) = match authority.find('%') {
+            Some(index) => {
+                let (host, encoded_port) = authority.split_at(index);
+                let port = encoded_port
+                    .strip_prefix("%3A")
+                    .or_else(|| encoded_port.strip_prefix("%3a"))?;
+                if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) || port.parse::<u16>().is_err() {
+                    return None;
+                }
+                (host, Some(port))
+            }
+            None => (authority, None),
+        };
         let valid = !host.is_empty()
             && host
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
             && !host.starts_with('.')
             && !host.ends_with('.');
-        valid.then(|| format!("https://{host}/.well-known/did.json"))
+        valid.then(|| match port {
+            Some(port) => format!("https://{host}:{port}/.well-known/did.json"),
+            None => format!("https://{host}/.well-known/did.json"),
+        })
     }
 }
 
@@ -92,19 +108,35 @@ mod tests {
             r.document_url("did:web:gilded-reach.motet.at").as_deref(),
             Some("https://gilded-reach.motet.at/.well-known/did.json")
         );
+        assert_eq!(
+            r.document_url("did:web:tenor.example%3A8443").as_deref(),
+            Some("https://tenor.example:8443/.well-known/did.json")
+        );
+        assert_eq!(
+            r.document_url("did:web:tenor.example%3a8443").as_deref(),
+            Some("https://tenor.example:8443/.well-known/did.json")
+        );
+        for did in [
+            "did:web:tenor.example%3A",
+            "did:web:tenor.example%3A65536",
+            "did:web:tenor.example%3A443%40attacker.example",
+            "did:web:tenor.example%2Fattacker",
+            "did:web:tenor.example:8443",
+        ] {
+            assert!(r.document_url(did).is_none(), "{did}");
+        }
     }
 
     proptest! {
-        /// Whatever a DID says, its document URL stays on the PLC directory or
-        /// on the bare host a did:web names: no paths, ports, credentials or
-        /// fragments can be smuggled into it.
+        /// A DID cannot smuggle a path, credentials or fragment into its URL;
+        /// an encoded port must not redirect resolution to a different host.
         #[test]
         fn subjects_cannot_redirect_resolution(subject in "did:(plc|web|key):[ -~]{0,40}") {
             if let Some(url) = resolver().document_url(&subject) {
                 let parsed = url::Url::parse(&url).expect("valid URL");
                 prop_assert_eq!(parsed.scheme(), "https");
                 prop_assert!(parsed.username().is_empty() && parsed.password().is_none());
-                prop_assert!(parsed.port().is_none() && parsed.query().is_none() && parsed.fragment().is_none());
+                prop_assert!(parsed.query().is_none() && parsed.fragment().is_none());
                 let plc = parsed.host_str() == Some("plc.directory") && parsed.path().matches('/').count() == 1;
                 let web = parsed.path() == "/.well-known/did.json";
                 prop_assert!(plc || web, "{}", url);
