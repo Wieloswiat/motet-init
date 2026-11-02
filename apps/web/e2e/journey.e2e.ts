@@ -324,7 +324,7 @@ async function waitForWorld(page: Page, world: World): Promise<void> {
 		.toBe(`${world.did}|${world.handle}|${world.name}`);
 }
 
-async function createWorld(page: Page): Promise<World> {
+async function createWorld(page: Page, lostResponse?: 'retry' | 'reload'): Promise<World> {
 	const label = uniqueLabel('w');
 	const handle = `${label}.motet.test`;
 	const name = `World ${label}`;
@@ -334,6 +334,53 @@ async function createWorld(page: Page): Promise<World> {
 	await page.getByLabel('World name').fill(name);
 	await page.getByLabel('World handle').fill(handle);
 	await page.getByLabel('Backup passphrase').fill(passphrase);
+
+	let reservationAttempts = 0;
+	let firstInput: beginWorld.BeginWorldInput | undefined;
+	let firstReservation: beginWorld.BeginWorldOutput | undefined;
+
+	if (lostResponse) {
+		await page.route(`**/xrpc/${beginWorld.BeginWorldNsid}`, async (route) => {
+			const input: beginWorld.BeginWorldInput = route.request().postDataJSON();
+			const response = await route.fetch();
+			expect(
+				response.status(),
+				'the real reservation must succeed before its response is lost'
+			).toBe(200);
+			const result: beginWorld.BeginWorldOutput = await response.json();
+			reservationAttempts += 1;
+
+			if (reservationAttempts === 1) {
+				firstInput = input;
+				firstReservation = result;
+				await route.abort();
+			} else {
+				if (lostResponse === 'retry') {
+					expect(input, 'retry must retain the original reservation inputs').toEqual(firstInput);
+					expect(result.reservation, 'retry must return the original reservation').toBe(
+						firstReservation?.reservation
+					);
+				} else {
+					expect(input.handle).toBe(firstInput?.handle);
+					expect(input.op).not.toBe(firstInput?.op);
+					expect(input.rotationKey).not.toBe(firstInput?.rotationKey);
+					expect(result.reservation).not.toBe(firstReservation?.reservation);
+				}
+
+				await route.fulfill({ response });
+			}
+		});
+		await page.getByRole('button', { name: 'Create World' }).click();
+		await expect(page.getByRole('alert')).toContainText('Retry');
+
+		if (lostResponse === 'reload') {
+			page.once('dialog', (dialog) => dialog.accept());
+			await page.reload();
+			await page.getByLabel('World name').fill(name);
+			await page.getByLabel('World handle').fill(handle);
+			await page.getByLabel('Backup passphrase').fill(passphrase);
+		}
+	}
 
 	const reservationResponse = page.waitForResponse(
 		(response) =>
@@ -356,8 +403,12 @@ async function createWorld(page: Page): Promise<World> {
 			return response;
 		}),
 		creationResponse,
-		page.getByRole('button', { name: 'Create World' }).click()
+		page
+			.getByRole('button', { name: lostResponse === 'retry' ? 'Retry creation' : 'Create World' })
+			.click()
 	]);
+
+	if (lostResponse) expect(reservationAttempts).toBe(2);
 
 	const reservationInput: beginWorld.BeginWorldInput = reservation.request().postDataJSON();
 	const reserved: beginWorld.BeginWorldOutput = await reservation.json();
@@ -557,6 +608,20 @@ test('World backup requires the right passphrase and sends no actual owner secre
 	assertNoSecrets(observed, world.secrets);
 });
 
+// Generating a new operation or owner key after a lost reservation response
+// can strand the already reserved handle and prevent the World from being created.
+test('retrying a lost World reservation completes the same handle', async ({ page }) => {
+	await signUp(page);
+	await createWorld(page, 'retry');
+});
+
+// A reload discards the unsaved owner key; a new attempt must replace the
+// unsigned reservation or the owner cannot finish creating the same World.
+test('a fresh attempt after reload can create the previously reserved handle', async ({ page }) => {
+	await signUp(page);
+	await createWorld(page, 'reload');
+});
+
 // Dropping the opener from the published cast would prevent the person who
 // opened the scene from posting, even though the form initially listed them.
 test('a newly opened public scene retains its opener in the projected cast', async ({ page }) => {
@@ -601,6 +666,115 @@ test('retrying a lost open-scene response reaches the original scene', async ({ 
 	await expect(page.getByRole('heading', { name: title })).toBeVisible({
 		timeout: projectionTimeout
 	});
+});
+
+// A new operation on retry would publish and admit the same draft twice;
+// reusing it after success would instead prevent the next draft from posting.
+test('a lost post response admits one post and the next draft gets a new operation', async ({
+	page
+}) => {
+	const owner = await signUp(page);
+	const world = await createWorld(page);
+	const scene = await openPublicScene(page, world, owner);
+	const text = `Retry post ${uniqueLabel('p')}`;
+	const nextText = `Next post ${uniqueLabel('p')}`;
+	let attempts = 0;
+	let firstOperation = '';
+	let firstUri = '';
+	let firstCid = '';
+
+	await page.route(`**/xrpc/${createPost.CreatePostNsid}`, async (route) => {
+		const input: createPost.CreatePostInput = route.request().postDataJSON();
+		const response = await route.fetch();
+		expect(response.status()).toBe(200);
+		const result: createPost.CreatePostOutput = await response.json();
+		attempts += 1;
+
+		if (attempts === 1) {
+			firstOperation = input.op;
+			firstUri = result.uri;
+			firstCid = result.cid;
+			await route.abort();
+		} else {
+			if (attempts === 2) {
+				expect(input.op).toBe(firstOperation);
+				expect(result.uri).toBe(firstUri);
+				expect(result.cid).toBe(firstCid);
+			} else {
+				expect(input.op).not.toBe(firstOperation);
+			}
+
+			await route.fulfill({ response });
+		}
+	});
+
+	await page.getByRole('textbox', { name: 'Write a post' }).fill(text);
+	await page.getByRole('button', { name: 'Post', exact: true }).click();
+	await expect(page.getByRole('status')).toContainText('Could not post:');
+	await expect(page.getByRole('textbox', { name: 'Write a post' })).toHaveValue(text);
+	await page.getByRole('button', { name: 'Post', exact: true }).click();
+	await expect(page.getByRole('status')).toContainText('Admitted. Your post is now in the scene.', {
+		timeout: projectionTimeout
+	});
+	const projection = await sceneProjection(page, world, scene);
+	expect(projection.posts).toHaveLength(1);
+	expect(projection.posts[0]).toMatchObject({ uri: firstUri, cid: firstCid, author: owner.did });
+	const posts = page.getByRole('region', { name: 'Admitted posts' });
+	await expect(posts.getByRole('article')).toHaveCount(1);
+	await expect(posts.getByRole('article').first()).toContainText(text);
+
+	await expect(page.getByRole('button', { name: 'Post', exact: true })).toBeEnabled();
+	const next = await post(page, nextText);
+	expect(next.uri).not.toBe(firstUri);
+	await expect(page.getByRole('status')).toContainText('Admitted. Your post is now in the scene.', {
+		timeout: projectionTimeout
+	});
+	await expect(posts.getByRole('article')).toHaveCount(2);
+	expect(attempts).toBe(3);
+});
+
+// Reusing a failed draft's operation for changed content would make the
+// AppView reject the new draft, and an unknown-status message hides the cause.
+test('failed admission reports its reason and edited drafts get new operations', async ({
+	page
+}) => {
+	const owner = await signUp(page);
+	const world = await createWorld(page);
+	await openPublicScene(page, world, owner);
+	const text = `Draft ${uniqueLabel('p')}`;
+	const edited = `Edited draft ${uniqueLabel('p')}`;
+	const operations: string[] = [];
+
+	await page.route(`**/xrpc/${createPost.CreatePostNsid}`, async (route) => {
+		const input: createPost.CreatePostInput = route.request().postDataJSON();
+		operations.push(input.op);
+		const response = await route.fetch();
+		expect(response.status()).toBe(200);
+		const result: createPost.CreatePostOutput = await response.json();
+
+		if (operations.length < 3) {
+			await route.fulfill({
+				response,
+				json: { ...result, status: 'failed', reason: 'Admission unavailable' }
+			});
+		} else {
+			await route.fulfill({ response });
+		}
+	});
+
+	await page.getByRole('textbox', { name: 'Write a post' }).fill(text);
+	await page.getByRole('button', { name: 'Post', exact: true }).click();
+	await expect(page.getByRole('status')).toHaveText('Admission failed: Admission unavailable');
+	await page.getByLabel('Posting as').selectOption('out-of-character');
+	await page.getByRole('button', { name: 'Post', exact: true }).click();
+	await expect(page.getByRole('status')).toHaveText('Admission failed: Admission unavailable');
+	await page.getByRole('textbox', { name: 'Write a post' }).fill(edited);
+	await page.getByRole('button', { name: 'Post', exact: true }).click();
+	await expect(page.getByRole('status')).toContainText('Admitted. Your post is now in the scene.', {
+		timeout: projectionTimeout
+	});
+	expect(new Set(operations).size).toBe(3);
+	await expect(page.getByRole('region', { name: 'Admitted posts' })).toContainText(edited);
 });
 
 async function admitFirstPost(

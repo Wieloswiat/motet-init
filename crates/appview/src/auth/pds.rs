@@ -29,6 +29,7 @@ use super::store::{SessionRef, SessionStore, StoreError};
 
 const GET_SERVICE_AUTH: &str = "com.atproto.server.getServiceAuth";
 const CREATE_RECORD: &str = "com.atproto.repo.createRecord";
+const GET_RECORD: &str = "com.atproto.repo.getRecord";
 // Leave room for modest clock skew within the service's one-minute cap.
 const SERVICE_TOKEN_LIFETIME_SECS: i64 = 55;
 // Refresh before a token expires while a request is in flight.
@@ -207,6 +208,40 @@ impl PdsClient {
         }
         let response = resource_call(&self.fetcher, &grant, Method::POST, &url, Some(&Value::Object(body))).await?;
         successful_body(response)
+    }
+
+    /// Read a record from the authorized member's repo after an uncertain write.
+    ///
+    /// A missing record is distinct from an unavailable PDS; only the former
+    /// permits another create-only attempt with the same key.
+    pub async fn get_record_by_ref(
+        &self,
+        session: &SessionRef,
+        collection: &str,
+        rkey: &str,
+    ) -> Result<Option<Value>, PdsError> {
+        if !atproto_record::nsid::is_valid_nsid(collection) || !atproto_record::record_key::is_valid_record_key(rkey) {
+            return Err(PdsError::InvalidRequest);
+        }
+        let grant = self.fresh_grant(session).await?;
+        let mut url = method_url(&self.fetcher, &grant.pds, GET_RECORD)?;
+        url.query_pairs_mut()
+            .append_pair("repo", &grant.did)
+            .append_pair("collection", collection)
+            .append_pair("rkey", rkey);
+        let response = resource_call(&self.fetcher, &grant, Method::GET, &url, None).await?;
+        if response.status == StatusCode::NOT_FOUND
+            || (response.status == StatusCode::BAD_REQUEST
+                && response
+                    .body
+                    .as_ref()
+                    .and_then(|body| body.get("error"))
+                    .and_then(Value::as_str)
+                    == Some("RecordNotFound"))
+        {
+            return Ok(None);
+        }
+        successful_body(response).map(Some)
     }
 
     /// Delete the local session before attempting RFC 7009 grant revocation.

@@ -51,6 +51,7 @@ pub fn register(service: Service<Arc<State>>) -> Service<Arc<State>> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BeginInput {
+    op: String,
     handle: String,
     name: String,
     visibility: Visibility,
@@ -79,12 +80,14 @@ struct Begun<'a> {
     #[serde(flatten)]
     reserved: Reserved,
     tenor: &'a str,
+    tenor_url: &'a str,
 }
 
 async fn begin_world(state: Arc<State>, caller: Caller, input: Input) -> Result<Response, XrpcError> {
     require_session(&caller)?;
     let session = auth::session_cookie(&input.headers)?;
     let request: BeginInput = serde_json::from_slice(&input.body).map_err(invalid)?;
+    atproto_record::record_key::check_record_key(&request.op).map_err(invalid)?;
     if request.name.len() > 640 {
         return Err(invalid("World name exceeds 640 bytes"));
     }
@@ -98,6 +101,7 @@ async fn begin_world(state: Arc<State>, caller: Caller, input: Input) -> Result<
     // The browser offers no recovery-delegation choice. Do not silently give
     // the tenor a rotation key that could recover the owner's identity.
     let request = json!({
+        "op": request.op,
         "handle": request.handle,
         "name": request.name,
         "visibility": request.visibility,
@@ -115,6 +119,7 @@ async fn begin_world(state: Arc<State>, caller: Caller, input: Input) -> Result<
     }
     Ok(Json(Begun {
         reserved,
+        tenor_url: target.endpoint(),
         tenor: target.audience(),
     })
     .into_response())

@@ -41,6 +41,7 @@ pub const CREATE_POST: Method = Method {
 
 #[derive(Deserialize)]
 struct CreatePost {
+    op: String,
     world: String,
     scene: String,
     body: String,
@@ -51,7 +52,7 @@ struct CreatePost {
 #[serde(tag = "stage", rename_all = "snake_case")]
 enum Stage<'a> {
     Publish { world: &'a str, rkey: &'a str },
-    Publishing {},
+    Publishing { world: &'a str, rkey: &'a str },
     Admission { world: &'a str, uri: &'a str, cid: &'a str },
 }
 
@@ -106,6 +107,9 @@ pub async fn create_post(state: Arc<State>, caller: Caller, input: Input) -> Res
     let session = SessionRef::from_cookie(cookie).ok_or(XrpcError::AuthRequired)?;
     let request: CreatePost =
         serde_json::from_slice(&input.body).map_err(|_| XrpcError::InvalidRequest("invalid post request".into()))?;
+    if Tid::decode(&request.op).is_err() {
+        return Err(XrpcError::InvalidRequest("operation must be a TID".into()));
+    }
     match parse_input(&request.world) {
         Ok(InputType::Plc(world) | InputType::Web(world)) if world == request.world => {}
         _ => return Err(XrpcError::InvalidRequest("invalid World DID".into())),
@@ -116,7 +120,12 @@ pub async fn create_post(state: Arc<State>, caller: Caller, input: Input) -> Res
     if request.body.chars().count() > 65_536 {
         return Err(XrpcError::InvalidRequest("post body is too long".into()));
     }
-    let rkey = Tid::new().to_string();
+    let identity = json!({
+        "world": request.world,
+        "scene": request.scene,
+        "body": request.body,
+        "register": request.register,
+    });
     let record = json!({
         "$type": POST,
         "world": request.world,
@@ -126,11 +135,11 @@ pub async fn create_post(state: Arc<State>, caller: Caller, input: Input) -> Res
         "createdAt": Datetime::now().to_string(),
     });
     let world = record.get("world").and_then(Value::as_str).ok_or(XrpcError::Internal)?;
-    let payload = json!({ "stage": "publish", "world": world, "rkey": rkey, "record": record });
-    let operation = Uuid::now_v7().to_string();
-    let id = outbox::enqueue_post(&state.pool, &did, &operation, &payload, &session)
+    let payload = json!({ "stage": "publish", "world": world, "rkey": request.op, "record": record });
+    let id = outbox::enqueue_post(&state.pool, &did, &request.op, &payload, &identity, &session)
         .await
-        .map_err(internal)?;
+        .map_err(internal)?
+        .ok_or_else(|| XrpcError::InvalidRequest("operation was already used for a different post".into()))?;
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
         let owner = Uuid::now_v7().to_string();
@@ -148,46 +157,48 @@ pub async fn create_post(state: Arc<State>, caller: Caller, input: Input) -> Res
                 .fetch_one(&state.pool)
                 .await
                 .map_err(internal)?;
-        if let Some(outcome) = current.2 {
-            return response(current.0.as_str(), outcome);
-        }
-        if tokio::time::Instant::now() >= deadline {
-            if let Ok(Stage::Admission { uri, cid, .. }) = Stage::deserialize(&current.1) {
+        if let Ok(Stage::Admission { uri, cid, .. }) = Stage::deserialize(&current.1) {
+            if current.0 == "failed" {
+                let reason = current
+                    .2
+                    .as_ref()
+                    .and_then(|outcome| outcome.get("error"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("Admission failed");
+                return Ok(
+                    Json(json!({ "uri": uri, "cid": cid, "status": "failed", "reason": reason })).into_response(),
+                );
+            }
+            if current.0 == "done" {
+                return Ok(Json(current.2.ok_or(XrpcError::Internal)?).into_response());
+            }
+            if current.2.is_some() || tokio::time::Instant::now() >= deadline {
                 return Ok(Json(json!({ "uri": uri, "cid": cid, "status": "pending" })).into_response());
             }
-            // Fence even an in-flight PDS call before reporting failure. If
-            // publication won the race, reread its exact URI and CID instead.
-            let cancelled = sqlx::query(
-                "UPDATE service.outbox SET state = 'failed', outcome = $2, lease_owner = NULL, lease_until = NULL \
-                 WHERE id = $1 AND state = 'queued' AND payload->>'stage' IN ('publish', 'publishing')",
-            )
-            .bind(id)
-            .bind(json!({"error": "upstream"}))
-            .execute(&state.pool)
-            .await
-            .map_err(internal)?;
-            if cancelled.rows_affected() == 1 {
-                return Err(upstream_failure());
-            }
-            continue;
+        } else if let Some(outcome) = current.2 {
+            return response(outcome);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            // A timed-out create may still commit; keep the job for read-back.
+            return Err(upstream_failure());
         }
         tokio::time::sleep(POLL).await;
     }
 }
 
-fn response(state: &str, outcome: Value) -> Result<Response, XrpcError> {
-    if state == "failed" || outcome.get("error").is_some() {
+fn response(outcome: Value) -> Result<Response, XrpcError> {
+    if outcome.get("error").is_some() {
         return Err(match outcome.get("error").and_then(Value::as_str) {
             Some("forbidden") => forbidden(),
+            Some("conflict") => XrpcError::InvalidRequest("post record key is already in use".into()),
             _ => upstream_failure(),
         });
     }
     Ok(Json(outcome).into_response())
 }
 
-/// One fenced attempt. Once a PDS call starts it is never repeated: a lost
-/// response cannot establish which CID was committed. Tenor submissions are
-/// safe to repeat because the tenor durably deduplicates the same operation.
+/// One fenced attempt. A create-only key and read-back recover uncertain PDS
+/// writes; tenor submissions reuse the same durable operation and strong ref.
 pub(crate) async fn process(
     pool: &PgPool,
     auth: &auth::Server,
@@ -196,46 +207,80 @@ pub(crate) async fn process(
     owner: &str,
 ) -> sqlx::Result<()> {
     let Some(session) = job.session_id.as_deref().and_then(SessionRef::from_db) else {
-        outbox::finish(pool, job, owner, true, &json!({"error": "forbidden"})).await?;
+        outbox::pause(pool, job, owner, &json!({"error": "forbidden"})).await?;
         return Ok(());
     };
     let Ok(stage) = Stage::deserialize(&job.payload) else {
         outbox::finish(pool, job, owner, true, &json!({"error": "upstream"})).await?;
         return Ok(());
     };
+    let recovering = matches!(stage, Stage::Publishing { .. });
     match stage {
-        Stage::Publish { world, rkey } => {
+        Stage::Publish { world, rkey } | Stage::Publishing { world, rkey } => {
             let Some(record) = job.payload.get("record") else {
                 outbox::finish(pool, job, owner, true, &json!({"error": "upstream"})).await?;
                 return Ok(());
             };
-            if !outbox::mark_publishing(pool, job, owner).await? {
+            if !recovering && !outbox::mark_publishing(pool, job, owner).await? {
                 return Ok(());
             }
-            let written = auth
-                .pds()
-                .create_record_by_ref(&session, POST, Some(rkey), record.clone())
-                .await;
-            let value = match written {
-                Ok(value) => value,
-                Err(PdsError::Store(StoreError::Busy)) => {
-                    // Session locking failed before createRecord could be sent.
-                    outbox::retry_publication(pool, job, owner).await?;
-                    return Ok(());
+            let existing = if recovering {
+                match auth.pds().get_record_by_ref(&session, POST, rkey).await {
+                    Ok(value) => value,
+                    Err(
+                        PdsError::Session
+                        | PdsError::Refresh
+                        | PdsError::Status(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+                    ) => {
+                        outbox::pause(pool, job, owner, &json!({"error": "forbidden"})).await?;
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        outbox::reschedule(pool, job, owner, &json!({"error": "upstream"})).await?;
+                        return Ok(());
+                    }
                 }
-                Err(error) => {
-                    let code = if matches!(
-                        error,
-                        PdsError::Session | PdsError::Status(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-                    ) {
-                        "forbidden"
-                    } else {
-                        "upstream"
-                    };
-                    outbox::finish(pool, job, owner, true, &json!({"error": code})).await?;
-                    return Ok(());
+            } else {
+                None
+            };
+            let (value, read_back) = if let Some(value) = existing {
+                (value, true)
+            } else {
+                let written = auth
+                    .pds()
+                    .create_record_by_ref(&session, POST, Some(rkey), record.clone())
+                    .await;
+                match written {
+                    Ok(value) => (value, false),
+                    Err(PdsError::Store(StoreError::Busy)) => {
+                        // Session locking failed before createRecord could be sent.
+                        outbox::retry_publication(pool, job, owner).await?;
+                        return Ok(());
+                    }
+                    Err(
+                        PdsError::Session
+                        | PdsError::Refresh
+                        | PdsError::Status(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+                    ) => {
+                        outbox::pause(pool, job, owner, &json!({"error": "forbidden"})).await?;
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        if let Ok(Some(value)) = auth.pds().get_record_by_ref(&session, POST, rkey).await {
+                            (value, true)
+                        } else {
+                            // The write may still complete. Read it back before
+                            // trying the same create-only key again.
+                            outbox::reschedule(pool, job, owner, &json!({"error": "upstream"})).await?;
+                            return Ok(());
+                        }
+                    }
                 }
             };
+            if read_back && value.get("value") != Some(record) {
+                outbox::finish(pool, job, owner, true, &json!({"error": "conflict"})).await?;
+                return Ok(());
+            }
             let expected = format!("at://{}/{POST}/{rkey}", job.account);
             let uri = value.get("uri").and_then(Value::as_str);
             let cid = value.get("cid").and_then(Value::as_str);
@@ -257,12 +302,6 @@ pub(crate) async fn process(
                 cid,
             };
             submit(pool, auth, client, job, owner, &session, post).await
-        }
-        Stage::Publishing {} => {
-            // A prior process might have committed the record but lost its
-            // response. Without its CID, admission must never be guessed.
-            outbox::finish(pool, job, owner, true, &json!({"error": "upstream"})).await?;
-            Ok(())
         }
         Stage::Admission { world, uri, cid } => {
             submit(pool, auth, client, job, owner, &session, Published { world, uri, cid }).await
@@ -292,7 +331,7 @@ async fn submit(
             return Ok(());
         }
         Err(_) => {
-            outbox::reschedule(pool, job, owner, &pending).await?;
+            outbox::retry_admission(pool, job, owner, &pending, "World tenor could not be resolved").await?;
             return Ok(());
         }
     };
@@ -302,13 +341,15 @@ async fn submit(
         .await
     {
         Ok(token) => token,
-        Err(PdsError::Session | PdsError::Status(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)) => {
+        Err(
+            PdsError::Session | PdsError::Refresh | PdsError::Status(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+        ) => {
             let blocked = json!({"uri": uri, "cid": cid, "status": "pending", "error": "forbidden"});
             outbox::pause(pool, job, owner, &blocked).await?;
             return Ok(());
         }
         Err(_) => {
-            outbox::reschedule(pool, job, owner, &pending).await?;
+            outbox::retry_admission(pool, job, owner, &pending, "PDS service token could not be obtained").await?;
             return Ok(());
         }
     };
@@ -317,57 +358,56 @@ async fn submit(
     let answer = match answer {
         Ok(value) => serde_json::from_value::<Admission>(value).ok(),
         Err(ClientError::Forbidden) => {
-            outbox::finish(
-                pool,
-                job,
-                owner,
-                false,
-                &json!({
-                    "uri": uri, "cid": cid, "status": "refused", "reason": "Forbidden"
-                }),
-            )
-            .await?;
+            let refused = json!({"uri": uri, "cid": cid, "status": "refused", "reason": "Forbidden"});
+            outbox::finish(pool, job, owner, false, &refused).await?;
             return Ok(());
         }
         Err(ClientError::Unauthorized) => {
-            let blocked = json!({"uri": uri, "cid": cid, "status": "pending", "error": "forbidden"});
-            outbox::pause(pool, job, owner, &blocked).await?;
+            outbox::retry_admission(
+                pool,
+                job,
+                owner,
+                &pending,
+                "Tenor repeatedly rejected the service token",
+            )
+            .await?;
             return Ok(());
         }
         Err(ClientError::InvalidRequest(_)) => {
             outbox::finish(pool, job, owner, true, &json!({"error": "upstream"})).await?;
             return Ok(());
         }
-        Err(ClientError::NotFound | ClientError::Upstream) => None,
-    };
-    match answer {
-        Some(Admission::Admitted { epoch, seq }) => {
-            outbox::finish(
+        Err(ClientError::NotFound | ClientError::Upstream) => {
+            outbox::retry_admission(
                 pool,
                 job,
                 owner,
-                false,
-                &json!({
-                    "uri": uri, "cid": cid, "status": "admitted", "epoch": epoch, "seq": seq
-                }),
+                &pending,
+                "Tenor admission service remained unavailable",
             )
             .await?;
+            return Ok(());
+        }
+    };
+    let outcome = match answer {
+        Some(Admission::Admitted { epoch, seq }) => {
+            json!({ "uri": uri, "cid": cid, "status": "admitted", "epoch": epoch, "seq": seq })
         }
         Some(Admission::Refused { reason }) if !reason.is_empty() => {
-            outbox::finish(
+            json!({ "uri": uri, "cid": cid, "status": "refused", "reason": reason })
+        }
+        _ => {
+            outbox::retry_admission(
                 pool,
                 job,
                 owner,
-                false,
-                &json!({
-                    "uri": uri, "cid": cid, "status": "refused", "reason": reason
-                }),
+                &pending,
+                "Tenor admission did not reach a final outcome",
             )
             .await?;
+            return Ok(());
         }
-        _ => {
-            outbox::reschedule(pool, job, owner, &pending).await?;
-        }
-    }
+    };
+    outbox::finish(pool, job, owner, false, &outcome).await?;
     Ok(())
 }

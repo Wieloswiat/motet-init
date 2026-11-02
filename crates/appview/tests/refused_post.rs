@@ -435,7 +435,7 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
         .header(header::COOKIE, format!("__Host-motet_session={cookie}"))
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
-            json!({"world":WORLD, "scene":SCENE,
+            json!({"op":atproto_record::tid::Tid::new().to_string(), "world":WORLD, "scene":SCENE,
             "body":"A non-cast member cannot enter this scene", "register":"in-character"})
             .to_string(),
         ))

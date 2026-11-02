@@ -61,7 +61,7 @@ fn string<'a>(value: &'a Value, field: &str) -> &'a str {
     clippy::too_many_lines,
     reason = "the ordered journey shares state across every step"
 )]
-async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
+async fn oauth_owner_retries_world_reservation_and_sees_the_exact_post_in_first_place() {
     let session = oauth_support::create_session(None).await;
     let current = session
         .client
@@ -87,17 +87,55 @@ async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
     let run_id = Uuid::now_v7().simple().to_string();
     let handle = format!("world{run_id}{domain}");
     let world_name = "Live stack World";
-    let reserved = procedure(
-        &session,
-        "at.motet.pilot.beginWorld",
-        &json!({
-            "handle": handle,
-            "name": world_name,
-            "visibility": "public",
-            "rotationKey": public_rotation.to_string(),
-        }),
-    )
-    .await;
+    // A lost beginWorld response must not allocate a different reservation.
+    // Replacing the client's op with a fresh one would return a different genesis.
+    let begin_input = json!({
+        "op": Uuid::now_v7().to_string(),
+        "handle": handle,
+        "name": world_name,
+        "visibility": "public",
+        "rotationKey": public_rotation.to_string(),
+    });
+    let reserved = procedure(&session, "at.motet.pilot.beginWorld", &begin_input).await;
+    let retried = procedure(&session, "at.motet.pilot.beginWorld", &begin_input).await;
+    assert_eq!(reserved, retried, "retry returns the original reservation and genesis");
+    let tenor_url = std::env::var("MOTET_APPVIEW_TENOR_URL").expect("the tenor origin must be configured");
+    assert_eq!(
+        Url::parse(string(&reserved, "tenorUrl")).expect("the reserved tenor endpoint is a URL"),
+        Url::parse(&tenor_url).expect("the configured tenor endpoint is a URL"),
+    );
+
+    // Accepting absent or invalid keys would make retries unsafe or ambiguous.
+    let mut missing_op = begin_input.clone();
+    missing_op
+        .as_object_mut()
+        .expect("begin input is an object")
+        .remove("op");
+    let mut invalid_op = begin_input.clone();
+    invalid_op["op"] = json!("invalid/key");
+    let mut changed = begin_input.clone();
+    changed["name"] = json!("Different World");
+    for body in [missing_op, invalid_op, changed] {
+        let response = session
+            .client
+            .post(
+                session
+                    .app
+                    .join("/xrpc/at.motet.pilot.beginWorld")
+                    .expect("beginWorld URL is valid"),
+            )
+            .header(COOKIE, &session.session_cookie)
+            .header(ORIGIN, session.app.origin().ascii_serialization())
+            .json(&body)
+            .send()
+            .await
+            .expect("send invalid beginWorld request");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "invalid reservation request: {body}"
+        );
+    }
 
     let signing_bytes = URL_SAFE_NO_PAD
         .decode(string(&reserved, "signingBytes"))
@@ -145,7 +183,7 @@ async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
     let published = procedure(
         &session,
         "at.motet.pilot.createPost",
-        &json!({"world": world, "scene": scene, "body": text, "register": "in-character"}),
+        &json!({"op": atproto_record::tid::Tid::new().to_string(), "world": world, "scene": scene, "body": text, "register": "in-character"}),
     )
     .await;
     match string(&published, "status") {

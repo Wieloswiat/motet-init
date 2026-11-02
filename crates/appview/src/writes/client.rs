@@ -28,6 +28,12 @@ impl Target {
     pub fn audience(&self) -> &str {
         &self.audience
     }
+
+    /// The validated endpoint of this tenor.
+    #[must_use]
+    pub fn endpoint(&self) -> &str {
+        self.endpoint.as_str()
+    }
 }
 
 /// Failures that affect whether a write may be retried.

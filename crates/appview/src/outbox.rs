@@ -33,7 +33,9 @@ pub struct Job {
 /// Queues an operation once. Account insertion is serialized so a concurrent
 /// insert cannot become visible ahead of an earlier uncommitted operation.
 pub async fn enqueue(pool: &PgPool, account: &str, op_id: &str, kind: &str, payload: &Value) -> sqlx::Result<Uuid> {
-    insert(pool, account, op_id, kind, payload, None).await
+    insert(pool, account, op_id, kind, payload, None, None)
+        .await?
+        .ok_or(sqlx::Error::RowNotFound)
 }
 
 pub(crate) async fn enqueue_post(
@@ -41,9 +43,19 @@ pub(crate) async fn enqueue_post(
     account: &str,
     op_id: &str,
     payload: &Value,
+    request: &Value,
     session: &SessionRef,
-) -> sqlx::Result<Uuid> {
-    insert(pool, account, op_id, POST_KIND, payload, Some(session.as_bytes())).await
+) -> sqlx::Result<Option<Uuid>> {
+    insert(
+        pool,
+        account,
+        op_id,
+        POST_KIND,
+        payload,
+        Some(request),
+        Some(session.as_bytes()),
+    )
+    .await
 }
 
 async fn insert(
@@ -52,25 +64,29 @@ async fn insert(
     op_id: &str,
     kind: &str,
     payload: &Value,
+    request: Option<&Value>,
     session: Option<&[u8]>,
-) -> sqlx::Result<Uuid> {
+) -> sqlx::Result<Option<Uuid>> {
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(account)
         .execute(&mut *tx)
         .await?;
     let id = sqlx::query_scalar(
-        "INSERT INTO service.outbox (id, account, op_id, kind, payload, session_id) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
-         ON CONFLICT (op_id) DO UPDATE SET op_id = EXCLUDED.op_id RETURNING id",
+        "INSERT INTO service.outbox (id, account, op_id, kind, payload, request, session_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (account, op_id) DO UPDATE SET op_id = EXCLUDED.op_id \
+         WHERE service.outbox.kind = EXCLUDED.kind \
+           AND service.outbox.request IS NOT DISTINCT FROM EXCLUDED.request RETURNING id",
     )
     .bind(Uuid::now_v7())
     .bind(account)
     .bind(op_id)
     .bind(kind)
     .bind(payload)
+    .bind(request)
     .bind(session)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(id)
@@ -224,6 +240,35 @@ pub(crate) async fn reschedule(pool: &PgPool, job: &Job, owner: &str, outcome: &
     .bind(job.attempts)
     .bind(outcome)
     .bind(delay)
+    .execute(pool)
+    .await?;
+    Ok(updated.rows_affected() == 1)
+}
+
+/// Counts only fenced admission failures, not publication claims or ordering waits.
+/// Exhaustion releases account ordering so subsequent admissions can proceed.
+pub(crate) async fn retry_admission(
+    pool: &PgPool,
+    job: &Job,
+    owner: &str,
+    pending: &Value,
+    reason: &str,
+) -> sqlx::Result<bool> {
+    let updated = sqlx::query(
+        "UPDATE service.outbox SET admission_failures = admission_failures + 1, \
+         state = CASE WHEN admission_failures + 1 >= 6 THEN 'failed' ELSE 'queued' END, \
+         outcome = CASE WHEN admission_failures + 1 >= 6 \
+             THEN jsonb_build_object('error', $5::text) ELSE $4 END, \
+         next_attempt_at = clock_timestamp() + make_interval(secs => (1 << least(admission_failures + 1, 5))::double precision), \
+         lease_owner = NULL, lease_until = NULL \
+         WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND state = 'queued' \
+           AND lease_until > clock_timestamp() AND payload->>'stage' = 'admission'",
+    )
+    .bind(job.id)
+    .bind(owner)
+    .bind(job.attempts)
+    .bind(pending)
+    .bind(reason)
     .execute(pool)
     .await?;
     Ok(updated.rows_affected() == 1)

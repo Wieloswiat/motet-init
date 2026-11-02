@@ -2,7 +2,7 @@
 //! The PDS is a controllable HTTP boundary so failures and read-back lag can
 //! be induced without replacing either service's admission decisions.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -54,6 +54,7 @@ use tower::ServiceExt as _;
 const WORLD: &str = "did:plc:ewvi7nxzyoun6zhxrhs64oiz";
 const OWNER: &str = "did:web:owner.example";
 const AUTHOR: &str = "did:web:alice.example";
+const OTHER_AUTHOR: &str = "did:web:bob.example";
 const SCENE: &str = "scene";
 const ORIGIN: &str = "https://motet.example";
 const SUBMIT: &str = "at.motet.pilot.play.submitAdmission";
@@ -116,11 +117,16 @@ impl Op for Initialize {
                     AUTHOR,
                     &json!({"member":AUTHOR,"roles":["player"],"createdAt":"2026-10-26T00:00:00Z"}),
                 )?,
+                SpaceWrite::create(
+                    "group.opensocial.membership",
+                    OTHER_AUTHOR,
+                    &json!({"member":OTHER_AUTHOR,"roles":["player"],"createdAt":"2026-10-26T00:00:00Z"}),
+                )?,
             ],
         )
         .await?;
         let record = json!({"$type":"at.motet.pilot.scene","title":"A scene","state":"open",
-            "cast":[OWNER,AUTHOR],"openedBy":OWNER,"createdAt":"2026-10-26T00:00:00Z"});
+            "cast":[OWNER,AUTHOR,OTHER_AUTHOR],"openedBy":OWNER,"createdAt":"2026-10-26T00:00:00Z"});
         repo::commit(
             txn,
             &world,
@@ -137,7 +143,7 @@ impl Op for Initialize {
             OperationId::new("setup-scene"),
             Command::OpenScene {
                 scene: SceneId::new(SCENE),
-                cast: BTreeSet::from([Did::new(OWNER), Did::new(AUTHOR)]),
+                cast: BTreeSet::from([Did::new(OWNER), Did::new(AUTHOR), Did::new(OTHER_AUTHOR)]),
             },
         )
         .await?
@@ -173,12 +179,18 @@ impl Op for RemoveAuthor {
 struct Network {
     key: KeyData,
     fail_pds: AtomicBool,
+    lose_pds_response: AtomicBool,
+    conflict_pds: AtomicBool,
+    reads: AtomicUsize,
     fail_tenor: AtomicBool,
+    tenor_faults: Mutex<VecDeque<StatusCode>>,
+    failing_op: Mutex<Option<String>>,
     visible: AtomicBool,
     writes: AtomicUsize,
     tokens: AtomicUsize,
     token_ids: Mutex<Vec<String>>,
     records: Mutex<BTreeMap<String, Fetched>>,
+    values: Mutex<BTreeMap<String, Value>>,
     submissions: Mutex<Vec<Value>>,
 }
 
@@ -208,7 +220,8 @@ async fn create_record(State(network): State<Arc<Network>>, Json(input): Json<Va
     if network.fail_pds.load(Ordering::SeqCst) {
         return nonce((StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Unavailable"}))).into_response());
     }
-    assert_eq!(input.get("repo").and_then(Value::as_str), Some(AUTHOR));
+    let author = input.get("repo").and_then(Value::as_str).expect("repo");
+    assert!(author == AUTHOR || author == OTHER_AUTHOR);
     assert_eq!(
         input.get("collection").and_then(Value::as_str),
         Some("at.motet.pilot.post")
@@ -217,25 +230,82 @@ async fn create_record(State(network): State<Arc<Network>>, Json(input): Json<Va
     assert_eq!(record.get("world").and_then(Value::as_str), Some(WORLD));
     assert_eq!(record.get("scene").and_then(Value::as_str), Some(SCENE));
     let rkey = input.get("rkey").and_then(Value::as_str).expect("create-only key");
-    let uri = format!("at://{AUTHOR}/at.motet.pilot.post/{rkey}");
-    let cid = atproto_dasl::cid::compute_cid(&serde_json::to_vec(record).expect("record JSON")).to_string();
-    network.records.lock().expect("records").insert(
+    assert!(
+        rkey.parse::<atproto_record::tid::Tid>().is_ok(),
+        "post key must be a TID"
+    );
+    let uri = format!("at://{author}/at.motet.pilot.post/{rkey}");
+    let cid =
+        atproto_dasl::cid::compute_cid(&atproto_dasl::to_vec_from_json(record).expect("record DRISL")).to_string();
+    if network.conflict_pds.swap(false, Ordering::SeqCst) {
+        let mut existing = record.clone();
+        existing["body"] = json!("Already here");
+        let cid = atproto_dasl::cid::compute_cid(&atproto_dasl::to_vec_from_json(&existing).expect("record DRISL"))
+            .to_string();
+        network.records.lock().expect("records").insert(
+            uri.clone(),
+            Fetched {
+                cid: Cid::new(cid),
+                author: Did::new(author),
+                world: Did::new(WORLD),
+                scene: SceneId::new(SCENE),
+            },
+        );
+        network.values.lock().expect("record values").insert(uri, existing);
+        return nonce((StatusCode::BAD_REQUEST, Json(json!({"error":"RecordAlreadyExists"}))).into_response());
+    }
+    let mut records = network.records.lock().expect("records");
+    if records.contains_key(&uri) {
+        return nonce((StatusCode::BAD_REQUEST, Json(json!({"error":"RecordAlreadyExists"}))).into_response());
+    }
+    records.insert(
         uri.clone(),
         Fetched {
             cid: Cid::new(cid.clone()),
-            author: Did::new(AUTHOR),
+            author: Did::new(author),
             world: Did::new(WORLD),
             scene: SceneId::new(SCENE),
         },
     );
+    network
+        .values
+        .lock()
+        .expect("record values")
+        .insert(uri.clone(), record.clone());
+    if network.lose_pds_response.swap(false, Ordering::SeqCst) {
+        let dropped = futures::stream::once(async {
+            Err::<bytes::Bytes, _>(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "lost response",
+            ))
+        });
+        return nonce((StatusCode::OK, Body::from_stream(dropped)).into_response());
+    }
     nonce(Json(json!({"uri":uri,"cid":cid})).into_response())
 }
 
-fn token(key: &KeyData, audience: &str, method: &str) -> (String, String) {
+async fn get_record(State(network): State<Arc<Network>>, Query(query): Query<HashMap<String, String>>) -> Response {
+    network.reads.fetch_add(1, Ordering::SeqCst);
+    let author = query.get("repo").map(String::as_str).expect("repo");
+    assert!(author == AUTHOR || author == OTHER_AUTHOR);
+    assert_eq!(query.get("collection").map(String::as_str), Some("at.motet.pilot.post"));
+    let rkey = query.get("rkey").expect("record key");
+    let uri = format!("at://{author}/at.motet.pilot.post/{rkey}");
+    let records = network.records.lock().expect("records");
+    let values = network.values.lock().expect("record values");
+    match (records.get(&uri), values.get(&uri)) {
+        (Some(record), Some(value)) => {
+            nonce(Json(json!({"uri":uri,"cid":record.cid.as_str(),"value":value})).into_response())
+        }
+        _ => nonce((StatusCode::BAD_REQUEST, Json(json!({"error":"RecordNotFound"}))).into_response()),
+    }
+}
+
+fn token(key: &KeyData, author: &str, audience: &str, method: &str) -> (String, String) {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs();
     let jti = uuid::Uuid::now_v7().to_string();
     let mut claims = Claims::new(JoseClaims {
-        issuer: Some(AUTHOR.into()),
+        issuer: Some(author.into()),
         audience: Some(audience.into()),
         issued_at: Some(now),
         json_web_token_id: Some(jti.clone()),
@@ -247,13 +317,22 @@ fn token(key: &KeyData, audience: &str, method: &str) -> (String, String) {
     (signed, jti)
 }
 
-async fn service_token(State(network): State<Arc<Network>>, Query(query): Query<HashMap<String, String>>) -> Response {
+async fn service_token(
+    State(network): State<Arc<Network>>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
     network.tokens.fetch_add(1, Ordering::SeqCst);
     let audience = query.get("aud").expect("audience");
     let method = query.get("lxm").expect("method");
     assert_eq!(audience, &format!("{WORLD}#motet_tenor"));
     assert_eq!(method, SUBMIT);
-    let (signed, jti) = token(&network.key, audience, method);
+    let author = match headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()) {
+        Some("DPoP other-access-private") => OTHER_AUTHOR,
+        Some("DPoP access-private" | "DPoP fresh") => AUTHOR,
+        other => panic!("unexpected PDS access token: {other:?}"),
+    };
+    let (signed, jti) = token(&network.key, author, audience, method);
     network.token_ids.lock().expect("token IDs").push(jti);
     nonce(Json(json!({"token":signed})).into_response())
 }
@@ -273,8 +352,21 @@ struct TenorProxy {
 async fn forward(State(proxy): State<TenorProxy>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     let bytes = to_bytes(body, 16_384).await.expect("admission request");
-    let value = serde_json::from_slice(&bytes).expect("admission JSON");
-    proxy.network.submissions.lock().expect("submissions").push(value);
+    let value: Value = serde_json::from_slice(&bytes).expect("admission JSON");
+    proxy
+        .network
+        .submissions
+        .lock()
+        .expect("submissions")
+        .push(value.clone());
+    if let Some(status) = proxy.network.tenor_faults.lock().expect("tenor faults").pop_front() {
+        return (status, Json(json!({"error":"Unavailable"}))).into_response();
+    }
+    if let Some(op) = proxy.network.failing_op.lock().expect("failing op").as_deref()
+        && value.get("op").and_then(Value::as_str) == Some(op)
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"Unavailable"}))).into_response();
+    }
     if proxy.network.fail_tenor.load(Ordering::SeqCst) {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Unavailable"}))).into_response();
     }
@@ -322,17 +414,24 @@ impl Fixture {
         let network = Arc::new(Network {
             key,
             fail_pds: AtomicBool::new(fail_pds),
+            lose_pds_response: AtomicBool::new(false),
+            conflict_pds: AtomicBool::new(false),
+            reads: AtomicUsize::new(0),
             fail_tenor: AtomicBool::new(false),
+            tenor_faults: Mutex::new(VecDeque::new()),
+            failing_op: Mutex::new(None),
             visible: AtomicBool::new(false),
             writes: AtomicUsize::new(0),
             tokens: AtomicUsize::new(0),
             token_ids: Mutex::new(Vec::new()),
             records: Mutex::new(BTreeMap::new()),
+            values: Mutex::new(BTreeMap::new()),
             submissions: Mutex::new(Vec::new()),
         });
         let (pds_url, pds_task) = serve(
             axum::Router::new()
                 .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
+                .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
                 .route("/xrpc/com.atproto.server.getServiceAuth", get(service_token))
                 .with_state(Arc::clone(&network)),
         )
@@ -349,8 +448,10 @@ impl Fixture {
             },
         );
         tenor.run(Initialize).await.expect("writer").expect("World setup");
-        let author_doc = document(AUTHOR, &network.key);
-        let identities: Arc<dyn IdentityResolver> = Arc::new(Directory(BTreeMap::from([(AUTHOR.into(), author_doc)])));
+        let identities: Arc<dyn IdentityResolver> = Arc::new(Directory(BTreeMap::from([
+            (AUTHOR.into(), document(AUTHOR, &network.key)),
+            (OTHER_AUTHOR.into(), document(OTHER_AUTHOR, &network.key)),
+        ])));
         let fetcher = Fetcher::new(Policy::default().allow_private()).expect("network client");
         let hosting = Arc::new(
             Hosting::new(
@@ -459,17 +560,49 @@ impl Fixture {
         }
     }
 
-    fn post_request(&self) -> Request {
+    fn post_request_as(&self, cookie: &str, op: &str, body: &str) -> Request {
         Request::builder()
             .method("POST")
             .uri("/xrpc/at.motet.pilot.createPost")
             .header(header::ORIGIN, ORIGIN)
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::COOKIE, format!("__Host-motet_session={}", self.cookie))
+            .header(header::COOKIE, format!("__Host-motet_session={cookie}"))
             .body(Body::from(
-                json!({"world":WORLD,"scene":SCENE,"body":"Hello", "register":"in-character"}).to_string(),
+                json!({"op":op,"world":WORLD,"scene":SCENE,"body":body, "register":"in-character"}).to_string(),
             ))
             .expect("request")
+    }
+
+    fn post_request_with(&self, op: &str, body: &str) -> Request {
+        self.post_request_as(&self.cookie, op, body)
+    }
+
+    fn post_request(&self) -> Request {
+        self.post_request_with(&atproto_record::tid::Tid::new().to_string(), "Hello")
+    }
+
+    async fn post_with(&self, op: &str, body: &str) -> (StatusCode, Value) {
+        let response = self
+            .router
+            .clone()
+            .oneshot(self.post_request_with(op, body))
+            .await
+            .expect("AppView response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.expect("response body");
+        (status, serde_json::from_slice(&body).expect("response JSON"))
+    }
+
+    async fn status(&self, uri: &str) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .uri(format!("/xrpc/at.motet.pilot.getPostStatus?uri={uri}"))
+            .header(header::COOKIE, format!("__Host-motet_session={}", self.cookie))
+            .body(Body::empty())
+            .expect("status request");
+        let response = self.router.clone().oneshot(request).await.expect("status response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.expect("response body");
+        (status, serde_json::from_slice(&body).expect("status JSON"))
     }
 
     async fn post(&self) -> (StatusCode, Value) {
@@ -524,26 +657,305 @@ async fn wait_for(pool: &PgPool, state: &str, require_paused: bool) -> (String, 
     .expect("outbox reached its expected state")
 }
 
-/// A PDS failure cannot cause a phantom admission. This catches a worker
-/// submitting before the create-only write has returned a URI and CID.
+/// Missing or non-TID operations must be rejected before contacting the PDS.
+/// Accepting a generic record key would defer failure to the real PDS.
 #[tokio::test]
 #[ignore = "integration: PostgreSQL"]
-async fn fault_failed_pds_write_finishes_failed_without_calling_tenor() {
+async fn invalid_post_operations_are_rejected_before_publication() {
+    let fixture = Fixture::new(false).await;
+    for input in [
+        json!({"world":WORLD,"scene":SCENE,"body":"Hello","register":"in-character"}),
+        json!({"op":uuid::Uuid::now_v7().to_string(),"world":WORLD,"scene":SCENE,"body":"Hello","register":"in-character"}),
+    ] {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/xrpc/at.motet.pilot.createPost")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, format!("__Host-motet_session={}", fixture.cookie))
+            .body(Body::from(input.to_string()))
+            .expect("request");
+        let response = fixture.router.clone().oneshot(request).await.expect("AppView response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 64 * 1024).await.expect("response body");
+        let answer: Value = serde_json::from_slice(&body).expect("response JSON");
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+        assert_eq!(answer["error"], "InvalidRequest");
+    }
+    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.network.tokens.load(Ordering::SeqCst), 0);
+    assert!(fixture.network.submissions.lock().expect("submissions").is_empty());
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM service.outbox")
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("outbox");
+    assert_eq!(jobs, 0);
+}
+
+/// A lost browser response must not create a second record or admission when
+/// the client retries; accepting changed content would silently misattribute it.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_lost_appview_response_reuses_post_and_rejects_changed_content() {
+    let fixture = Fixture::new(false).await;
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    let op = atproto_record::tid::Tid::new().to_string();
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(fixture.post_request_with(&op, "Hello"))
+        .await
+        .expect("AppView response");
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    let uri = fixture
+        .network
+        .records
+        .lock()
+        .expect("records")
+        .keys()
+        .next()
+        .expect("published record")
+        .clone();
+    assert_eq!(uri, format!("at://{AUTHOR}/at.motet.pilot.post/{op}"));
+    let (status, original) = fixture.status(&uri).await;
+    assert_eq!(status, StatusCode::OK, "{original}");
+    assert_eq!(original["status"], "admitted");
+    let (status, retried) = fixture.post_with(&op, "Hello").await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert_eq!(retried, original);
+    let (status, conflict) = fixture.post_with(&op, "Changed").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{conflict}");
+    assert_eq!(conflict["error"], "InvalidRequest");
+    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.network.records.lock().expect("records").len(), 1);
+    assert_eq!(fixture.network.submissions.lock().expect("submissions").len(), 1);
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        1
+    );
+}
+
+/// Different authors may independently choose the same client operation.
+/// Global deduplication would reject the second post or return the first author's URI.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn same_client_operation_is_isolated_by_author_through_admission() {
+    let fixture = Fixture::new(false).await;
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    let mut other_grant = fixture
+        .store
+        .get_session::<Grant>(&fixture.cookie)
+        .await
+        .expect("read session")
+        .expect("live session")
+        .grant;
+    other_grant.did = OTHER_AUTHOR.into();
+    other_grant.handle = "bob.example".into();
+    other_grant.access_token = "other-access-private".into();
+    let other_cookie = fixture
+        .store
+        .create_session(&other_grant, Utc::now() + ChronoDuration::hours(1))
+        .await
+        .expect("other author session");
+    let op = atproto_record::tid::Tid::new().to_string();
+    let (status, first) = fixture.post_with(&op, "Alice's post").await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["status"], "admitted");
+    let response = fixture
+        .router
+        .clone()
+        .oneshot(fixture.post_request_as(&other_cookie, &op, "Bob's post"))
+        .await
+        .expect("other author's response");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.expect("response body");
+    let second: Value = serde_json::from_slice(&body).expect("post response JSON");
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["status"], "admitted");
+    let first_uri = first["uri"].as_str().expect("first URI");
+    let second_uri = second["uri"].as_str().expect("second URI");
+    assert_eq!(first_uri, format!("at://{AUTHOR}/at.motet.pilot.post/{op}"));
+    assert_eq!(second_uri, format!("at://{OTHER_AUTHOR}/at.motet.pilot.post/{op}"));
+    assert_ne!(first["cid"], second["cid"]);
+    assert_eq!(fixture.network.records.lock().expect("records").len(), 2);
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        2
+    );
+}
+
+/// A create-only key can already belong to a different record. Blindly
+/// accepting its read-back would admit content the author did not submit.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_existing_pds_key_with_different_content_is_never_admitted() {
+    let fixture = Fixture::new(false).await;
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    let op = atproto_record::tid::Tid::new().to_string();
+    fixture.network.conflict_pds.store(true, Ordering::SeqCst);
+    let (status, answer) = fixture.post_with(&op, "Different content").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    assert_eq!(answer["error"], "InvalidRequest");
+    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 1);
+    assert!(fixture.network.reads.load(Ordering::SeqCst) >= 1);
+    assert_eq!(fixture.network.records.lock().expect("records").len(), 1);
+    let values = fixture.network.values.lock().expect("record values");
+    assert_eq!(values.values().next().expect("existing value")["body"], "Already here");
+    drop(values);
+    assert!(fixture.network.submissions.lock().expect("submissions").is_empty());
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        0
+    );
+}
+
+/// A PDS may commit before dropping its response. Without deterministic
+/// read-back, a retry can lose the post or publish a second record.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_lost_pds_response_recovers_committed_record_by_key() {
+    let fixture = Fixture::new(false).await;
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    fixture.network.lose_pds_response.store(true, Ordering::SeqCst);
+    let op = atproto_record::tid::Tid::new().to_string();
+    let (status, answer) = fixture.post_with(&op, "Hello").await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["status"], "admitted");
+    let uri = answer["uri"].as_str().expect("post URI");
+    assert_eq!(uri, format!("at://{AUTHOR}/at.motet.pilot.post/{op}"));
+    assert!(fixture.network.records.lock().expect("records").contains_key(uri));
+    assert!(fixture.network.reads.load(Ordering::SeqCst) >= 1);
+    assert_eq!(fixture.network.records.lock().expect("records").len(), 1);
+    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 1);
+    let (_, retried) = fixture.post_with(&op, "Hello").await;
+    assert_eq!(retried, answer);
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        1
+    );
+}
+
+/// The tenor can temporarily reject a valid token or be unavailable.
+/// Treating its 401 as a revoked PDS session would pause the post forever.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_tenor_503_then_401_retries_with_fresh_tokens_without_pausing() {
+    let fixture = Fixture::new(false).await;
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    *fixture.network.tenor_faults.lock().expect("faults") =
+        VecDeque::from([StatusCode::SERVICE_UNAVAILABLE, StatusCode::UNAUTHORIZED]);
+    let (_, initial) = fixture.post().await;
+    assert_eq!(initial["status"], "pending");
+    let (stop, worker) = fixture.worker();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let (state, paused): (String, bool) = sqlx::query_as("SELECT state, paused FROM service.outbox")
+                .fetch_one(&fixture.pool).await.expect("outbox");
+            assert!(!paused, "tenor errors must not pause a usable PDS session");
+            if state == "done" { break; }
+            assert_eq!(state, "queued");
+            sqlx::query("UPDATE service.outbox SET next_attempt_at = clock_timestamp() WHERE state = 'queued' AND lease_owner IS NULL")
+                .execute(&fixture.pool).await.expect("make retry due");
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("transient failures recover");
+    stop.send(true).expect("stop worker");
+    worker.await.expect("worker exits");
+    let (status, outcome) = fixture.status(initial["uri"].as_str().expect("post URI")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["status"], "admitted");
+    assert_eq!(outcome["cid"], initial["cid"]);
+    assert_distinct_tokens(&fixture.network);
+    let calls = fixture.network.submissions.lock().expect("submissions");
+    assert_eq!(calls.len(), 3);
+    assert!(calls.iter().all(|call| call == &calls[0]));
+    drop(calls);
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        1
+    );
+}
+
+/// A permanently unavailable admission cannot block subsequent posts forever.
+/// The author must see a failure reason, not an endless pending status.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_exhausted_admission_exposes_reason_and_unblocks_next_post() {
+    let fixture = Fixture::new(false).await;
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    let op = atproto_record::tid::Tid::new().to_string();
+    *fixture.network.failing_op.lock().expect("failing op") = Some(op.clone());
+    let (_, first) = fixture.post_with(&op, "First").await;
+    assert_eq!(first["status"], "pending");
+    let (_, second) = fixture
+        .post_with(&atproto_record::tid::Tid::new().to_string(), "Second")
+        .await;
+    assert_eq!(second["status"], "pending");
+    let (stop, worker) = fixture.worker();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let rows: Vec<(String, bool)> = sqlx::query_as("SELECT state, paused FROM service.outbox ORDER BY sequence")
+                .fetch_all(&fixture.pool).await.expect("outbox");
+            assert!(rows.iter().all(|row| !row.1), "tenor failures must not pause the session");
+            if rows.len() == 2 && rows[0].0 == "failed" && rows[1].0 == "done" { break; }
+            sqlx::query("UPDATE service.outbox SET next_attempt_at = clock_timestamp() WHERE state = 'queued' AND lease_owner IS NULL")
+                .execute(&fixture.pool).await.expect("make retries due");
+            tokio::task::yield_now().await;
+        }
+    }).await.expect("failed post releases the queue");
+    stop.send(true).expect("stop worker");
+    worker.await.expect("worker exits");
+    let (status, failed) = fixture.status(first["uri"].as_str().expect("first URI")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["cid"], first["cid"]);
+    assert!(
+        failed["reason"].as_str().is_some_and(|reason| !reason.is_empty()),
+        "{failed}"
+    );
+    let (_, admitted) = fixture.status(second["uri"].as_str().expect("second URI")).await;
+    assert_eq!(admitted["status"], "admitted");
+    assert_eq!(admitted["cid"], second["cid"]);
+    assert_distinct_tokens(&fixture.network);
+    {
+        let calls = fixture.network.submissions.lock().expect("submissions");
+        let failed_calls: Vec<_> = calls.iter().filter(|call| call["op"] == op).collect();
+        assert_eq!(failed_calls.len(), 6, "the retry budget must be finite");
+        assert!(failed_calls.iter().all(|call| *call == failed_calls[0]));
+    }
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        1
+    );
+}
+
+/// An uncertain PDS failure cannot cause a phantom admission or discard the
+/// operation. It must recover after the PDS is available again.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_uncertain_pds_failure_waits_for_recovery_without_phantom_admission() {
     let fixture = Fixture::new(true).await;
     let (status, answer) = fixture.post().await;
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{answer}");
     assert_eq!(answer["error"], "UpstreamFailure");
-    let (state, _, _) = wait_for(&fixture.pool, "failed", false).await;
-    assert_eq!(state, "failed");
-    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.network.tokens.load(Ordering::SeqCst), 0);
-    assert!(fixture.network.submissions.lock().expect("submissions").is_empty());
-    let row: (Value, Value, Vec<u8>) = sqlx::query_as("SELECT payload, outcome, session_id FROM service.outbox")
+    let (state, paused): (String, bool) = sqlx::query_as("SELECT state, paused FROM service.outbox")
         .fetch_one(&fixture.pool)
         .await
-        .expect("job");
+        .expect("job state");
+    assert_eq!(state, "queued");
+    assert!(!paused);
+    assert!(fixture.network.writes.load(Ordering::SeqCst) >= 1);
+    assert!(fixture.network.records.lock().expect("records").is_empty());
+    assert_eq!(fixture.network.tokens.load(Ordering::SeqCst), 0);
+    assert!(fixture.network.submissions.lock().expect("submissions").is_empty());
+    let row: (Value, Option<Value>, Vec<u8>) =
+        sqlx::query_as("SELECT payload, outcome, session_id FROM service.outbox")
+            .fetch_one(&fixture.pool)
+            .await
+            .expect("job");
     assert!(!row.0.to_string().contains(&fixture.cookie));
-    assert!(!row.1.to_string().contains(&fixture.cookie));
+    assert!(!format!("{:?}", row.1).contains(&fixture.cookie));
     assert_eq!(
         row.2.as_slice(),
         SessionRef::from_cookie(&fixture.cookie).expect("reference").as_bytes()
@@ -551,6 +963,23 @@ async fn fault_failed_pds_write_finishes_failed_without_calling_tenor() {
     assert_eq!(
         publication::drain(&fixture.tenor).await.expect("publication").published,
         0
+    );
+    fixture.network.fail_pds.store(false, Ordering::SeqCst);
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    sqlx::query("UPDATE service.outbox SET next_attempt_at = clock_timestamp()")
+        .execute(&fixture.pool)
+        .await
+        .expect("make recovery due");
+    let (stop, worker) = fixture.worker();
+    let (_, outcome, paused) = wait_for(&fixture.pool, "done", false).await;
+    assert!(!paused);
+    assert_eq!(outcome["status"], "admitted");
+    stop.send(true).expect("stop worker");
+    worker.await.expect("worker exits");
+    assert_eq!(fixture.network.records.lock().expect("records").len(), 1);
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        1
     );
 }
 
@@ -775,7 +1204,7 @@ async fn fault_pending_then_lost_response_survives_takeover_and_admits_once() {
     fixture.network.visible.store(true, Ordering::SeqCst);
     let lost = reqwest::Client::new()
         .post(format!("{}/xrpc/{SUBMIT}", fixture.tenor_url))
-        .bearer_auth(token(&fixture.network.key, &format!("{WORLD}#motet_tenor"), SUBMIT).0)
+        .bearer_auth(token(&fixture.network.key, AUTHOR, &format!("{WORLD}#motet_tenor"), SUBMIT).0)
         .json(&original)
         .send()
         .await

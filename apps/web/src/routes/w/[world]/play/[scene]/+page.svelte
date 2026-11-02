@@ -1,3 +1,23 @@
+<script module lang="ts">
+	let lastPostMicros = 0;
+
+	function nextPostTid(): string {
+		// Keep timestamps distinct across drafts even within one millisecond or after clock rollback.
+		lastPostMicros = Math.max(Date.now() * 1_000, lastPostMicros + 1);
+		const clock = crypto.getRandomValues(new Uint16Array(1))[0] & 1023;
+		let value = (BigInt(lastPostMicros) << 10n) | BigInt(clock);
+		let tid = '';
+		const alphabet = '234567abcdefghijklmnopqrstuvwxyz';
+
+		for (let i = 0; i < 13; i += 1) {
+			tid = alphabet.charAt(Number(value & 31n)) + tid;
+			value >>= 5n;
+		}
+
+		return tid;
+	}
+</script>
+
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { untrack } from 'svelte';
@@ -30,6 +50,7 @@
 	let moreError = $state('');
 	let body = $state('');
 	let register = $state('in-character');
+	let operation: { op: string; body: string; register: string } | undefined;
 	let submitting = $state(false);
 	let postStatus = $state('');
 	let sceneController: AbortController | null = null;
@@ -50,6 +71,7 @@
 		moreError = '';
 		postStatus = '';
 		body = '';
+		operation = undefined;
 		submitting = false;
 		moreLoading = false;
 
@@ -274,6 +296,12 @@
 		event.preventDefault();
 
 		if (!data.session || !scene || submitting || moreLoading || !body.trim()) return;
+
+		if (!operation || operation.body !== body || operation.register !== register) {
+			operation = { op: nextPostTid(), body, register };
+		}
+
+		const draft = operation;
 		postController?.abort();
 		const controller = new AbortController();
 		postController = controller;
@@ -287,14 +315,21 @@
 			>(at_motet_pilot_createpost.CreatePostNsid, {
 				world: data.world.did,
 				scene: data.sceneKey,
-				body,
-				register
+				body: draft.body,
+				register: draft.register,
+				op: draft.op
 			});
 
 			if (controller.signal.aborted) return;
 
 			if (result.status === 'refused') {
 				postStatus = `Refused: ${result.reason ?? 'No reason was provided.'}`;
+
+				return;
+			}
+
+			if (result.status === 'failed') {
+				postStatus = `Admission failed: ${result.reason ?? 'No reason was provided.'}`;
 
 				return;
 			}
@@ -307,6 +342,7 @@
 			}
 
 			body = '';
+			operation = undefined;
 			postStatus =
 				result.status === 'admitted'
 					? 'Admitted. Waiting for the post to appear in the scene.'
@@ -402,12 +438,18 @@
 			{#if data.session}
 				<form onsubmit={createPost}>
 					<label for="post-register">Posting as</label>
-					<select id="post-register" bind:value={register}>
+					<select id="post-register" bind:value={register} disabled={submitting}>
 						<option value="in-character">In character</option>
 						<option value="out-of-character">Out of character</option>
 					</select>
 					<label for="post-body">Write a post</label>
-					<textarea id="post-body" bind:value={body} maxlength="65536" rows="8" required></textarea>
+					<textarea
+						id="post-body"
+						bind:value={body}
+						maxlength="65536"
+						rows="8"
+						required
+						disabled={submitting}></textarea>
 					<p>Posts are shown as Typst source.</p>
 					<button
 						type="submit"

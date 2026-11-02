@@ -61,7 +61,8 @@ handlers can't forget it:
 - **Service auth**: `xrpc::service_auth` checks audience, method (`lxm`) and
   lifetime before resolving the issuer, then verifies its `#atproto` key.
   DID documents are cached for at most five seconds; a DID inside a request
-  body is never the caller.
+  body is never the caller. Resolver failures return 503 `UpstreamFailure`
+  without consuming the token; invalid credentials remain 401.
 - **AppView sessions**: `appview::auth` is the confidential atproto OAuth
   client for the reader's PDS. The web app and AppView share one HTTPS
   origin, with `/oauth/*` and `/xrpc/*` routed to the AppView. The browser
@@ -84,15 +85,19 @@ handlers can't forget it:
 - **AppView write routing**: `MOTET_APPVIEW_TENOR_URL` and
   `MOTET_APPVIEW_TENOR_DID` select the default tenor for World creation.
   The browser supplies the sole rotation key; the AppView does not opt in to
-  a tenor recovery key. A creation retry uses the same reservation and signed
-  genesis. Later World-scoped calls resolve the World's `#motet_tenor`
+  a tenor recovery key. An owner-scoped operation ID recovers the same live
+  reservation after a lost response; creation retries use the signed genesis.
+  Later World-scoped calls resolve the World's `#motet_tenor`
   service and check its destination. The open-scene API forwards a
   client-chosen operation ID, so retries of the same request return the
-  original scene. Posting first publishes to the author's PDS. The outbox
-  retries pending or uncertain admissions with the same operation ID and
-  exact post version; a failed PDS write cannot trigger admission.
-  The signed-in author can query the outbox for a published post's final
-  admission outcome; other accounts cannot read it.
+  original scene. Posting uses an author-scoped client TID as the create-only
+  PDS record key. The outbox compares a read-back after an
+  uncertain PDS response before requesting admission of that exact version.
+  It retries admissions with the same operation ID and fresh service tokens.
+  After six unsuccessful attempts, admission fails visibly and later posts
+  can proceed. A recorded outcome remains retrievable after membership
+  changes; a failed PDS write cannot trigger admission. Only the signed-in
+  author can query a published post's final admission outcome.
 - **OAuth key custody**: `MOTET_APPVIEW_PUBLIC_ORIGIN` is the canonical public
   HTTPS origin, and `MOTET_APPVIEW_DEFAULT_PDS` selects the PDS for signup.
   `MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE` names a P-256 private scalar, and
