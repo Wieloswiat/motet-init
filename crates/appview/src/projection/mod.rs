@@ -17,10 +17,10 @@ use motet_log::Seq;
 use sqlx::{Connection, PgConnection, PgPool};
 
 use crate::archive::{Archive, ArchiveError};
-use crate::event::{Action, Event, RecordEvent};
+use crate::event::{Action, Event, RecordEvent, SpaceRecordEvent};
 
 /// Bump with any change to `schema.sql` or to what [`apply`] writes.
-pub const PROJECTION_VERSION: i32 = 2;
+pub const PROJECTION_VERSION: i32 = 3;
 
 /// The schema the API reads.
 pub const LIVE: &str = "projection";
@@ -126,6 +126,7 @@ pub async fn apply(
     for event in events {
         match event {
             Event::Record(record) => apply_record(&mut tx, seq, record).await?,
+            Event::SpaceRecord(record) => apply_space_record(&mut tx, seq, record).await?,
             // Account and identity events carry no repo revision. Ordering
             // them against a redelivery is open (Tap's event IDs are the
             // candidate); until then the last one delivered wins.
@@ -194,6 +195,40 @@ async fn apply_record(conn: &mut PgConnection, seq: Seq, e: &RecordEvent) -> Res
          WHERE r.rev < excluded.rev",
     )
     .bind(&uri)
+    .bind(&e.did)
+    .bind(&e.collection)
+    .bind(&e.rkey)
+    .bind(&e.rev)
+    .bind(cid)
+    .bind(record)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+async fn apply_space_record(conn: &mut PgConnection, seq: Seq, e: &SpaceRecordEvent) -> Result<(), ProjectionError> {
+    let (cid, record) = match e.action {
+        Action::Delete => (None, None),
+        Action::Create | Action::Update => {
+            let malformed = |missing| ProjectionError::Malformed {
+                seq,
+                action: e.action,
+                missing,
+            };
+            let cid = e.cid.as_deref().ok_or_else(|| malformed("a CID"))?;
+            let record = e.record.as_ref().ok_or_else(|| malformed("a record"))?;
+            (Some(cid), Some(record))
+        }
+    };
+    // Space and public-repo revisions belong to different histories.
+    sqlx::query(
+        "INSERT INTO space_records AS r (space, did, collection, rkey, rev, cid, record) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (space, did, collection, rkey) DO UPDATE \
+         SET rev = excluded.rev, cid = excluded.cid, record = excluded.record \
+         WHERE r.rev < excluded.rev",
+    )
+    .bind(&e.space)
     .bind(&e.did)
     .bind(&e.collection)
     .bind(&e.rkey)

@@ -2,9 +2,8 @@
 //! anyone else may call them too. Every method is declared here with who may
 //! call it (see `motet-xrpc`).
 //!
-//! Reads come from the `projection` schema and are filtered by what the
-//! reader may see before anything is counted or ranked. Only public records
-//! are indexed so far, so the filter is trivial until Spaces arrive.
+//! Reads come from archive-derived public projections. Private Spaces are not
+//! indexed or served by these methods.
 
 use std::sync::Arc;
 
@@ -15,13 +14,15 @@ use motet_xrpc::{Access, Caller, Kind, Method, RegistryError, XrpcError};
 use serde::Serialize;
 use sqlx::PgPool;
 
-use crate::auth;
+use crate::{auth, writes};
 
 #[derive(Debug)]
 pub struct State {
     pub pool: PgPool,
     /// Confidential OAuth and authenticated PDS operations for write handlers.
     pub auth: Arc<auth::Server>,
+    /// Resolves tenor endpoints and sends member-authenticated writes.
+    pub client: Arc<writes::client::Client>,
 }
 
 /// One exact version of a record, as replies and admissions pin them.
@@ -61,12 +62,14 @@ pub const GET_SESSION: Method = Method {
 };
 
 pub fn router(state: Arc<State>, authenticate: Authenticate) -> Result<axum::Router, RegistryError> {
-    Service::new(authenticate)
+    let service = Service::new(authenticate)
         .method(GET_RECORD_VERSION, get_record_version)
         .method(GET_WORLD, get_world)
         .method(LIST_SCENES, list_scenes)
         .method(GET_SCENE, get_scene)
-        .method(GET_SESSION, get_session)
+        .method(GET_SESSION, get_session);
+    writes::world::register(service)
+        .method(writes::post::CREATE_POST, writes::post::create_post)
         .into_router(state)
 }
 
@@ -124,10 +127,13 @@ async fn get_record_version(state: Arc<State>, _caller: Caller, input: Input) ->
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct World {
     did: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     handle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -296,29 +302,37 @@ fn database_error(error: &sqlx::Error) -> XrpcError {
 
 async fn world(pool: &PgPool, actor: &str) -> Result<World, XrpcError> {
     if valid_did(actor) {
-        let row: Option<(String, Option<String>)> =
-            sqlx::query_as("SELECT did, handle FROM projection.worlds WHERE did = $1")
+        let row: Option<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT did, handle, display_name FROM projection.worlds WHERE did = $1")
                 .bind(actor)
                 .fetch_optional(pool)
                 .await
                 .map_err(|error| database_error(&error))?;
-        let (did, handle) = row.ok_or(XrpcError::NotFound)?;
-        return Ok(World { did, handle });
+        let (did, handle, display_name) = row.ok_or(XrpcError::NotFound)?;
+        return Ok(World {
+            did,
+            handle,
+            display_name,
+        });
     }
     if !valid_handle(actor) {
         return Err(invalid("actor"));
     }
     // A conflicting handle must not select an arbitrary World.
-    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-        "SELECT did, handle FROM projection.worlds \
+    let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT did, handle, display_name FROM projection.worlds \
          WHERE lower(handle COLLATE \"C\") = lower($1 COLLATE \"C\") ORDER BY did COLLATE \"C\" LIMIT 2",
     )
     .bind(actor)
     .fetch_all(pool)
     .await
     .map_err(|error| database_error(&error))?;
-    let [(did, handle)] = <Vec<_> as TryInto<[_; 1]>>::try_into(rows).map_err(|_| XrpcError::NotFound)?;
-    Ok(World { did, handle })
+    let [(did, handle, display_name)] = <Vec<_> as TryInto<[_; 1]>>::try_into(rows).map_err(|_| XrpcError::NotFound)?;
+    Ok(World {
+        did,
+        handle,
+        display_name,
+    })
 }
 
 async fn get_world(state: Arc<State>, _caller: Caller, input: Input) -> Result<Response, XrpcError> {

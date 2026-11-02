@@ -55,6 +55,14 @@ pub struct Serve {
     #[arg(long, env = "MOTET_APPVIEW_DEFAULT_PDS")]
     pub default_pds: String,
 
+    /// Default tenor for reserving and creating Worlds.
+    #[arg(long, env = "MOTET_APPVIEW_TENOR_URL")]
+    pub tenor_url: String,
+
+    /// Bare service DID of the default tenor.
+    #[arg(long, env = "MOTET_APPVIEW_TENOR_DID")]
+    pub tenor_did: String,
+
     /// P-256 OAuth client signing key, as 32 raw bytes or standard base64.
     #[arg(long, env = "MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE")]
     pub oauth_signing_key_file: PathBuf,

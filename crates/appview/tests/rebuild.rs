@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use motet_appview::archive::Archive;
 use motet_appview::event::{Action, Event, RecordEvent};
-use motet_appview::indexer::Indexer;
+use motet_appview::indexer::{IndexError, Indexer};
 use motet_appview::{MIGRATOR, projection};
 use object_store::memory::InMemory;
 use proptest::prelude::*;
@@ -136,5 +136,102 @@ async fn a_restart_applies_what_was_archived_but_not_applied() {
             "at://did:plc:alice/at.motet.pilot.post/k".to_owned(),
             Some("bafy".to_owned())
         )]
+    );
+}
+
+/// An unapplied durable segment cannot be skipped by a later successful batch.
+/// Without poisoning, advancing the watermark would make restart lose that segment.
+#[tokio::test]
+#[ignore = "integration: needs PostgreSQL and S3 (devenv up)"]
+async fn fault_incomplete_batch_cannot_be_skipped_and_restart_replays_it() {
+    let pool = motet_testkit::services::database().await;
+    MIGRATOR.run(&pool).await.expect("migrations");
+    let archive = Archive::new(motet_testkit::services::bucket(), "archive");
+    let event = |key: &str, rev: u32| {
+        Event::Record(RecordEvent {
+            did: "did:plc:alice".into(),
+            rev: format!("3l{rev:011}"),
+            collection: COLLECTION.into(),
+            rkey: key.into(),
+            action: Action::Create,
+            cid: Some(format!("cid-{key}")),
+            record: Some(serde_json::json!({"text": key})),
+        })
+    };
+    let first = event("first", 1);
+    let interrupted = event("interrupted", 2);
+    let later = event("later", 3);
+    let mut indexer = Indexer::start(pool.clone(), &archive).await.expect("start");
+    let first_seq = indexer.ingest(std::slice::from_ref(&first)).await.expect("first batch");
+
+    // The next archive append succeeds, but PostgreSQL rejects its projection.
+    sqlx::query("ALTER TABLE projection.records ADD CONSTRAINT injected_failure CHECK (rkey <> 'interrupted')")
+        .execute(&pool)
+        .await
+        .expect("inject transient database failure");
+    assert!(matches!(
+        indexer.ingest(std::slice::from_ref(&interrupted)).await,
+        Err(IndexError::Projection(projection::ProjectionError::Db(_)))
+    ));
+    sqlx::query("ALTER TABLE projection.records DROP CONSTRAINT injected_failure")
+        .execute(&pool)
+        .await
+        .expect("restore database");
+
+    assert!(matches!(
+        indexer.ingest(std::slice::from_ref(&later)).await,
+        Err(IndexError::Poisoned)
+    ));
+    let applied: Option<i64> = sqlx::query_scalar("SELECT archive_seq FROM projection.meta")
+        .fetch_one(&pool)
+        .await
+        .expect("watermark");
+    assert_eq!(applied, Some(i64::try_from(first_seq).expect("sequence fits")));
+    let archived = archive.read_from(0).await.expect("archive");
+    assert_eq!(archived.len(), 2);
+    assert_eq!(archived[0].1, vec![first]);
+    assert_eq!(archived[1].1, vec![interrupted.clone()]);
+    assert_eq!(
+        records(&pool).await,
+        vec![(
+            "at://did:plc:alice/at.motet.pilot.post/first".to_owned(),
+            Some("cid-first".to_owned())
+        )]
+    );
+
+    drop(indexer);
+    let mut restarted = Indexer::start(pool.clone(), &archive)
+        .await
+        .expect("restart catches up");
+    assert_eq!(
+        records(&pool).await,
+        vec![
+            (
+                "at://did:plc:alice/at.motet.pilot.post/first".to_owned(),
+                Some("cid-first".to_owned())
+            ),
+            (
+                "at://did:plc:alice/at.motet.pilot.post/interrupted".to_owned(),
+                Some("cid-interrupted".to_owned())
+            )
+        ]
+    );
+    restarted.ingest(&[later]).await.expect("new batch after catch-up");
+    assert_eq!(
+        records(&pool).await,
+        vec![
+            (
+                "at://did:plc:alice/at.motet.pilot.post/first".to_owned(),
+                Some("cid-first".to_owned())
+            ),
+            (
+                "at://did:plc:alice/at.motet.pilot.post/interrupted".to_owned(),
+                Some("cid-interrupted".to_owned())
+            ),
+            (
+                "at://did:plc:alice/at.motet.pilot.post/later".to_owned(),
+                Some("cid-later".to_owned())
+            )
+        ]
     );
 }

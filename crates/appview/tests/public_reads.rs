@@ -8,7 +8,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use motet_appview::api::{self, State};
 use motet_appview::archive::Archive;
-use motet_appview::event::{Action, Event, RecordEvent};
+use motet_appview::event::{Action, Event, RecordEvent, SpaceRecordEvent};
 use motet_appview::indexer::Indexer;
 use motet_appview::{MIGRATOR, projection};
 use motet_xrpc::Caller;
@@ -69,6 +69,43 @@ fn world(did: &str) -> Event {
     )
 }
 
+fn meta(did: &str) -> String {
+    format!("at://{did}/space/group.opensocial.meta/self")
+}
+
+fn space_record(
+    space: &str,
+    did: &str,
+    collection: &str,
+    key: &str,
+    rev: u32,
+    cid: Option<&str>,
+    value: Option<Value>,
+) -> Event {
+    Event::SpaceRecord(SpaceRecordEvent {
+        space: space.into(),
+        did: did.into(),
+        rev: format!("3l{rev:011}"),
+        collection: collection.into(),
+        rkey: key.into(),
+        action: if cid.is_some() { Action::Update } else { Action::Delete },
+        cid: cid.map(str::to_owned),
+        record: value,
+    })
+}
+
+fn profile(did: &str, rev: u32, cid: &str, name: &str) -> Event {
+    space_record(
+        &meta(did),
+        did,
+        "group.opensocial.profile",
+        "self",
+        rev,
+        Some(cid),
+        Some(json!({"$type": "group.opensocial.profile", "displayName": name, "joinPolicy": "invite"})),
+    )
+}
+
 fn scene(key: &str) -> Event {
     record(WORLD, SCENES, key, 2, &format!("scene-{key}"), scene_value(key))
 }
@@ -121,6 +158,7 @@ async fn setup() -> (PgPool, Archive, Indexer, axum::Router) {
         Arc::new(State {
             pool: pool.clone(),
             auth: support::oauth(pool.clone()),
+            client: support::client(),
         }),
         authenticate,
     )
@@ -151,7 +189,16 @@ fn scene_path(extra: &str) -> String {
 
 async fn domain_views(pool: &PgPool) -> Vec<Vec<Value>> {
     let mut snapshots = Vec::new();
-    for view in ["worlds", "scenes", "posts", "admissions", "closings", "admitted_posts"] {
+    for view in [
+        "public_world_meta",
+        "space_records",
+        "worlds",
+        "scenes",
+        "posts",
+        "admissions",
+        "closings",
+        "admitted_posts",
+    ] {
         // The identifiers are fixed above, not supplied by a caller.
         let sql = format!("SELECT to_jsonb(v) FROM projection.{view} v ORDER BY to_jsonb(v)::text");
         snapshots.push(
@@ -223,6 +270,227 @@ proptest! {
             Ok(())
         })?;
     }
+}
+
+fn named_scene_streams() -> Vec<Vec<Event>> {
+    let mut final_scene = scene_value(SCENE);
+    final_scene["cast"] = json!([AUTHOR, "did:plc:player"]);
+    let mut update = record(WORLD, SCENES, SCENE, 4, "scene-new", final_scene);
+    if let Event::Record(scene) = &mut update {
+        scene.action = Action::Update;
+    }
+    vec![
+        vec![
+            Event::Identity {
+                did: WORLD.into(),
+                handle: Some("world.test".into()),
+            },
+            world(WORLD),
+            scene(SCENE),
+            update,
+        ],
+        vec![
+            profile(WORLD, 1, "profile-old", "Old Reach"),
+            profile(WORLD, 2, "profile-new", "The Reach"),
+        ],
+    ]
+}
+
+// The current cast, opener and public Space name survive redelivery and an offline rebuild.
+// Treating Space revisions as public-repo revisions, or restoring an old scene, loses current data.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+    #[test]
+    #[ignore = "integration: needs PostgreSQL and S3 (devenv up)"]
+    fn public_profile_and_scene_cast_survive_interleaving_redelivery_and_rebuild(
+        delivery in motet_testkit::delivery::deliveries(named_scene_streams(), 4)
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime").block_on(async {
+            let (pool, archive, mut indexer, router) = setup().await;
+            for event in delivery {
+                indexer.ingest(&[event]).await.expect("ingest");
+            }
+
+            let expected_scene = json!({
+                "uri": uri(WORLD, SCENES, SCENE),
+                "cid": "scene-new",
+                "value": {
+                    "$type": SCENES, "title": SCENE, "state": "open",
+                    "cast": [AUTHOR, "did:plc:player"], "openedBy": AUTHOR, "createdAt": TIME
+                }
+            });
+            let expected = json!({
+                "world": {"did": WORLD, "handle": "world.test", "displayName": "The Reach"},
+                "scene": expected_scene, "posts": []
+            });
+            let before = ok(&router, &scene_path("")).await;
+            prop_assert_eq!(&before, &expected);
+            let listing = ok(&router, "/xrpc/at.motet.pilot.listScenes?actor=world.test").await;
+            prop_assert_eq!(&listing["scenes"], &json!([expected["scene"]]));
+            prop_assert_eq!(
+                ok(&router, "/xrpc/at.motet.pilot.getWorld?actor=WORLD.TEST").await,
+                json!({"did": WORLD, "handle": "world.test", "displayName": "The Reach"})
+            );
+            let projected: (Value, String) = sqlx::query_as(
+                "SELECT cast_dids, opened_by FROM projection.scenes WHERE world_did = $1 AND rkey = $2"
+            )
+            .bind(WORLD)
+            .bind(SCENE)
+            .fetch_one(&pool)
+            .await
+            .expect("scene projection");
+            prop_assert_eq!(projected, (json!([AUTHOR, "did:plc:player"]), AUTHOR.to_owned()));
+            let views = domain_views(&pool).await;
+            projection::rebuild(&pool, &archive).await.expect("archive rebuild");
+            prop_assert_eq!(domain_views(&pool).await, views);
+            prop_assert_eq!(ok(&router, &scene_path("")).await, expected);
+            indexer
+                .ingest(&[delete(WORLD, SCENES, SCENE, 5), scene(SCENE)])
+                .await
+                .expect("scene deletion and stale redelivery");
+            let (status, _) = query(&router, &scene_path("")).await;
+            prop_assert_eq!(status, StatusCode::NOT_FOUND);
+            prop_assert_eq!(
+                ok(&router, "/xrpc/at.motet.pilot.listScenes?actor=world.test").await,
+                json!({"scenes": []})
+            );
+            let deleted_views = domain_views(&pool).await;
+            projection::rebuild(&pool, &archive).await.expect("rebuild deleted scene");
+            prop_assert_eq!(domain_views(&pool).await, deleted_views);
+            prop_assert_eq!(query(&router, &scene_path("")).await.0, StatusCode::NOT_FOUND);
+            Ok(())
+        })?;
+    }
+}
+
+/// A public World name belongs to its own declared meta Space, not its public repo or another Space.
+/// An unscoped join or a stale declaration would expose the wrong or no longer public name.
+#[tokio::test]
+#[ignore = "integration: needs PostgreSQL and S3 (devenv up)"]
+async fn public_name_requires_current_matching_meta_and_respects_profile_tombstones() {
+    let (pool, archive, mut indexer, router) = setup().await;
+    let profile_type = "group.opensocial.profile";
+    let other = "did:plc:other";
+    let value = |name: &str| json!({"$type": profile_type, "displayName": name, "joinPolicy": "invite"});
+    let before_declaration = vec![
+        scene(SCENE),
+        record(
+            WORLD,
+            profile_type,
+            "self",
+            3,
+            "repo-profile",
+            value("Public repo impostor"),
+        ),
+        profile(other, 1, "other-profile", "Other World"),
+        space_record(
+            &meta(WORLD),
+            other,
+            profile_type,
+            "self",
+            1,
+            Some("foreign-repo"),
+            Some(value("Foreign repo")),
+        ),
+        space_record(
+            &meta(WORLD),
+            WORLD,
+            profile_type,
+            "other",
+            1,
+            Some("wrong-key"),
+            Some(value("Wrong key")),
+        ),
+    ];
+    indexer
+        .ingest(&before_declaration)
+        .await
+        .expect("records without a declaration");
+    let world_path = format!("/xrpc/at.motet.pilot.getWorld?actor={WORLD}");
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
+
+    indexer.ingest(&[world(WORLD)]).await.expect("public declaration");
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
+    indexer
+        .ingest(&[
+            profile(WORLD, 1, "name-old", "Old Reach"),
+            profile(WORLD, 2, "name-new", "The Reach"),
+            profile(WORLD, 1, "name-old", "Old Reach"),
+        ])
+        .await
+        .expect("current name and stale redelivery");
+    assert_eq!(
+        ok(&router, &world_path).await,
+        json!({"did": WORLD, "displayName": "The Reach"})
+    );
+    assert_eq!(ok(&router, &scene_path("")).await["world"]["displayName"], "The Reach");
+
+    let removed = space_record(&meta(WORLD), WORLD, profile_type, "self", 3, None, None);
+    indexer
+        .ingest(&[removed, profile(WORLD, 2, "name-new", "The Reach")])
+        .await
+        .expect("profile deletion and stale redelivery");
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
+
+    indexer
+        .ingest(&[profile(WORLD, 4, "name-restored", "Restored Reach")])
+        .await
+        .expect("restored profile");
+    assert_eq!(ok(&router, &world_path).await["displayName"], "Restored Reach");
+    indexer
+        .ingest(&[
+            space_record(
+                &meta(WORLD),
+                WORLD,
+                profile_type,
+                "self",
+                5,
+                Some("invalid-name"),
+                Some(json!({"$type": profile_type, "displayName": 17, "joinPolicy": "invite"})),
+            ),
+            profile(WORLD, 4, "name-restored", "Restored Reach"),
+        ])
+        .await
+        .expect("invalid newer name and stale redelivery");
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
+    indexer
+        .ingest(&[profile(WORLD, 6, "name-final", "The Reach")])
+        .await
+        .expect("corrected profile");
+    assert_eq!(ok(&router, &world_path).await["displayName"], "The Reach");
+
+    indexer
+        .ingest(&[
+            record(
+                WORLD,
+                "group.opensocial.declaration",
+                "self",
+                8,
+                "foreign-declaration",
+                json!({"$type": "group.opensocial.declaration", "meta": meta(other)}),
+            ),
+            space_record(
+                &meta(other),
+                WORLD,
+                profile_type,
+                "self",
+                7,
+                Some("foreign-space"),
+                Some(value("Foreign Space")),
+            ),
+        ])
+        .await
+        .expect("foreign meta declaration");
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
+    indexer
+        .ingest(&[delete(WORLD, "group.opensocial.declaration", "self", 9)])
+        .await
+        .expect("declaration removed");
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
+    let views = domain_views(&pool).await;
+    projection::rebuild(&pool, &archive).await.expect("archive rebuild");
+    assert_eq!(domain_views(&pool).await, views);
+    assert_eq!(ok(&router, &world_path).await, json!({"did": WORLD}));
 }
 
 /// A post becomes visible only when its exact version, author, World and scene agree.

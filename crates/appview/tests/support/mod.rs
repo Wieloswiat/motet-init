@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use motet_appview::auth;
+use motet_appview::{auth, writes};
 use motet_net::identity::DidResolver;
 use motet_net::{Fetcher, Policy};
 use sqlx::PgPool;
@@ -27,4 +27,13 @@ pub(crate) fn oauth(pool: PgPool) -> Arc<auth::Server> {
         resolver,
     )
     .expect("OAuth server")
+}
+
+pub(crate) fn client() -> Arc<writes::client::Client> {
+    let fetcher = Fetcher::new(Policy::default()).expect("fetcher");
+    let resolver = Arc::new(DidResolver::new(fetcher.clone(), "https://plc.directory"));
+    Arc::new(
+        writes::client::Client::new(fetcher, resolver, "https://tenor.example", "did:web:tenor.example")
+            .expect("tenor client"),
+    )
 }

@@ -37,6 +37,19 @@ CREATE TABLE record_versions (
     PRIMARY KEY (uri, cid)
 );
 
+-- A Space repository has its own revision history, separate from the
+-- author's public repository. Keep tombstones to reject stale deliveries.
+CREATE TABLE space_records (
+    space text NOT NULL,
+    did text NOT NULL,
+    collection text NOT NULL,
+    rkey text NOT NULL,
+    rev text COLLATE "C" NOT NULL,
+    cid text,
+    record jsonb,
+    PRIMARY KEY (space, did, collection, rkey)
+);
+
 CREATE TABLE accounts (
     did text PRIMARY KEY,
     handle text,
@@ -44,12 +57,22 @@ CREATE TABLE accounts (
     status text
 );
 
+-- Only a declaration in the World's current public repo makes its canonical
+-- meta Space eligible for public ingestion and display.
+CREATE VIEW public_world_meta AS
+SELECT did, record->>'meta' AS space
+FROM records
+WHERE collection = 'group.opensocial.declaration' AND rkey = 'self' AND cid IS NOT NULL
+    AND record->>'meta' = 'at://' || did || '/space/group.opensocial.meta/self';
+
 -- A declaration identifies a group with public metadata. A public scene also
 -- identifies its author as a World, even when its metadata Space is private.
 -- A freshly created World with no public records is not distinguishable from
 -- a person's account on the public firehose.
 CREATE VIEW worlds AS
-SELECT w.did, a.handle
+SELECT w.did, a.handle,
+       CASE WHEN jsonb_typeof(p.record->'displayName') = 'string'
+            THEN p.record->>'displayName' END AS display_name
 FROM (
     SELECT DISTINCT did
     FROM records
@@ -59,10 +82,15 @@ FROM (
         OR (collection = 'at.motet.pilot.scene' AND jsonb_typeof(record) = 'object')
     )
 ) w
-LEFT JOIN accounts a ON a.did = w.did;
+LEFT JOIN accounts a ON a.did = w.did
+LEFT JOIN public_world_meta m ON m.did = w.did
+LEFT JOIN space_records p ON p.space = m.space AND p.did = w.did
+    AND p.collection = 'group.opensocial.profile' AND p.rkey = 'self' AND p.cid IS NOT NULL;
 
 CREATE VIEW scenes AS
-SELECT did AS world_did, rkey, uri, cid, record
+SELECT did AS world_did, rkey, uri, cid, record,
+       CASE WHEN jsonb_typeof(record->'cast') = 'array' THEN record->'cast' END AS cast_dids,
+       CASE WHEN jsonb_typeof(record->'openedBy') = 'string' THEN record->>'openedBy' END AS opened_by
 FROM records
 WHERE collection = 'at.motet.pilot.scene' AND cid IS NOT NULL
     AND jsonb_typeof(record) = 'object';

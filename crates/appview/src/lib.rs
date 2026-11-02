@@ -21,8 +21,8 @@
 //! finishes the current batch before flushing acknowledgements. Without a
 //! Tap URL, the API runs without live ingestion.
 //!
-//! Still to come, each behind its own module: the Spaces input to the
-//! indexer, server-sent events per reader (`LISTEN/NOTIFY` only as a wake-up),
+//! Still to come, each behind its own module: private Spaces input,
+//! server-sent events per reader (`LISTEN/NOTIFY` only as a wake-up),
 //! search with ParadeDB, and the render and image workers.
 
 pub mod api;
@@ -33,7 +33,9 @@ pub mod event;
 pub mod indexer;
 pub mod outbox;
 pub mod projection;
+pub mod public_space;
 pub mod tap;
+pub mod writes;
 
 /// Service-state migrations (`migrations/`). Projections are not migrated;
 /// see [`projection`].
