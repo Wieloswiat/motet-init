@@ -37,6 +37,7 @@
 </svelte:head>
 
 <nav
+	class="account-nav"
 	aria-label="Account"
 	style="display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 8px 16px"
 >
@@ -58,3 +59,10 @@
 	<p role="alert">{signOutError}</p>
 {/if}
 {@render children()}
+
+<style>
+	/* Demo screens keep their fixed design-export chrome above the real account controls. */
+	:global(body:has(.m-chrome__root)) .account-nav {
+		margin-block-start: var(--chrome-offset, 72px);
+	}
+</style>
