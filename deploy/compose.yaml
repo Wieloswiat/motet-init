@@ -175,7 +175,16 @@ services:
       plc: { condition: service_healthy }
       dns: { condition: service_healthy }
     healthcheck:
-      test: ['CMD', '/bin/curl', '--fail', '--silent', '--cacert', '/run/motet-tls/rootCA.crt', 'https://plc.motet.test/_health']
+      test:
+        [
+          'CMD',
+          '/bin/curl',
+          '--fail',
+          '--silent',
+          '--cacert',
+          '/run/motet-tls/rootCA.crt',
+          'https://plc.motet.test/_health'
+        ]
       interval: 2s
       retries: 30
 

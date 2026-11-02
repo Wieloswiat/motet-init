@@ -51,28 +51,31 @@ let
   );
 in
 {
-  packages = with pkgs; [
-    rustToolchain
-    cargo-nextest
-    cargo-deny
-    cargo-mutants
-    cargo-llvm-cov
-    sqlx-cli
-    typst
-    seaweedfs
-    taplo
-    caddy
-    dnsmasq
-    openssl
-    typos
-    actionlint
-    nixfmt
-    podman-compose
-  ] ++ lib.optionals pkgs.stdenv.isLinux [
-    iproute2
-    nss.tools
-    util-linux
-  ];
+  packages =
+    with pkgs;
+    [
+      rustToolchain
+      cargo-nextest
+      cargo-deny
+      cargo-mutants
+      cargo-llvm-cov
+      sqlx-cli
+      typst
+      seaweedfs
+      taplo
+      caddy
+      dnsmasq
+      openssl
+      typos
+      actionlint
+      nixfmt
+      podman-compose
+    ]
+    ++ lib.optionals pkgs.stdenv.isLinux [
+      iproute2
+      nss.tools
+      util-linux
+    ];
 
   languages.javascript = {
     enable = true;
@@ -152,7 +155,7 @@ in
         --local=/motet.test/ --address=/motet.test/127.0.0.1
     '';
     ready = {
-      exec = ''${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/53535' '';
+      exec = "${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/53535' ";
       period = 1;
       failure_threshold = 180;
     };
@@ -160,10 +163,10 @@ in
 
   processes.caddy = {
     after = [ "devenv:processes:motet-dns" ];
-    exec = ''exec ${lib.getExe pkgs.caddy} run --config ${./Caddyfile} --adapter caddyfile'';
+    exec = "exec ${lib.getExe pkgs.caddy} run --config ${./Caddyfile} --adapter caddyfile";
     # Backends may still be starting; readiness only requires the TLS listener.
     ready = {
-      exec = ''${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/443' '';
+      exec = "${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/443' ";
       period = 1;
       failure_threshold = 180;
     };
