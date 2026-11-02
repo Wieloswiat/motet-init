@@ -269,7 +269,7 @@ async fn expired_and_signed_out_sessions_cannot_use_session_methods() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// A legacy World DPoP token is not an AppView cookie session, even when a
+/// A legacy World `DPoP` token is not an AppView cookie session, even when a
 /// caller presents it directly to a session-only method.
 #[tokio::test]
 #[ignore = "integration: PostgreSQL"]

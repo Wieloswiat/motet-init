@@ -74,10 +74,10 @@ fn cookie(response: &Response, prefix: &str, host_only: bool) -> String {
 }
 
 fn query_value(url: &Url, name: &str) -> String {
-    url.query_pairs()
-        .find(|(key, _)| key == name)
-        .map(|(_, value)| value.into_owned())
-        .unwrap_or_else(|| panic!("the redirect must include {name}"))
+    url.query_pairs().find(|(key, _)| key == name).map_or_else(
+        || panic!("the redirect must include {name}"),
+        |(_, value)| value.into_owned(),
+    )
 }
 
 // These forms are the pinned atproto-crates PDS's script-free portal UI. Read
@@ -95,8 +95,7 @@ fn hidden_field(form: &str, name: &str) -> String {
     let encoded = form
         .split_once(&marker)
         .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(value, _)| value)
-        .unwrap_or_else(|| panic!("the PDS form must contain {name}"));
+        .map_or_else(|| panic!("the PDS form must contain {name}"), |(value, _)| value);
     encoded
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
@@ -201,10 +200,32 @@ async fn approve(client: &Client, app: &Url, pds: &Url, consent_url: Url, reques
     let callback = redirect(&approved, StatusCode::SEE_OTHER, "PDS returns an authorization code");
     assert_eq!(callback.origin(), app.origin());
     assert_eq!(callback.path(), "/oauth/callback");
-    assert!(!query_value(&callback, "code").is_empty());
-    assert!(!query_value(&callback, "state").is_empty());
+    assert_ne!(query_value(&callback, "code"), "");
+    assert_ne!(query_value(&callback, "state"), "");
     assert_eq!(query_value(&callback, "iss"), pds.origin().ascii_serialization());
     callback
+}
+
+// An in-memory-only session must not pass as durable service state.
+async fn assert_persisted_session(database_url: &str, session_cookie: &str) {
+    let session_secret = session_cookie
+        .split_once('=')
+        .expect("the AppView session has a value")
+        .1;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(database_url)
+        .await
+        .expect("connect to the AppView database");
+    let id = Sha256::digest(session_secret.as_bytes());
+    let persisted: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM service.oauth_sessions WHERE id = $1 AND NOT revoked AND expires_at > now())",
+    )
+    .bind(id.as_slice())
+    .fetch_one(&pool)
+    .await
+    .expect("read the persisted AppView session");
+    assert!(persisted, "the browser session must be committed to PostgreSQL");
 }
 
 // A newly created PDS account must become the same authenticated AppView
@@ -256,7 +277,7 @@ async fn pds_signup_and_consent_persist_the_new_identity_in_the_appview() {
             .as_str()
     );
     let request_uri = query_value(&authorize, "request_uri");
-    assert!(!request_uri.is_empty());
+    assert_ne!(request_uri, "");
     let login_cookie = cookie(&start, "__Host-motet_login_", true);
 
     let authorization = navigation(client.get(authorize), "same-site")
@@ -298,27 +319,7 @@ async fn pds_signup_and_consent_persist_the_new_identity_in_the_appview() {
     assert_eq!(home.origin(), app.origin());
     assert_eq!(home.path(), "/");
     let session_cookie = cookie(&completed, "__Host-motet_session=", true);
-    let session_secret = session_cookie
-        .split_once('=')
-        .expect("the AppView session has a value")
-        .1;
-
-    // Check the running AppView's database before using the cookie in a new
-    // request; an in-memory-only session must not pass as durable service state.
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&database_url)
-        .await
-        .expect("connect to the AppView database");
-    let id = Sha256::digest(session_secret.as_bytes());
-    let persisted: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM service.oauth_sessions WHERE id = $1 AND NOT revoked AND expires_at > now())",
-    )
-    .bind(id.as_slice())
-    .fetch_one(&pool)
-    .await
-    .expect("read the persisted AppView session");
-    assert!(persisted, "the browser session must be committed to PostgreSQL");
+    assert_persisted_session(&database_url, &session_cookie).await;
 
     let session = client
         .get(get_session)

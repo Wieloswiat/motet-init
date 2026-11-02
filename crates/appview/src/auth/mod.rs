@@ -154,7 +154,6 @@ impl Server {
     }
 
     /// Browser endpoints and public OAuth client documents.
-    #[must_use]
     pub fn router(self: &Arc<Self>) -> axum::Router {
         axum::Router::new()
             .route("/oauth/client-metadata.json", get(metadata))
@@ -324,7 +323,7 @@ async fn callback(
         .create_session(&grant, Utc::now() + Duration::days(SESSION_DAYS))
         .await
         .map_err(|_| Error::Internal)?;
-    let mut response = Redirect::see_other(&pending.return_to).into_response();
+    let mut response = Redirect::to(&pending.return_to).into_response();
     set_cookie(&mut response, SESSION_COOKIE, &cookie, SESSION_DAYS * 86_400)?;
     set_cookie(&mut response, &name, "", 0)?;
     Ok(no_store(response))

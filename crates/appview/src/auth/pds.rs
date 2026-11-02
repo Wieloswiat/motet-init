@@ -34,7 +34,7 @@ const SERVICE_TOKEN_LIFETIME_SECS: i64 = 60;
 // Refresh before a token expires while a request is in flight.
 const REFRESH_MARGIN_SECS: i64 = 30;
 
-/// One OAuth grant. The entire value, including the DPoP key, must be sealed.
+/// One OAuth grant. The entire value, including the `DPoP` key, must be sealed.
 #[derive(Serialize, Deserialize)]
 pub struct Grant {
     pub did: String,
@@ -65,7 +65,7 @@ impl fmt::Debug for Grant {
             .field("expires_at", &self.expires_at)
             .field("scope", &self.scope)
             .field("credentials", &"[REDACTED]")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -372,7 +372,7 @@ async fn resource_call(
 /// Submit a confidential-client request with one explicit nonce retry.
 ///
 /// Each attempt gets its own client assertion, because a server may consume
-/// the first assertion's `jti` before it challenges the DPoP proof.
+/// the first assertion's `jti` before it challenges the `DPoP` proof.
 pub(super) async fn authorization_call(
     fetcher: &Fetcher,
     key: &KeyData,
@@ -577,20 +577,24 @@ mod tests {
         }
 
         let jti = claims.jose.json_web_token_id.expect("proof has a jti");
-        let retry = {
-            let mut challenged = server.challenged.lock().expect("test lock");
-            match claims.jose.nonce.as_deref() {
-                None => {
-                    assert!(challenged.insert(uri.path().to_owned(), jti).is_none());
-                    false
-                }
-                Some(nonce) => {
-                    assert_eq!(nonce, NONCE);
-                    let original = challenged.remove(uri.path()).expect("a challenge came first");
-                    assert_ne!(jti, original, "the retry must not replay the first proof");
-                    true
-                }
-            }
+        let retry = if let Some(nonce) = claims.jose.nonce.as_deref() {
+            let original = server
+                .challenged
+                .lock()
+                .expect("test lock")
+                .remove(uri.path())
+                .expect("a challenge came first");
+            assert_eq!(nonce, NONCE);
+            assert_ne!(jti, original, "the retry must not replay the first proof");
+            true
+        } else {
+            let previous = server
+                .challenged
+                .lock()
+                .expect("test lock")
+                .insert(uri.path().to_owned(), jti);
+            assert!(previous.is_none());
+            false
         };
         if retry {
             let mut response = Json(json!({"accepted": true})).into_response();
@@ -621,7 +625,55 @@ mod tests {
         response
     }
 
-    /// A nonce retry must use fresh DPoP and client-assertion IDs. Otherwise an
+    async fn assert_response_boundaries(
+        fetcher: &Fetcher,
+        private_key: &KeyData,
+        oauth: &OAuthClient,
+        grant: &Grant,
+        state: &Server,
+    ) {
+        // A 400 carrying a nonce but no DPoP error may follow a spent grant.
+        // Do not send the same refresh token a second time in that case.
+        let base = &state.base;
+        let ambiguous = authorization_call(
+            fetcher,
+            private_key,
+            &format!("{base}/oauth/ambiguous"),
+            oauth,
+            &grant.issuer,
+            "grant_type=refresh_token&refresh_token=secret",
+        )
+        .await
+        .expect("ambiguous response");
+        assert_eq!(ambiguous.status, StatusCode::BAD_REQUEST);
+        assert_eq!(state.ambiguous_requests.load(Ordering::Relaxed), 1);
+
+        let no_nonce = Url::parse(&format!("{base}/xrpc/missing.example.nonce")).expect("test URL");
+        assert!(matches!(
+            resource_call(fetcher, grant, Method::GET, &no_nonce, None).await,
+            Err(PdsError::Response)
+        ));
+        assert!(matches!(
+            authorization_call(
+                fetcher,
+                private_key,
+                &format!("{base}/oauth/missing-nonce"),
+                oauth,
+                &grant.issuer,
+                ""
+            )
+            .await,
+            Err(PdsError::Response)
+        ));
+
+        let oversized = Url::parse(&format!("{base}/xrpc/large.example.query")).expect("test URL");
+        assert!(matches!(
+            resource_call(fetcher, grant, Method::GET, &oversized, None).await,
+            Err(PdsError::Transport)
+        ));
+    }
+
+    /// A nonce retry must use fresh `DPoP` and client-assertion IDs. Otherwise an
     /// authorization server that consumes the assertion first refuses it.
     #[tokio::test]
     async fn pds_and_authorization_nonces_use_fresh_bound_proofs_and_bounded_responses() {
@@ -695,44 +747,7 @@ mod tests {
         assert!(state.challenged.lock().expect("test lock").is_empty());
         assert_eq!(state.assertions.lock().expect("test lock").len(), 2);
 
-        // A 400 carrying a nonce but no DPoP error may follow a spent grant.
-        // Do not send the same refresh token a second time in that case.
-        let ambiguous = authorization_call(
-            &fetcher,
-            &private_key,
-            &format!("{base}/oauth/ambiguous"),
-            &oauth,
-            &grant.issuer,
-            "grant_type=refresh_token&refresh_token=secret",
-        )
-        .await
-        .expect("ambiguous response");
-        assert_eq!(ambiguous.status, StatusCode::BAD_REQUEST);
-        assert_eq!(state.ambiguous_requests.load(Ordering::Relaxed), 1);
-
-        let no_nonce = Url::parse(&format!("{base}/xrpc/missing.example.nonce")).expect("test URL");
-        assert!(matches!(
-            resource_call(&fetcher, &grant, Method::GET, &no_nonce, None).await,
-            Err(PdsError::Response)
-        ));
-        assert!(matches!(
-            authorization_call(
-                &fetcher,
-                &private_key,
-                &format!("{base}/oauth/missing-nonce"),
-                &oauth,
-                &grant.issuer,
-                ""
-            )
-            .await,
-            Err(PdsError::Response)
-        ));
-
-        let oversized = Url::parse(&format!("{base}/xrpc/large.example.query")).expect("test URL");
-        assert!(matches!(
-            resource_call(&fetcher, &grant, Method::GET, &oversized, None).await,
-            Err(PdsError::Transport)
-        ));
+        assert_response_boundaries(&fetcher, &private_key, &oauth, &grant, &state).await;
         task.abort();
     }
 

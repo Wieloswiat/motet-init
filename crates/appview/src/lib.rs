@@ -11,7 +11,7 @@
 //! - [`indexer`]: archive, apply, acknowledge.
 //! - [`tap`]: verified record and identity input, acknowledged after indexing.
 //! - [`outbox`]: writes made on people's behalf, leased and retried safely.
-//! - [`auth`]: confidential OAuth, sealed sessions and DPoP PDS access.
+//! - [`auth`]: confidential OAuth, sealed sessions and `DPoP` PDS access.
 //! - [`api`]: the XRPC methods, each declared with who may call it.
 //!
 //! `serve` takes over the archive and catches projections up before serving.

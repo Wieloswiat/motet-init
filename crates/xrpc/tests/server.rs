@@ -442,6 +442,35 @@ fn preflight_router(authentications: &Arc<AtomicUsize>, calls: &Arc<AtomicUsize>
         .expect("unique preflight methods")
 }
 
+fn assert_preflight_headers(
+    response: &axum::response::Response,
+    method: Option<&str>,
+    requested_headers: Option<&str>,
+) {
+    assert_public_cors(response);
+    if response.status().is_success() {
+        assert_eq!(
+            response.headers()["access-control-allow-methods"],
+            method.expect("a successful preflight names its method")
+        );
+        let allowed = response.headers()["access-control-allow-headers"]
+            .to_str()
+            .expect("the allowed headers are text");
+        if let Some(requested) = requested_headers {
+            for name in requested.split(',') {
+                assert!(
+                    allowed
+                        .split(',')
+                        .any(|allowed| allowed.eq_ignore_ascii_case(name.trim()))
+                );
+            }
+        }
+    } else {
+        assert!(!response.headers().contains_key("access-control-allow-methods"));
+        assert!(!response.headers().contains_key("access-control-allow-headers"));
+    }
+}
+
 /// Browsers may preflight only declared verbs and allowed credential headers.
 /// A blanket OPTIONS route would approve undeclared methods; authenticating
 /// preflights would reject legitimate browsers before they can send a token.
@@ -527,23 +556,7 @@ async fn browser_preflights_validate_the_declaration_without_authentication_or_b
         }
         let response = router.clone().oneshot(request.body(body).unwrap()).await.unwrap();
         assert_eq!(response.status(), status, "{nsid} {method:?} {requested_headers:?}");
-        assert_public_cors(&response);
-        if status.is_success() {
-            assert_eq!(response.headers()["access-control-allow-methods"], method.unwrap());
-            let allowed = response.headers()["access-control-allow-headers"].to_str().unwrap();
-            if let Some(requested) = requested_headers {
-                for name in requested.split(',') {
-                    assert!(
-                        allowed
-                            .split(',')
-                            .any(|allowed| allowed.eq_ignore_ascii_case(name.trim()))
-                    );
-                }
-            }
-        } else {
-            assert!(!response.headers().contains_key("access-control-allow-methods"));
-            assert!(!response.headers().contains_key("access-control-allow-headers"));
-        }
+        assert_preflight_headers(&response, method, requested_headers);
         assert_eq!(authentications.load(Ordering::SeqCst), 0);
         assert_eq!(polls.load(Ordering::SeqCst), 0);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
@@ -562,16 +575,11 @@ fn appview_router(authentications: &Arc<AtomicUsize>, calls: &Arc<AtomicUsize>) 
             .get("authorization")
             .and_then(|value| value.to_str().ok());
         let result = match (cookie, authorization) {
-            (Some("motet_session=valid"), _) => Ok(Caller::AppviewSession {
+            (Some("motet_session=valid"), _) | (None, Some("Bearer appview")) => Ok(Caller::AppviewSession {
                 did: "did:plc:alice".into(),
                 handle: "alice.test".into(),
             }),
-            (Some(_), _) => Err(XrpcError::AuthRequired),
             (None, None) => Ok(Caller::Anonymous),
-            (None, Some("Bearer appview")) => Ok(Caller::AppviewSession {
-                did: "did:plc:alice".into(),
-                handle: "alice.test".into(),
-            }),
             (None, Some("Bearer service")) => Ok(Caller::Service {
                 did: "did:plc:alice".into(),
                 lxm: "test.appviewWrite".into(),
@@ -589,7 +597,7 @@ fn appview_router(authentications: &Arc<AtomicUsize>, calls: &Arc<AtomicUsize>) 
                 space: "at://did:plc:world/space/group.opensocial.meta/self".into(),
                 audience: "did:plc:world".into(),
             }),
-            (None, Some(_)) => Err(XrpcError::AuthRequired),
+            (Some(_), _) | (None, Some(_)) => Err(XrpcError::AuthRequired),
         };
         Box::pin(async move { result })
     });
@@ -659,7 +667,7 @@ fn assert_varies_on_credentials(response: &axum::response::Response) {
         assert!(response.headers().get_all("vary").iter().any(|value| {
             value
                 .to_str()
-                .unwrap()
+                .expect("the Vary header is text")
                 .split(',')
                 .any(|name| name.trim().eq_ignore_ascii_case(header))
         }));

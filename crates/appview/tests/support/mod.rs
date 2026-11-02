@@ -7,9 +7,9 @@ use motet_net::identity::DidResolver;
 use motet_net::{Fetcher, Policy};
 use sqlx::PgPool;
 
-pub const ORIGIN: &str = "https://motet.example";
+pub(crate) const ORIGIN: &str = "https://motet.example";
 
-pub fn oauth(pool: PgPool) -> Arc<auth::Server> {
+pub(crate) fn oauth(pool: PgPool) -> Arc<auth::Server> {
     let files = tempfile::tempdir().expect("temporary key directory");
     let signing = files.path().join("signing");
     let sealing = files.path().join("sealing");

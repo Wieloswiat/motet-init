@@ -78,7 +78,7 @@ impl fmt::Debug for Started {
     }
 }
 
-/// Seal this whole value: the verifier and DPoP private key are credentials.
+/// Seal this whole value: the verifier and `DPoP` private key are credentials.
 #[derive(Serialize, Deserialize)]
 pub struct Pending {
     expected_did: Option<String>,

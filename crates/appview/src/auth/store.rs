@@ -126,7 +126,7 @@ impl SessionStore {
     ///
     /// `expires_at` is the browser session's absolute expiry, not the access
     /// token's expiry. The caller must also check the access token's lifetime.
-    pub async fn create_session<T: Serialize>(
+    pub async fn create_session<T: Serialize + Sync>(
         &self,
         grant: &T,
         expires_at: DateTime<Utc>,
@@ -236,13 +236,10 @@ impl SessionStore {
             tx.commit().await?;
             return Ok(None);
         }
-        let grant = match refresh(grant).await {
-            Ok(grant) => grant,
-            Err(_) => {
-                invalidate_locked(&mut tx, &id).await?;
-                tx.commit().await?;
-                return Err(StoreError::Refresh);
-            }
+        let Ok(grant) = refresh(grant).await else {
+            invalidate_locked(&mut tx, &id).await?;
+            tx.commit().await?;
+            return Err(StoreError::Refresh);
         };
         let sealed = match self.seal(SESSION_PURPOSE, &id, &grant) {
             Ok(sealed) => sealed,
@@ -339,7 +336,7 @@ impl SessionStore {
 
     /// Stores the entire pending login, bound to unpredictable OAuth state
     /// and a separate unpredictable browser cookie. Both secrets are hashed.
-    pub async fn store_pending<T: Serialize>(
+    pub async fn store_pending<T: Serialize + Sync>(
         &self,
         state: &str,
         browser_binding: &str,
@@ -462,8 +459,9 @@ impl SessionStore {
         let body = sealed.get_mut(1 + NONCE_LEN..).ok_or(StoreError::Unseal)?;
         let tag_offset = body.len().checked_sub(TAG_LEN).ok_or(StoreError::Unseal)?;
         let (ciphertext, tag) = body.split_at_mut(tag_offset);
+        let tag = <[u8; TAG_LEN]>::try_from(&*tag).map_err(|_| StoreError::Unseal)?;
         self.cipher
-            .decrypt_in_place_detached(&XNonce::from(nonce), &aad, ciphertext, Tag::from_slice(tag))
+            .decrypt_in_place_detached(&XNonce::from(nonce), &aad, ciphertext, &Tag::from(tag))
             .map_err(|_| StoreError::Unseal)?;
         serde_json::from_slice(ciphertext).map_err(|_| StoreError::Unseal)
     }
