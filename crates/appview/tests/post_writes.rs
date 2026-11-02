@@ -575,16 +575,16 @@ async fn fault_busy_session_retries_the_unsubmitted_pds_write() {
         .await
         .expect("expired access token session");
     let reference = SessionRef::from_cookie(&fixture.cookie).expect("session reference");
-    let bytes: [u8; 8] = reference
-        .as_bytes()
-        .get(..8)
-        .expect("reference prefix")
-        .try_into()
-        .expect("eight bytes");
-    let lock_key = i64::from_be_bytes(bytes);
+    let advisory_key: i64 = sqlx::query_scalar("SELECT advisory_key FROM service.oauth_session_locks WHERE id = $1")
+        .bind(reference.as_bytes())
+        .fetch_one(&fixture.pool)
+        .await
+        .expect("session lock key");
+    let [a, b, c, d, e, f, g, h] = advisory_key.to_be_bytes();
     let mut lock = fixture.pool.begin().await.expect("lock transaction");
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(lock_key)
+    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
+        .bind(i32::from_be_bytes([a, b, c, d]))
+        .bind(i32::from_be_bytes([e, f, g, h]))
         .execute(&mut *lock)
         .await
         .expect("hold another instance's session lock");
