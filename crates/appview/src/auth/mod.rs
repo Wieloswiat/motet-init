@@ -30,7 +30,7 @@ use sqlx::PgPool;
 use url::Url;
 
 use self::pds::{Grant, PdsClient};
-use self::store::SessionStore;
+use self::store::{SessionRef, SessionStore};
 
 const SESSION_COOKIE: &str = "__Host-motet_session";
 const LOGIN_COOKIE_PREFIX: &str = "__Host-motet_login_";
@@ -43,6 +43,7 @@ pub struct Server {
     default_pds: String,
     client: login::Client,
     store: SessionStore,
+    pool: PgPool,
     pds: PdsClient,
     jwks: Value,
 }
@@ -94,7 +95,7 @@ impl Server {
             redirect_uri.clone(),
             Arc::clone(&signing_key),
         );
-        let store = SessionStore::from_file(pool, session_key_file).context("session sealing key")?;
+        let store = SessionStore::from_file(pool.clone(), session_key_file).context("session sealing key")?;
         let pds = PdsClient::new(
             fetcher,
             store.clone(),
@@ -108,6 +109,7 @@ impl Server {
             origin,
             default_pds,
             client,
+            pool,
             store,
             pds,
             jwks: json!({"keys": [public_key]}),
@@ -321,6 +323,10 @@ async fn callback(
     let cookie = server
         .store
         .create_session(&grant, Utc::now() + Duration::days(SESSION_DAYS))
+        .await
+        .map_err(|_| Error::Internal)?;
+    let reference = SessionRef::from_cookie(&cookie).ok_or(Error::Internal)?;
+    crate::outbox::resume_account(&server.pool, &grant.did, &reference)
         .await
         .map_err(|_| Error::Internal)?;
     let mut response = Redirect::to(&pending.return_to).into_response();
