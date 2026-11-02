@@ -21,6 +21,7 @@
 		"@motet/lexicons": "workspace:*"
 	},
 	"devDependencies": {
+		"@noble/curves": "^1.9.7",
 		"@pandacss/dev": "^2.2.0",
 		"@pandacss/preset-base": "2.2.0",
 		"@playwright/test": "^1.60.0",
