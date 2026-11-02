@@ -79,6 +79,8 @@ impl Server {
                 && parsed.origin().ascii_serialization() == origin,
             "AppView public origin must be a canonical HTTPS origin without a port"
         );
+        atproto_identity::validation::validate_service_endpoint(&origin)
+            .context("AppView public origin must use a valid DNS hostname")?;
         let key_bytes = read_key(signing_key_file).context("OAuth signing key")?;
         let signing_key = Arc::new(KeyData::new(KeyType::P256Private, key_bytes.to_vec()));
         // Deriving a public JWK also validates the P-256 private scalar.
