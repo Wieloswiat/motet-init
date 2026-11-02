@@ -362,6 +362,8 @@ in
     MOTET_APPVIEW_PUBLIC_ORIGIN = "https://motet.test";
     MOTET_APPVIEW_SERVICE_DID = "did:web:motet.test#motet_appview";
     MOTET_APPVIEW_DEFAULT_PDS = "https://pds.motet.test";
+    MOTET_APPVIEW_TENOR_URL = "https://tenor.motet.test";
+    MOTET_APPVIEW_TENOR_DID = "did:web:tenor.motet.test";
     MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE = "${config.devenv.state}/appview/oauth-signing-key";
     MOTET_APPVIEW_SESSION_KEY_FILE = "${config.devenv.state}/appview/session-key";
     MOTET_APPVIEW_TAP_URL = "https://tap.motet.test";

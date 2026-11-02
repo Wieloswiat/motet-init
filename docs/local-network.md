@@ -52,8 +52,10 @@ The tenor's `MOTET_TENOR_HANDLE_DOMAINS=.motet.test` serves World handles;
 These names need local DNS as well as proxy routes and certificate coverage;
 see [Host setup](#host-setup).
 
-The native setup configures `MOTET_APPVIEW_PUBLIC_ORIGIN=https://motet.test`
-and `MOTET_APPVIEW_DEFAULT_PDS=https://pds.motet.test`.
+The native setup configures `MOTET_APPVIEW_PUBLIC_ORIGIN=https://motet.test`,
+`MOTET_APPVIEW_DEFAULT_PDS=https://pds.motet.test`,
+`MOTET_APPVIEW_TENOR_URL=https://tenor.motet.test` and
+`MOTET_APPVIEW_TENOR_DID=did:web:tenor.motet.test`.
 `MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE` and `MOTET_APPVIEW_SESSION_KEY_FILE`
 identify the AppView's persistent secret files described below.
 
