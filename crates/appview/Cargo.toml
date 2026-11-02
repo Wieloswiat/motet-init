@@ -35,6 +35,7 @@ motet-rules.workspace = true
 motet-xrpc.workspace = true
 object_store.workspace = true
 reqwest.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
