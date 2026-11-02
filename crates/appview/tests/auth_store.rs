@@ -171,9 +171,9 @@ async fn stalled_session_waiters_do_not_block_another_session() {
 
     // Marker cleanup must not remove either live session's coordinator.
     let grant_c = grant("C0");
-    let (created, expired) = tokio::join!(store.create_session(&grant_c, expires), store.expire());
+    let (created, cleaned) = tokio::join!(store.create_session(&grant_c, expires), store.expire());
     let cookie_c = created.expect("concurrent session C");
-    assert_eq!(expired.expect("concurrent cleanup"), 0);
+    assert_eq!(cleaned.expect("concurrent cleanup"), 0);
     let reference_c = SessionRef::from_cookie(&cookie_c).expect("reference C");
     assert!(
         store
