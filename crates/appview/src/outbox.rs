@@ -187,11 +187,32 @@ pub(crate) async fn may_submit(pool: &PgPool, job: &Job, owner: &str) -> sqlx::R
     .await
 }
 
+fn retry_delay(job: &Job) -> Duration {
+    let exponent = u32::try_from(job.attempts.clamp(1, 6)).unwrap_or(6);
+    Duration::from_secs(1_u64 << exponent)
+}
+
+/// Reschedules a PDS write only when the caller knows no request was sent.
+pub(crate) async fn retry_publication(pool: &PgPool, job: &Job, owner: &str) -> sqlx::Result<bool> {
+    let updated = sqlx::query(
+        "UPDATE service.outbox SET payload = jsonb_set(payload, '{stage}', '\"publish\"'::jsonb), \
+         next_attempt_at = clock_timestamp() + $4, lease_owner = NULL, lease_until = NULL \
+         WHERE id = $1 AND lease_owner = $2 AND attempts = $3 AND state = 'queued' \
+           AND lease_until > clock_timestamp() AND payload->>'stage' = 'publishing'",
+    )
+    .bind(job.id)
+    .bind(owner)
+    .bind(job.attempts)
+    .bind(retry_delay(job))
+    .execute(pool)
+    .await?;
+    Ok(updated.rows_affected() == 1)
+}
+
 /// Releases the lease and delays the next try. A pending earlier job still
 /// blocks later admissions, but not later PDS writes.
 pub(crate) async fn reschedule(pool: &PgPool, job: &Job, owner: &str, outcome: &Value) -> sqlx::Result<bool> {
-    let exponent = u32::try_from(job.attempts.clamp(1, 6)).unwrap_or(6);
-    let delay = Duration::from_secs(1_u64 << exponent);
+    let delay = retry_delay(job);
     let updated = sqlx::query(
         "UPDATE service.outbox SET outcome = $4, next_attempt_at = clock_timestamp() + $5, \
          lease_owner = NULL, lease_until = NULL \

@@ -17,7 +17,11 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::api::State;
-use crate::auth::{self, pds::PdsError, store::SessionRef};
+use crate::auth::{
+    self,
+    pds::PdsError,
+    store::{SessionRef, StoreError},
+};
 use crate::outbox::{self, Job};
 use crate::writes::client::{Client, ClientError};
 
@@ -214,6 +218,11 @@ pub(crate) async fn process(
                 .await;
             let value = match written {
                 Ok(value) => value,
+                Err(PdsError::Store(StoreError::Busy)) => {
+                    // Session locking failed before createRecord could be sent.
+                    outbox::retry_publication(pool, job, owner).await?;
+                    return Ok(());
+                }
                 Err(error) => {
                     let code = if matches!(
                         error,

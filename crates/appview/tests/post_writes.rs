@@ -453,8 +453,8 @@ impl Fixture {
         }
     }
 
-    async fn post(&self) -> (StatusCode, Value) {
-        let request = Request::builder()
+    fn post_request(&self) -> Request {
+        Request::builder()
             .method("POST")
             .uri("/xrpc/at.motet.pilot.createPost")
             .header(header::ORIGIN, ORIGIN)
@@ -463,8 +463,16 @@ impl Fixture {
             .body(Body::from(
                 json!({"world":WORLD,"scene":SCENE,"body":"Hello", "register":"in-character"}).to_string(),
             ))
-            .expect("request");
-        let response = self.router.clone().oneshot(request).await.expect("AppView response");
+            .expect("request")
+    }
+
+    async fn post(&self) -> (StatusCode, Value) {
+        let response = self
+            .router
+            .clone()
+            .oneshot(self.post_request())
+            .await
+            .expect("AppView response");
         let status = response.status();
         let body = to_bytes(response.into_body(), 64 * 1024).await.expect("response body");
         (status, serde_json::from_slice(&body).expect("response JSON"))
@@ -537,6 +545,98 @@ async fn fault_failed_pds_write_finishes_failed_without_calling_tenor() {
     assert_eq!(
         publication::drain(&fixture.tenor).await.expect("publication").published,
         0
+    );
+}
+
+/// A busy cross-instance refresh lock is not a failed PDS write. The queued
+/// post must wait without sending anything, then publish once the grant is
+/// refreshed; otherwise ordinary session contention loses an author's post.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_busy_session_retries_the_unsubmitted_pds_write() {
+    let mut fixture = Fixture::new(false).await;
+    let mut grant = fixture
+        .store
+        .get_session::<Grant>(&fixture.cookie)
+        .await
+        .expect("read grant")
+        .expect("live grant")
+        .grant;
+    grant.expires_at = Utc::now().timestamp() - 1;
+    fixture.cookie = fixture
+        .store
+        .create_session(&grant, Utc::now() + ChronoDuration::hours(1))
+        .await
+        .expect("expired access token session");
+    let reference = SessionRef::from_cookie(&fixture.cookie).expect("session reference");
+    let bytes: [u8; 8] = reference
+        .as_bytes()
+        .get(..8)
+        .expect("reference prefix")
+        .try_into()
+        .expect("eight bytes");
+    let lock_key = i64::from_be_bytes(bytes);
+    let mut lock = fixture.pool.begin().await.expect("lock transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(lock_key)
+        .execute(&mut *lock)
+        .await
+        .expect("hold another instance's session lock");
+    let request = fixture.post_request();
+    let router = fixture.router.clone();
+    let request_task = tokio::spawn(async move { router.oneshot(request).await.expect("AppView response") });
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            // Park the retry until this test's other instance refreshes the grant.
+            let parked: Option<uuid::Uuid> = sqlx::query_scalar(
+                "UPDATE service.outbox SET next_attempt_at = clock_timestamp() + interval '1 hour' \
+                 WHERE state = 'queued' AND payload->>'stage' = 'publish' AND attempts > 0 \
+                   AND lease_owner IS NULL RETURNING id",
+            )
+            .fetch_optional(&fixture.pool)
+            .await
+            .expect("park unpublished retry");
+            if parked.is_some() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("busy session rescheduled the post");
+    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 0);
+    assert!(fixture.network.submissions.lock().expect("submissions").is_empty());
+    assert!(
+        !request_task.is_finished(),
+        "contention must not return a false PDS failure"
+    );
+    lock.commit().await.expect("release session lock");
+    fixture
+        .store
+        .refresh_by_ref(&reference, 0, |mut grant: Grant| async move {
+            grant.expires_at = Utc::now().timestamp() + 600;
+            Ok::<_, ()>(grant)
+        })
+        .await
+        .expect("other instance refreshes grant")
+        .expect("session remains live");
+    fixture.network.visible.store(true, Ordering::SeqCst);
+    sqlx::query("UPDATE service.outbox SET next_attempt_at = clock_timestamp()")
+        .execute(&fixture.pool)
+        .await
+        .expect("make retry due");
+    let response = tokio::time::timeout(Duration::from_secs(10), request_task)
+        .await
+        .expect("post completes")
+        .expect("request task");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 64 * 1024).await.expect("body")).expect("post response");
+    assert_eq!(body["status"], "admitted");
+    assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        publication::drain(&fixture.tenor).await.expect("publication").published,
+        1
     );
 }
 
