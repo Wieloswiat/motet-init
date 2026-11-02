@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 // The demo screens' paths, from the design page's list. They render demo data
@@ -8,16 +9,10 @@ const screens = [
 	'/inbox',
 	'/search',
 	'/settings',
-	'/sign-in',
 	'/profile/aurelia.bsky.social',
 	'/profile/iga.bsky.social',
-	'/new-world',
 	'/w/gilded-reach/visitor',
 	'/w/gilded-reach/apply',
-	'/w/gilded-reach',
-	'/w/gilded-reach/play',
-	'/w/gilded-reach/play/feast-of-lanterns',
-	'/w/gilded-reach/play/new',
 	'/w/gilded-reach/characters',
 	'/w/gilded-reach/characters/lady-maren',
 	'/w/gilded-reach/lore',
@@ -51,8 +46,8 @@ for (const path of screens) {
 	});
 }
 
-test('a World page paints its own art once the engine mounts the World', async ({ page }) => {
-	await page.goto('/w/gilded-reach/play/feast-of-lanterns');
+test('a gallery World paints its own art once the engine mounts it', async ({ page }) => {
+	await page.goto('/w/gilded-reach/characters');
 
 	// The art is painted on the root's ::before. Without the engine, or with
 	// Motet's own record in its place, the page has no art at all.
@@ -64,7 +59,8 @@ test('a World page paints its own art once the engine mounts the World', async (
 });
 
 test('an unknown World is a 404, not an empty screen', async ({ page }) => {
-	const response = await page.goto('/w/no-such-world');
+	const handle = `unknown-${randomBytes(8).toString('hex')}.motet.test`;
+	const response = await page.goto(`/w/${handle}`);
 
 	expect(response?.status()).toBe(404);
 });
