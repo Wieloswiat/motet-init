@@ -36,7 +36,10 @@ defaults:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # A cold Nix store builds the dependency artifacts (about 30 minutes)
+    # before clippy and the tests (about 40). A cancelled run saves no cache,
+    # so a limit below a cold build would keep every later run cold too.
+    timeout-minutes: 120
     steps:
       # The runner's preinstalled SDKs leave about 14 GB free, and the Nix
       # store plus the archive cache-nix-action writes when saving it need
