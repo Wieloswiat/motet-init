@@ -164,6 +164,10 @@ in
   processes.caddy = {
     after = [ "devenv:processes:motet-dns" ];
     exec = "exec ${lib.getExe pkgs.caddy} run --config ${./Caddyfile} --adapter caddyfile";
+    env = {
+      XDG_CONFIG_HOME = "${config.devenv.state}/caddy/config";
+      XDG_DATA_HOME = "${config.devenv.state}/caddy/data";
+    };
     # Backends may still be starting; readiness only requires the TLS listener.
     ready = {
       exec = "${pkgs.bash}/bin/bash -c 'exec 3<>/dev/tcp/127.0.0.1/443' ";
