@@ -1,9 +1,10 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { decodeScene } from './records.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-	let worldPath = $derived(`/w/${encodeURIComponent(data.world.did)}`);
+	let worldParam = $derived(encodeURIComponent(data.world.did));
 </script>
 
 <svelte:head>
@@ -12,7 +13,9 @@
 
 <main class="m-world__page">
 	<nav aria-label="World navigation">
-		<a href={worldPath}>{data.world.displayName ?? data.world.handle ?? data.world.did}</a>
+		<a href={resolve('/w/[world]', { world: worldParam })}
+			>{data.world.displayName ?? data.world.handle ?? data.world.did}</a
+		>
 	</nav>
 	<header class="scene-list-heading">
 		<div>
@@ -20,9 +23,12 @@
 			<p>Public scenes in this World.</p>
 		</div>
 		{#if data.session}
-			<a class="m-button m-button--variant_filled" href={`${worldPath}/play/new`}>Open scene</a>
+			<a
+				class="m-button m-button--variant_filled"
+				href={resolve('/w/[world]/play/new', { world: worldParam })}>Open scene</a
+			>
 		{:else}
-			<a href={`/sign-in?returnTo=${encodeURIComponent(`${worldPath}/play/new`)}`}>
+			<a href={resolve(`/sign-in?returnTo=${encodeURIComponent(`/w/${worldParam}/play/new`)}`)}>
 				Sign in to open a scene
 			</a>
 		{/if}
@@ -36,7 +42,10 @@
 				{@const scene = decodeScene(record, data.world.did)}
 				<li>
 					{#if scene}
-						<a href={`${worldPath}/play/${encodeURIComponent(scene.key)}`}>{scene.title}</a>
+						<a href={resolve('/w/[world]/play/[scene]', {
+							world: worldParam,
+							scene: encodeURIComponent(scene.key)
+						})}>{scene.title}</a>
 						<span>{scene.state}</span>
 					{:else}
 						<span>A scene could not be displayed because its record is invalid.</span>
@@ -47,7 +56,9 @@
 	{/if}
 
 	{#if data.listing.cursor}
-		<a href={`?cursor=${encodeURIComponent(data.listing.cursor)}`}>More scenes</a>
+		<a href={resolve(`/w/[world]/play?cursor=${encodeURIComponent(data.listing.cursor)}`, {
+			world: worldParam
+		})}>More scenes</a>
 	{/if}
 </main>
 

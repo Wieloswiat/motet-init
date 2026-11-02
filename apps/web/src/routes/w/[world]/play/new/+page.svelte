@@ -1,19 +1,20 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
 	import { at_motet_pilot_openscene } from '@motet/lexicons';
 	import { procedure } from '#lib/api.js';
 	import { isSceneKey } from '../records.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-	let worldPath = $derived(`/w/${encodeURIComponent(data.world.did)}`);
+	let worldParam = $derived(encodeURIComponent(data.world.did));
 	let title = $state('');
 	let castDraft = $state('');
 	let cast = $state<string[]>([]);
 	let submitting = $state(false);
 	let message = $state('');
 	let opened = $state(false);
-	let openedPath = $state<string | null>(null);
+	let openedScene = $state<string | null>(null);
 
 	function castMember(value: string): string {
 		return value.trim().replace(/^@/, '');
@@ -21,22 +22,29 @@
 
 	function addCast(): void {
 		const member = castMember(castDraft);
+
 		if (!member) {
 			castDraft = '';
+
 			return;
 		}
+
 		if (
 			cast.some((existing) => existing.toLowerCase() === member.toLowerCase()) ||
 			member.toLowerCase() === data.session?.handle.toLowerCase() ||
 			member === data.session?.did
 		) {
 			castDraft = '';
+
 			return;
 		}
+
 		if (cast.length >= 99) {
 			message = 'A scene can have at most 100 cast members, including you.';
+
 			return;
 		}
+
 		cast = [...cast, member];
 		castDraft = '';
 		message = '';
@@ -44,17 +52,22 @@
 
 	async function openScene(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
+
 		if (!data.session || submitting || opened) return;
 		addCast();
+
 		if (castDraft) return;
 		const sceneTitle = title.trim();
+
 		if (!sceneTitle) {
 			message = 'Enter a scene title.';
+
 			return;
 		}
 
 		submitting = true;
 		message = '';
+
 		try {
 			const result = await procedure<
 				at_motet_pilot_openscene.OpenSceneInput,
@@ -64,15 +77,23 @@
 				title: sceneTitle,
 				cast
 			});
+
 			opened = true;
+
 			if (!isSceneKey(result.scene)) {
-				message = 'The scene was opened, but its address was invalid. Look for it in the scene list.';
+				message =
+					'The scene was opened, but its address was invalid. Look for it in the scene list.';
+
 				return;
 			}
-			openedPath = `${worldPath}/play/${encodeURIComponent(result.scene)}`;
-			await goto(openedPath);
+
+			openedScene = result.scene;
+			await goto(resolve('/w/[world]/play/[scene]', {
+				world: worldParam,
+				scene: encodeURIComponent(openedScene)
+			}));
 		} catch (cause) {
-			message = openedPath
+			message = openedScene
 				? 'The scene was opened, but navigation failed. Use the link below to open it.'
 				: cause instanceof Error
 					? `Could not open the scene: ${cause.message}`
@@ -88,7 +109,7 @@
 </svelte:head>
 
 <main class="m-world__page scene-form">
-	<a href={`${worldPath}/play`}>Back to scenes</a>
+	<a href={resolve('/w/[world]/play', { world: worldParam })}>Back to scenes</a>
 	<h1>Open a scene</h1>
 	<p>World: {data.world.displayName ?? data.world.handle ?? data.world.did}</p>
 
@@ -119,7 +140,8 @@
 								type="button"
 								aria-label={`Remove ${member} from cast`}
 								onclick={() => (cast = cast.filter((selected) => selected !== member))}
-							>Remove</button>
+								>Remove</button
+							>
 						</li>
 					{/each}
 				</ul>
@@ -142,14 +164,21 @@
 			</section>
 
 			{#if message}<p role="alert">{message}</p>{/if}
-			{#if openedPath}<a href={openedPath}>Go to scene</a>{/if}
-			<button type="submit" class="m-button m-button--variant_filled" disabled={submitting || opened}>
+			{#if openedScene}<a href={resolve('/w/[world]/play/[scene]', {
+					world: worldParam,
+					scene: encodeURIComponent(openedScene)
+				})}>Go to scene</a>{/if}
+			<button
+				type="submit"
+				class="m-button m-button--variant_filled"
+				disabled={submitting || opened}
+			>
 				{submitting ? 'Opening scene…' : 'Open scene'}
 			</button>
 		</form>
 	{:else}
 		<p>Sign in to open a scene.</p>
-		<a href={`/sign-in?returnTo=${encodeURIComponent(data.returnTo)}`}>Sign in</a>
+		<a href={resolve(`/sign-in?returnTo=${encodeURIComponent(data.returnTo)}`)}>Sign in</a>
 	{/if}
 </main>
 

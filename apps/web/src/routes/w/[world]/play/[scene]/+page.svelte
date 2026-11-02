@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolve } from '$app/paths';
 	import { untrack } from 'svelte';
 	import {
 		at_motet_pilot_createpost,
@@ -10,9 +11,16 @@
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
-	let worldPath = $derived(`/w/${encodeURIComponent(data.world.did)}`);
-	let scenePage = $state<at_motet_pilot_getscene.GetSceneOutput | null>(untrack(() => data.scenePage));
-	let posts = $state<at_motet_pilot_querydefs.AdmittedPost[]>(untrack(() => data.scenePage?.posts ?? []));
+	let worldParam = $derived(encodeURIComponent(data.world.did));
+
+	let scenePage = $state<at_motet_pilot_getscene.GetSceneOutput | null>(
+		untrack(() => data.scenePage)
+	);
+
+	let posts = $state<at_motet_pilot_querydefs.AdmittedPost[]>(
+		untrack(() => data.scenePage?.posts ?? [])
+	);
+
 	let cursor = $state<string | undefined>(untrack(() => data.scenePage?.cursor));
 	let scene = $derived(scenePage ? decodeScene(scenePage.scene, data.world.did) : null);
 	let sceneLoading = $state(false);
@@ -43,6 +51,7 @@
 		body = '';
 		submitting = false;
 		moreLoading = false;
+
 		if (!initialPage) startScenePoll(actor, sceneKey);
 
 		return () => {
@@ -56,14 +65,18 @@
 		return new Promise((resolve) => {
 			if (signal.aborted) {
 				resolve();
+
 				return;
 			}
+
 			const timer = window.setTimeout(finish, ms);
+
 			function finish(): void {
 				window.clearTimeout(timer);
 				signal.removeEventListener('abort', finish);
 				resolve();
 			}
+
 			signal.addEventListener('abort', finish, { once: true });
 		});
 	}
@@ -80,6 +93,7 @@
 				...init,
 				signal: AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, deadline - Date.now()))])
 			});
+
 		return query<at_motet_pilot_getscene.GetSceneOutput>(
 			boundedFetch,
 			at_motet_pilot_getscene.GetSceneNsid,
@@ -98,29 +112,38 @@
 
 	async function waitForScene(actor: string, sceneKey: string, signal: AbortSignal): Promise<void> {
 		const deadline = Date.now() + pollBudget;
+
 		while (!signal.aborted && Date.now() < deadline) {
 			try {
 				const result = await getPage(actor, sceneKey, undefined, signal, deadline);
+
 				if (signal.aborted) return;
 				scenePage = result;
 				posts = result.posts;
 				cursor = result.cursor;
 				sceneLoading = false;
+
 				return;
 			} catch (cause) {
 				if (signal.aborted) return;
+
 				if (Date.now() >= deadline) break;
+
 				if (!(cause instanceof XrpcError && cause.status === 404)) {
 					sceneError = cause instanceof Error ? cause.message : 'Could not load this scene.';
 					sceneLoading = false;
+
 					return;
 				}
 			}
+
 			await pause(Math.min(pollInterval, Math.max(0, deadline - Date.now())), signal);
 		}
+
 		if (!signal.aborted) {
 			sceneLoading = false;
-			sceneError = 'The scene is not available yet. It may still be appearing, or it may not exist. Try again.';
+			sceneError =
+				'The scene is not available yet. It may still be appearing, or it may not exist. Try again.';
 		}
 	}
 
@@ -131,6 +154,7 @@
 		moreController = controller;
 		moreLoading = true;
 		moreError = '';
+
 		try {
 			const result = await getPage(
 				data.world.did,
@@ -139,6 +163,7 @@
 				controller.signal,
 				Date.now() + pollBudget
 			);
+
 			if (controller.signal.aborted) return;
 			posts = [...posts, ...result.posts];
 			cursor = result.cursor;
@@ -160,33 +185,44 @@
 	): Promise<void> {
 		const deadline = Date.now() + pollBudget;
 		let lastError = '';
+
 		while (!signal.aborted && Date.now() < deadline) {
 			try {
 				let pageCursor: string | undefined;
 				let found = false;
 				const collected: at_motet_pilot_querydefs.AdmittedPost[] = [];
+
 				do {
 					const result = await getPage(actor, sceneKey, pageCursor, signal, deadline);
+
 					if (signal.aborted) return;
 					collected.push(...result.posts);
 					found = result.posts.some((post) => post.uri === uri && post.cid === cid);
-					if (result.cursor && result.cursor === pageCursor) throw new Error('Invalid post cursor.');
+
+					if (result.cursor && result.cursor === pageCursor)
+						throw new Error('Invalid post cursor.');
 					pageCursor = result.cursor;
 					scenePage = result;
 				} while (pageCursor && !found && Date.now() < deadline);
+
 				posts = collected;
 				cursor = pageCursor;
+
 				if (found) {
 					postStatus = 'Admitted. Your post is now in the scene.';
+
 					return;
 				}
+
 				lastError = '';
 			} catch (cause) {
 				if (signal.aborted) return;
 				lastError = cause instanceof Error ? cause.message : 'Could not check the scene.';
 			}
+
 			await pause(Math.min(pollInterval, Math.max(0, deadline - Date.now())), signal);
 		}
+
 		if (!signal.aborted) {
 			const detail = lastError ? ` Last check: ${lastError}` : '';
 			postStatus = admitted
@@ -197,12 +233,14 @@
 
 	async function createPost(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
+
 		if (!data.session || !scene || submitting || moreLoading || !body.trim()) return;
 		postController?.abort();
 		const controller = new AbortController();
 		postController = controller;
 		submitting = true;
 		postStatus = '';
+
 		try {
 			const result = await procedure<
 				at_motet_pilot_createpost.CreatePostInput,
@@ -213,19 +251,27 @@
 				body,
 				register
 			});
+
 			if (controller.signal.aborted) return;
+
 			if (result.status === 'refused') {
 				postStatus = `Refused: ${result.reason ?? 'No reason was provided.'}`;
+
 				return;
 			}
+
 			if (result.status !== 'admitted' && result.status !== 'pending') {
-				postStatus = 'The AppView returned an unrecognized admission status. Check the scene before posting again.';
+				postStatus =
+					'The AppView returned an unrecognized admission status. Check the scene before posting again.';
+
 				return;
 			}
+
 			body = '';
-			postStatus = result.status === 'admitted'
-				? 'Admitted. Waiting for the post to appear in the scene.'
-				: 'Pending admission. Waiting for the post to appear in the scene.';
+			postStatus =
+				result.status === 'admitted'
+					? 'Admitted. Waiting for the post to appear in the scene.'
+					: 'Pending admission. Waiting for the post to appear in the scene.';
 			await waitForPost(
 				data.world.did,
 				data.sceneKey,
@@ -236,7 +282,8 @@
 			);
 		} catch (cause) {
 			if (!controller.signal.aborted)
-				postStatus = cause instanceof Error ? `Could not post: ${cause.message}` : 'Could not post.';
+				postStatus =
+					cause instanceof Error ? `Could not post: ${cause.message}` : 'Could not post.';
 		} finally {
 			if (!controller.signal.aborted) submitting = false;
 		}
@@ -248,14 +295,16 @@
 </svelte:head>
 
 <main class="m-world__page scene-page">
-	<a href={`${worldPath}/play`}>Back to scenes</a>
+	<a href={resolve('/w/[world]/play', { world: worldParam })}>Back to scenes</a>
 
 	{#if !scenePage}
 		<h1>Scene is appearing</h1>
 		{#if sceneLoading}<p role="status">Waiting for this scene to appear in the AppView…</p>{/if}
 		{#if sceneError}
 			<p role="alert">{sceneError}</p>
-			<button type="button" onclick={() => startScenePoll(data.world.did, data.sceneKey)}>Try again</button>
+			<button type="button" onclick={() => startScenePoll(data.world.did, data.sceneKey)}
+				>Try again</button
+			>
 		{/if}
 	{:else if !scene}
 		<h1>Scene unavailable</h1>
@@ -269,7 +318,7 @@
 		<section aria-labelledby="cast-heading">
 			<h2 id="cast-heading">Cast</h2>
 			<ul>
-				{#each scene.cast as member}
+				{#each scene.cast as member, index (`${member}:${index}`)}
 					<li><span>{member}</span>{member === scene.openedBy ? ' — opener' : ''}</li>
 				{/each}
 			</ul>
@@ -278,7 +327,7 @@
 		<section aria-labelledby="posts-heading">
 			<h2 id="posts-heading">Admitted posts</h2>
 			{#if posts.length === 0}<p>No posts have been admitted yet.</p>{/if}
-			{#each posts as post}
+			{#each posts as post, index (`${post.uri}:${post.cid}:${index}`)}
 				{@const content = decodePost(post)}
 				<article class="admitted-post" aria-label={`Post by ${post.author}`}>
 					<header>
@@ -287,7 +336,13 @@
 						<span>Epoch {post.place.epoch}</span>
 					</header>
 					{#if content}
-						<p>{content.register === 'out-of-character' ? 'Out of character' : content.register === 'in-character' ? 'In character' : content.register}</p>
+						<p>
+							{content.register === 'out-of-character'
+								? 'Out of character'
+								: content.register === 'in-character'
+									? 'In character'
+									: content.register}
+						</p>
 						<pre>{content.body}</pre>
 						<time datetime={content.createdAt}>{content.createdAt}</time>
 					{:else}
@@ -315,13 +370,17 @@
 					<label for="post-body">Write a post</label>
 					<textarea id="post-body" bind:value={body} maxlength="65536" rows="8" required></textarea>
 					<p>Posts are shown as Typst source.</p>
-					<button type="submit" class="m-button m-button--variant_filled" disabled={submitting || moreLoading}>
+					<button
+						type="submit"
+						class="m-button m-button--variant_filled"
+						disabled={submitting || moreLoading}
+					>
 						{submitting ? 'Posting…' : 'Post'}
 					</button>
 				</form>
 			{:else}
 				<p>Sign in to write a post.</p>
-				<a href={`/sign-in?returnTo=${encodeURIComponent(data.returnTo)}`}>Sign in</a>
+				<a href={resolve(`/sign-in?returnTo=${encodeURIComponent(data.returnTo)}`)}>Sign in</a>
 			{/if}
 			{#if postStatus}<p role="status">{postStatus}</p>{/if}
 		</section>
