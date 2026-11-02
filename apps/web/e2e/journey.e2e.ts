@@ -94,7 +94,8 @@ async function signUp(page: Page): Promise<Account> {
 	await page.goto('/sign-in');
 
 	const start = page.waitForResponse(
-		(response) => response.request().method() === 'POST' && response.url() === `${app}/oauth/sign-up`,
+		(response) =>
+			response.request().method() === 'POST' && response.url() === `${app}/oauth/sign-up`,
 		{ timeout: interactionTimeout }
 	);
 
@@ -158,7 +159,8 @@ async function signOutAndIn(page: Page, account: Account): Promise<void> {
 	await page.getByLabel('Your handle').fill(account.handle);
 
 	const start = page.waitForResponse(
-		(response) => response.request().method() === 'POST' && response.url() === `${app}/oauth/sign-in`,
+		(response) =>
+			response.request().method() === 'POST' && response.url() === `${app}/oauth/sign-in`,
 		{ timeout: interactionTimeout }
 	);
 
