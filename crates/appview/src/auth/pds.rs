@@ -29,8 +29,8 @@ use super::store::{SessionRef, SessionStore, StoreError};
 
 const GET_SERVICE_AUTH: &str = "com.atproto.server.getServiceAuth";
 const CREATE_RECORD: &str = "com.atproto.repo.createRecord";
-// Keep the requested lifetime inside the receiving service's five-minute cap.
-const SERVICE_TOKEN_LIFETIME_SECS: i64 = 60;
+// Leave room for modest clock skew within the service's one-minute cap.
+const SERVICE_TOKEN_LIFETIME_SECS: i64 = 55;
 // Refresh before a token expires while a request is in flight.
 const REFRESH_MARGIN_SECS: i64 = 30;
 

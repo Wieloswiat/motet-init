@@ -33,6 +33,7 @@ async fn setup() -> (SessionStore, axum::Router) {
         Arc::new(api::State {
             pool,
             auth: Arc::clone(&oauth),
+            client: support::client(),
         }),
         oauth.authenticate(service_auth),
     )
@@ -70,6 +71,61 @@ fn query(path: &str, values: &[(&str, &str)]) -> String {
     format!("{}?{}", url.path(), url.query().expect("query"))
 }
 
+fn form_request(path: &str, origin: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(fields.iter().copied())
+        .finish();
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(origin) = origin {
+        request = request.header(header::ORIGIN, origin);
+    }
+    request.body(Body::from(body)).expect("form request")
+}
+
+/// An attacker must not start a login in a victim's browser or complete one
+/// without the same-origin POST; otherwise login CSRF can replace its account.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn cross_origin_login_starts_and_unbound_callbacks_are_refused() {
+    let (_store, router) = setup().await;
+    for path in ["/oauth/sign-in", "/oauth/sign-up"] {
+        for origin in [
+            None,
+            Some("https://attacker.example"),
+            Some("https://sibling.motet.example"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(form_request(path, origin, &[("identifier", "attacker.example")]))
+                .await
+                .expect("start response");
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            assert!(response.headers().get(header::SET_COOKIE).is_none());
+        }
+        let response = router.clone().oneshot(request(path, None)).await.expect("GET response");
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+    let state = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
+    let callback = query(
+        "/oauth/callback",
+        &[
+            ("state", state),
+            ("code", "attacker-code"),
+            ("iss", "https://attacker.example"),
+        ],
+    );
+    let cookie = format!("__Host-motet_login_{state}=attacker-binding");
+    let response = router
+        .oneshot(request(&callback, Some(&cookie)))
+        .await
+        .expect("callback response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.headers().get(header::SET_COOKIE).is_none());
+}
+
 /// An attacker must not turn the post-login redirect into a foreign origin,
 /// including with authority syntax or encoded path separators.
 #[tokio::test]
@@ -84,8 +140,8 @@ async fn login_rejects_foreign_or_ambiguous_return_paths_before_contacting_pds()
         "/%5cattacker.example/",
         "/%0d%0aLocation: https://attacker.example/",
     ] {
-        let uri = query("/oauth/sign-up", &[("returnTo", path)]);
-        let response = router.clone().oneshot(request(&uri, None)).await.expect("response");
+        let request = form_request("/oauth/sign-up", Some(ORIGIN), &[("returnTo", path)]);
+        let response = router.clone().oneshot(request).await.expect("response");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         assert!(response.headers().get(header::LOCATION).is_none());
     }

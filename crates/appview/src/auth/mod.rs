@@ -15,7 +15,7 @@ use atproto_identity::key::{KeyData, KeyType};
 use atproto_identity::traits::IdentityResolver;
 use atproto_oauth::workflow::{OAuthClient, generate_state};
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -160,8 +160,8 @@ impl Server {
         axum::Router::new()
             .route("/oauth/client-metadata.json", get(metadata))
             .route("/oauth/jwks.json", get(jwks))
-            .route("/oauth/sign-in", get(sign_in))
-            .route("/oauth/sign-up", get(sign_up))
+            .route("/oauth/sign-in", post(sign_in))
+            .route("/oauth/sign-up", post(sign_up))
             .route("/oauth/callback", get(callback))
             .route("/oauth/sign-out", post(sign_out))
             .layer(axum::middleware::map_response(browser_response))
@@ -234,7 +234,7 @@ async fn jwks(State(server): State<Arc<Server>>) -> Json<Value> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StartQuery {
+struct StartForm {
     identifier: Option<String>,
     return_to: Option<String>,
 }
@@ -245,7 +245,14 @@ struct PendingLogin {
     return_to: String,
 }
 
-async fn sign_in(State(server): State<Arc<Server>>, Query(query): Query<StartQuery>) -> Result<Response, Error> {
+async fn sign_in(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Form(query): Form<StartForm>,
+) -> Result<Response, Error> {
+    if !trusted_origin(&headers, &server.origin) {
+        return Err(Error::Forbidden);
+    }
     let identifier = query
         .identifier
         .as_deref()
@@ -254,7 +261,14 @@ async fn sign_in(State(server): State<Arc<Server>>, Query(query): Query<StartQue
     start(&server, Some(identifier), query.return_to.as_deref(), false).await
 }
 
-async fn sign_up(State(server): State<Arc<Server>>, Query(query): Query<StartQuery>) -> Result<Response, Error> {
+async fn sign_up(
+    State(server): State<Arc<Server>>,
+    headers: HeaderMap,
+    Form(query): Form<StartForm>,
+) -> Result<Response, Error> {
+    if !trusted_origin(&headers, &server.origin) {
+        return Err(Error::Forbidden);
+    }
     if query.identifier.is_some() {
         return Err(Error::Invalid);
     }
@@ -288,7 +302,7 @@ async fn start(
         )
         .await
         .map_err(|_| Error::Internal)?;
-    let mut response = Redirect::temporary(&started.location).into_response();
+    let mut response = Json(json!({"authorizeUrl": started.location})).into_response();
     set_cookie(&mut response, &name, &binding, LOGIN_SECONDS)?;
     Ok(no_store(response))
 }
@@ -305,6 +319,7 @@ async fn callback(
     headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Result<Response, Error> {
+    let previous = unique_cookie(&headers, SESSION_COOKIE).map_err(|()| Error::Invalid)?;
     let name = login_cookie_name(&query.state)?;
     let binding = unique_cookie(&headers, &name)
         .map_err(|()| Error::Invalid)?
@@ -325,6 +340,9 @@ async fn callback(
         .create_session(&grant, Utc::now() + Duration::days(SESSION_DAYS))
         .await
         .map_err(|_| Error::Internal)?;
+    if let Some(previous) = previous {
+        server.pds.revoke(previous).await.map_err(|_| Error::Internal)?;
+    }
     let reference = SessionRef::from_cookie(&cookie).ok_or(Error::Internal)?;
     crate::outbox::resume_account(&server.pool, &grant.did, &reference)
         .await

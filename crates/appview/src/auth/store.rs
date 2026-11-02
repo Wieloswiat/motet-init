@@ -4,14 +4,17 @@
 //! the grant and pending login are sealed under an operator-provided key and
 //! bound to their row and purpose. No secret is included in errors or `Debug`.
 //!
-//! Refresh holds a separate row lock while an independently committed poison
-//! marker is present. If a task, process or database connection disappears
+//! Refresh holds a per-session transaction advisory lock while an independently
+//! committed poison marker is present. If a task or connection disappears
 //! after the PDS may have consumed the token, the next reader removes the
 //! poisoned session rather than ever returning that token again.
 
+use std::collections::{HashMap, hash_map::Entry};
 use std::fmt;
 use std::future::Future;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -32,6 +35,11 @@ const COOKIE_LEN: usize = 43;
 const FORMAT: u8 = 1;
 const SESSION_PURPOSE: &[u8; 28] = b"motet/appview/oauth/session\0";
 const PENDING_PURPOSE: &[u8; 28] = b"motet/appview/oauth/pending\0";
+const MAX_WAITERS_PER_SESSION: usize = 32;
+const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const POOL_TIMEOUT: Duration = Duration::from_secs(2);
+const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+const MAX_BACKOFF: Duration = Duration::from_millis(200);
 
 type RowId = [u8; 32];
 type StoredSession = (Vec<u8>, i64, bool);
@@ -88,6 +96,8 @@ pub enum StoreError {
     Refresh,
     #[error("the session generation moved backwards")]
     Generation,
+    #[error("the OAuth session is busy; try again")]
+    Busy,
 }
 
 /// A decrypted session and the generation observed by its reader.
@@ -113,6 +123,7 @@ impl<T> fmt::Debug for Session<T> {
 pub struct SessionStore {
     pool: PgPool,
     locks: PgPool,
+    waiters: Arc<Mutex<HashMap<RowId, usize>>>,
     cipher: XChaCha20Poly1305,
 }
 
@@ -126,15 +137,16 @@ impl SessionStore {
     /// Uses a key supplied by the operator; do not store it in PostgreSQL.
     #[must_use]
     pub fn new(pool: PgPool, key: [u8; 32]) -> Self {
-        // Waiters must not consume the connections needed to commit the poison
-        // marker or replacement grant. A separate small pool avoids deadlock
-        // even when every coordinator row has a waiting reader.
+        // A held coordinator transaction must not consume a connection needed
+        // to commit the poison marker or replacement grant.
         let locks = PgPoolOptions::new()
             .max_connections(5)
+            .acquire_timeout(POOL_TIMEOUT)
             .connect_lazy_with((*pool.connect_options()).clone());
         Self {
             pool,
             locks,
+            waiters: Arc::new(Mutex::new(HashMap::new())),
             cipher: XChaCha20Poly1305::new((&key).into()),
         }
     }
@@ -185,7 +197,8 @@ impl SessionStore {
     }
 
     /// Reads a live grant. An active refresh is awaited rather than mistaken
-    /// for a logout; an abandoned refresh invalidates the session.
+    /// for a logout; an abandoned refresh invalidates the session. If the
+    /// wait limit is reached, it returns [`StoreError::Busy`] without a grant.
     pub async fn get_session<T: DeserializeOwned>(&self, cookie: &str) -> Result<Option<Session<T>>, StoreError> {
         let Some(reference) = SessionRef::from_cookie(cookie) else {
             return Ok(None);
@@ -229,6 +242,8 @@ impl SessionStore {
     /// cancelled after the marker commits, the next reader invalidates it.
     /// If the replacement commit is ambiguous, only a newer committed grant
     /// read back from PostgreSQL may be returned.
+    /// Contention past the bounded wait returns [`StoreError::Busy`], without
+    /// changing or exposing the grant.
     pub async fn refresh<T, F, Fut, E>(
         &self,
         cookie: &str,
@@ -364,12 +379,13 @@ impl SessionStore {
 
     /// Immediately revokes a session and takes its latest safe grant for
     /// remote revocation. A refresh already in progress finishes first; if
-    /// it was abandoned, its possibly consumed grant is never returned.
+    /// it was abandoned, its possibly consumed grant is never returned. A
+    /// caller may retry after a busy error to finish an earlier revocation.
     pub async fn take_session<T: DeserializeOwned>(&self, cookie: &str) -> Result<Option<Session<T>>, StoreError> {
         let Some(id) = cookie_id(cookie) else {
             return Ok(None);
         };
-        let marked = sqlx::query("UPDATE service.oauth_sessions SET revoked = true WHERE id = $1 AND NOT revoked")
+        let marked = sqlx::query("UPDATE service.oauth_sessions SET revoked = true WHERE id = $1")
             .bind(id.as_slice())
             .execute(&self.pool)
             .await?;
@@ -442,8 +458,8 @@ impl SessionStore {
     /// Removes expired sessions and pending logins and returns the number
     /// removed. Expiry is enforced by reads even when cleanup has not run.
     pub async fn expire(&self) -> Result<u64, StoreError> {
-        // Commit session deletion before touching coordinator rows: a refresh
-        // may hold one while finishing a separate grant update.
+        // Delete sessions first; marker cleanup must never remove a live row's
+        // coordinator, including one created by a concurrent transaction.
         let sessions = sqlx::query("DELETE FROM service.oauth_sessions WHERE expires_at <= clock_timestamp()")
             .execute(&self.pool)
             .await?
@@ -453,8 +469,10 @@ impl SessionStore {
             .await?
             .rows_affected();
         sqlx::query(
-            "DELETE FROM service.oauth_session_locks AS l \
-             WHERE NOT EXISTS (SELECT 1 FROM service.oauth_sessions AS s WHERE s.id = l.id)",
+            "DELETE FROM service.oauth_session_locks AS l WHERE l.id IN ( \
+             SELECT candidate.id FROM service.oauth_session_locks AS candidate \
+             WHERE NOT EXISTS (SELECT 1 FROM service.oauth_sessions AS s WHERE s.id = candidate.id) \
+             FOR UPDATE OF candidate SKIP LOCKED)",
         )
         .execute(&self.locks)
         .await?;
@@ -472,16 +490,55 @@ impl SessionStore {
     }
 
     async fn lock_session(&self, id: &RowId) -> Result<Option<Transaction<'static, Postgres>>, StoreError> {
-        let mut tx = self.locks.begin().await?;
-        let row: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM service.oauth_session_locks WHERE id = $1 FOR UPDATE")
-            .bind(id.as_slice())
-            .fetch_optional(&mut *tx)
-            .await?;
-        if row.is_none() {
-            tx.commit().await?;
-            return Ok(None);
-        }
-        Ok(Some(tx))
+        let waiter = SessionWaiter::register(&self.waiters, id)?;
+        // Two-int advisory keys are disjoint from the bigint outbox namespace.
+        let result = tokio::time::timeout(LOCK_TIMEOUT, async {
+            let mut backoff = INITIAL_BACKOFF;
+            loop {
+                let mut tx = self.locks.begin().await?;
+                let row: Option<(i64,)> =
+                    sqlx::query_as("SELECT advisory_key FROM service.oauth_session_locks WHERE id = $1")
+                        .bind(id.as_slice())
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                let Some((key,)) = row else {
+                    tx.commit().await?;
+                    return Ok(None);
+                };
+                let [a, b, c, d, e, f, g, h] = key.to_be_bytes();
+                let (acquired,): (bool,) = sqlx::query_as("SELECT pg_try_advisory_xact_lock($1, $2)")
+                    .bind(i32::from_be_bytes([a, b, c, d]))
+                    .bind(i32::from_be_bytes([e, f, g, h]))
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if acquired {
+                    // Migration 0002's row-lock comment predates the advisory
+                    // lock cutover. Pin this exact marker without waiting so a
+                    // deleted row cannot be recreated under a different key.
+                    let row: Option<(i32,)> = sqlx::query_as(
+                        "SELECT 1 FROM service.oauth_session_locks \
+                         WHERE id = $1 AND advisory_key = $2 FOR KEY SHARE SKIP LOCKED",
+                    )
+                    .bind(id.as_slice())
+                    .bind(key)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    if row.is_none() {
+                        tx.commit().await?;
+                        return Ok(None);
+                    }
+                    return Ok(Some(tx));
+                }
+                // Never occupy a connection while another session holder runs.
+                tx.rollback().await?;
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+        })
+        .await
+        .map_err(|_| StoreError::Busy)?;
+        drop(waiter);
+        result
     }
 
     fn open_session<T: DeserializeOwned>(&self, id: &RowId, row: StoredSession) -> Result<Session<T>, StoreError> {
@@ -524,6 +581,40 @@ impl SessionStore {
             .decrypt_in_place_detached(&XNonce::from(nonce), &aad, ciphertext, &Tag::from(tag))
             .map_err(|_| StoreError::Unseal)?;
         serde_json::from_slice(ciphertext).map_err(|_| StoreError::Unseal)
+    }
+}
+
+// The guard is dropped on success, error, timeout and cancellation. Its
+// synchronous mutex is held only for the count update, never across an await.
+struct SessionWaiter<'a> {
+    waiters: &'a Mutex<HashMap<RowId, usize>>,
+    id: RowId,
+}
+
+impl<'a> SessionWaiter<'a> {
+    fn register(waiters: &'a Mutex<HashMap<RowId, usize>>, id: &RowId) -> Result<Self, StoreError> {
+        let mut counts = waiters.lock().map_err(|_| StoreError::Busy)?;
+        let count = counts.entry(*id).or_default();
+        if *count >= MAX_WAITERS_PER_SESSION {
+            return Err(StoreError::Busy);
+        }
+        *count += 1;
+        Ok(Self { waiters, id: *id })
+    }
+}
+
+impl Drop for SessionWaiter<'_> {
+    fn drop(&mut self) {
+        let Ok(mut counts) = self.waiters.lock() else {
+            return;
+        };
+        if let Entry::Occupied(mut entry) = counts.entry(self.id) {
+            if *entry.get() == 1 {
+                entry.remove();
+            } else {
+                *entry.get_mut() -= 1;
+            }
+        }
     }
 }
 

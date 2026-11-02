@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::PgListener;
-use tokio::sync::{Notify, oneshot};
+use tokio::sync::{Barrier, Notify, mpsc, oneshot};
 
 const KEY: [u8; 32] = [91; 32];
 
@@ -37,7 +37,7 @@ fn row_id(secret: &str) -> Vec<u8> {
 }
 
 // A pair of instances must not send the same rotating refresh token twice.
-// Without a cross-instance row lock and generation reread, both would send R0.
+// Without a cross-instance advisory lock and generation reread, both would send R0.
 #[tokio::test]
 #[ignore = "integration: PostgreSQL"]
 async fn concurrent_refresh_uses_each_rotating_token_once() {
@@ -104,8 +104,258 @@ async fn concurrent_refresh_uses_each_rotating_token_once() {
     }
 }
 
-// A process cancellation after sending R0 is ambiguous. Rolling back the row
-// lock must not roll back the durable marker and make R0 usable again.
+// A stalled refresh must not monopolize the lock pool. If waiters held
+// connections while blocked on A, unrelated B could not refresh.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn stalled_session_waiters_do_not_block_another_session() {
+    const WAITERS: usize = 12;
+    let (_, store) = setup().await;
+    let expires = Utc::now() + Duration::hours(1);
+    let cookie_a = store.create_session(&grant("A0"), expires).await.expect("session A");
+    let cookie_b = store.create_session(&grant("B0"), expires).await.expect("session B");
+    let reference_a = SessionRef::from_cookie(&cookie_a).expect("reference A");
+    let reference_b = SessionRef::from_cookie(&cookie_b).expect("reference B");
+    let release = Arc::new(Notify::new());
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let active = {
+        let store = store.clone();
+        let release = Arc::clone(&release);
+        tokio::spawn(async move {
+            store
+                .refresh_by_ref(&reference_a, 0, move |mut old: Value| async move {
+                    entered_tx.send(()).expect("refresh observer");
+                    release.notified().await;
+                    old["refresh_token"] = json!("A1");
+                    Ok::<_, ()>(old)
+                })
+                .await
+        })
+    };
+    entered_rx.await.expect("session A refresh started");
+    let started = Arc::new(Barrier::new(WAITERS + 1));
+    let mut waiters = Vec::with_capacity(WAITERS);
+    for _ in 0..WAITERS {
+        let store = store.clone();
+        let started = Arc::clone(&started);
+        waiters.push(tokio::spawn(async move {
+            let request = store.refresh_by_ref(&reference_a, 0, |old: Value| async move { Ok::<_, ()>(old) });
+            tokio::pin!(request);
+            tokio::select! {
+                biased;
+                result = &mut request => {
+                    started.wait().await;
+                    result
+                }
+                () = std::future::ready(()) => {
+                    started.wait().await;
+                    request.await
+                }
+            }
+        }));
+    }
+    // Every waiter has polled its lock request before B starts.
+    started.wait().await;
+    let refreshed_b = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        store.refresh_by_ref(&reference_b, 0, |mut old: Value| async move {
+            old["refresh_token"] = json!("B1");
+            Ok::<_, ()>(old)
+        }),
+    )
+    .await
+    .expect("session B was not blocked by A")
+    .expect("refresh B")
+    .expect("live session B");
+    assert_eq!(refreshed_b.grant["refresh_token"], "B1");
+
+    // Marker cleanup must not remove either live session's coordinator.
+    let grant_c = grant("C0");
+    let (created, expired) = tokio::join!(store.create_session(&grant_c, expires), store.expire());
+    let cookie_c = created.expect("concurrent session C");
+    assert_eq!(expired.expect("concurrent cleanup"), 0);
+    let reference_c = SessionRef::from_cookie(&cookie_c).expect("reference C");
+    assert!(
+        store
+            .refresh_by_ref(&reference_c, 0, |old: Value| async move { Ok::<_, ()>(old) })
+            .await
+            .expect("session C refresh")
+            .is_some()
+    );
+
+    release.notify_one();
+    assert!(active.await.expect("active task").expect("refresh A").is_some());
+    for waiter in waiters {
+        let session = waiter
+            .await
+            .expect("waiter task")
+            .expect("waiter refresh")
+            .expect("session A survived cleanup");
+        assert_eq!(session.grant["refresh_token"], "A1");
+    }
+}
+
+// Expiring a session during its remote refresh must not make cleanup wait on
+// the pinned coordinator, and a completed refresh must not revive the session.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn cleanup_skips_an_expired_session_with_a_stalled_refresh() {
+    let (pool, store) = setup().await;
+    let expires = Utc::now() + Duration::hours(1);
+    let cookie_a = store.create_session(&grant("A0"), expires).await.expect("session A");
+    let cookie_b = store.create_session(&grant("B0"), expires).await.expect("session B");
+    let reference_a = SessionRef::from_cookie(&cookie_a).expect("reference A");
+    let reference_b = SessionRef::from_cookie(&cookie_b).expect("reference B");
+    let release = Arc::new(Notify::new());
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let active = {
+        let store = store.clone();
+        let release = Arc::clone(&release);
+        tokio::spawn(async move {
+            store
+                .refresh_by_ref(&reference_a, 0, move |old: Value| async move {
+                    entered_tx.send(()).expect("refresh observer");
+                    release.notified().await;
+                    Ok::<_, ()>(old)
+                })
+                .await
+        })
+    };
+    entered_rx.await.expect("refresh started");
+    sqlx::query("UPDATE service.oauth_sessions SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1")
+        .bind(reference_a.as_bytes())
+        .execute(&pool)
+        .await
+        .expect("expire active session");
+    let removed = tokio::time::timeout(std::time::Duration::from_secs(3), store.expire())
+        .await
+        .expect("cleanup did not wait for the remote PDS")
+        .expect("cleanup");
+    assert_eq!(removed, 1);
+    let (marker_exists,): (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM service.oauth_session_locks WHERE id = $1)")
+            .bind(reference_a.as_bytes())
+            .fetch_one(&pool)
+            .await
+            .expect("pinned marker");
+    assert!(marker_exists);
+    assert!(
+        store
+            .refresh_by_ref(&reference_b, 0, |old: Value| async move { Ok::<_, ()>(old) })
+            .await
+            .expect("independent refresh")
+            .is_some()
+    );
+    release.notify_one();
+    assert!(active.await.expect("active task").expect("expired refresh").is_none());
+    assert!(
+        store
+            .get_session_by_ref::<Value>(&reference_a)
+            .await
+            .expect("expired session")
+            .is_none()
+    );
+    store.expire().await.expect("remove released marker");
+    let (marker_exists,): (bool,) =
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM service.oauth_session_locks WHERE id = $1)")
+            .bind(reference_a.as_bytes())
+            .fetch_one(&pool)
+            .await
+            .expect("released marker");
+    assert!(!marker_exists);
+}
+
+// A stalled refresh must not admit unbounded local waiters. Cancelling a
+// waiter must release its slot instead of permanently exhausting that bound.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn stalled_session_bounds_waiters_and_cancellation_releases_a_slot() {
+    const CONTENDERS: usize = 40;
+    let (_, store) = setup().await;
+    let cookie = store
+        .create_session(&grant("R0"), Utc::now() + Duration::hours(1))
+        .await
+        .expect("session");
+    let reference = SessionRef::from_cookie(&cookie).expect("reference");
+    let release = Arc::new(Notify::new());
+    let (entered_tx, entered_rx) = oneshot::channel();
+    let active = {
+        let store = store.clone();
+        let release = Arc::clone(&release);
+        tokio::spawn(async move {
+            store
+                .refresh_by_ref(&reference, 0, move |mut old: Value| async move {
+                    entered_tx.send(()).expect("refresh observer");
+                    release.notified().await;
+                    old["refresh_token"] = json!("R1");
+                    Ok::<_, ()>(old)
+                })
+                .await
+        })
+    };
+    entered_rx.await.expect("refresh started");
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let mut tasks = Vec::with_capacity(CONTENDERS);
+    for index in 0..CONTENDERS {
+        let store = store.clone();
+        let started = started_tx.clone();
+        tasks.push(Some(tokio::spawn(async move {
+            let request = store.refresh_by_ref(&reference, 0, |old: Value| async move { Ok::<_, ()>(old) });
+            tokio::pin!(request);
+            tokio::select! {
+                biased;
+                result = &mut request => {
+                    started.send((index, false)).expect("waiter observer");
+                    result
+                }
+                () = std::future::ready(()) => {
+                    started.send((index, true)).expect("waiter observer");
+                    request.await
+                }
+            }
+        })));
+    }
+    drop(started_tx);
+    let mut cancellable = None;
+    let mut refused = 0;
+    for _ in 0..CONTENDERS {
+        let (index, pending) = started_rx.recv().await.expect("each contender was polled");
+        if pending {
+            cancellable.get_or_insert(index);
+        } else {
+            refused += 1;
+        }
+    }
+    assert!(refused > 0, "a stalled session must bound its waiters");
+    let canceled = tasks
+        .get_mut(cancellable.expect("at least one waiter"))
+        .and_then(Option::take)
+        .expect("cancellable waiter");
+    canceled.abort();
+    assert!(canceled.await.expect_err("cancelled waiter").is_cancelled());
+
+    let replacement = store.refresh_by_ref(&reference, 0, |old: Value| async move { Ok::<_, ()>(old) });
+    tokio::pin!(replacement);
+    tokio::select! {
+        biased;
+        result = &mut replacement => panic!("cancelled waiter did not free a slot: {result:?}"),
+        () = std::future::ready(()) => {}
+    }
+    release.notify_one();
+    assert!(active.await.expect("active task").expect("refresh").is_some());
+    let recovered = replacement.await.expect("replacement refresh").expect("live session");
+    assert_eq!(recovered.grant["refresh_token"], "R1");
+    for task in tasks.into_iter().flatten() {
+        match task.await.expect("waiter task") {
+            Ok(Some(session)) => assert_eq!(session.grant["refresh_token"], "R1"),
+            Err(StoreError::Busy) => {}
+            result => panic!("unexpected waiter outcome: {result:?}"),
+        }
+    }
+}
+
+// A process cancellation after sending R0 is ambiguous. Releasing the
+// advisory lock must not roll back the durable marker and make R0 usable again.
 #[tokio::test]
 #[ignore = "integration: PostgreSQL"]
 async fn abandoned_refresh_never_returns_the_possibly_consumed_grant() {
@@ -468,6 +718,44 @@ async fn logout_during_refresh_revokes_locally_then_takes_the_rotated_grant() {
             .expect("deleted read")
             .is_none()
     );
+    assert!(
+        store
+            .take_session::<Value>(&cookie)
+            .await
+            .expect("repeat logout")
+            .is_none()
+    );
+}
+
+// Logout may time out after committing revocation. Retrying must be able to
+// take the grant once for remote revocation without making it usable locally.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn fault_interrupted_logout_can_finish_without_reactivating_the_session() {
+    let (pool, store) = setup().await;
+    let cookie = store
+        .create_session(&grant("R0"), Utc::now() + Duration::hours(1))
+        .await
+        .expect("session");
+    let reference = SessionRef::from_cookie(&cookie).expect("reference");
+    sqlx::query("UPDATE service.oauth_sessions SET revoked = true WHERE id = $1")
+        .bind(reference.as_bytes())
+        .execute(&pool)
+        .await
+        .expect("interrupted logout committed revocation");
+    assert!(
+        store
+            .get_session_by_ref::<Value>(&reference)
+            .await
+            .expect("revoked read")
+            .is_none()
+    );
+    let taken = store
+        .take_session::<Value>(&cookie)
+        .await
+        .expect("retry logout")
+        .expect("grant for remote revocation");
+    assert_eq!(taken.grant["refresh_token"], "R0");
     assert!(
         store
             .take_session::<Value>(&cookie)
