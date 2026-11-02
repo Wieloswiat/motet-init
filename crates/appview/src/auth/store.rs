@@ -36,6 +36,39 @@ const PENDING_PURPOSE: &[u8; 28] = b"motet/appview/oauth/pending\0";
 type RowId = [u8; 32];
 type StoredSession = (Vec<u8>, i64, bool);
 
+/// A persistent reference to a session, not a browser bearer cookie.
+///
+/// The reference is a hash of the random cookie. Reconstruct it from the
+/// database with [`SessionRef::from_db`] and never send it to a browser.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionRef(RowId);
+
+impl fmt::Debug for SessionRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionRef([redacted])")
+    }
+}
+
+impl SessionRef {
+    /// Hashes a syntactically valid opaque browser cookie.
+    #[must_use]
+    pub fn from_cookie(cookie: &str) -> Option<Self> {
+        cookie_id(cookie).map(Self)
+    }
+
+    /// Restores a previously persisted 32-byte session reference.
+    #[must_use]
+    pub fn from_db(bytes: &[u8]) -> Option<Self> {
+        <RowId>::try_from(bytes).ok().map(Self)
+    }
+
+    /// Returns the persistence-safe reference bytes, never the browser cookie.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// A storage error, with no bearer or cryptographic material in its message.
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -154,22 +187,32 @@ impl SessionStore {
     /// Reads a live grant. An active refresh is awaited rather than mistaken
     /// for a logout; an abandoned refresh invalidates the session.
     pub async fn get_session<T: DeserializeOwned>(&self, cookie: &str) -> Result<Option<Session<T>>, StoreError> {
-        let Some(id) = cookie_id(cookie) else {
+        let Some(reference) = SessionRef::from_cookie(cookie) else {
             return Ok(None);
         };
-        let Some(row) = self.read_session(&id).await? else {
+        self.get_session_by_ref(&reference).await
+    }
+
+    /// Reads a session from its persistent reference, with the same expiry,
+    /// revocation and refresh guarantees as [`Self::get_session`].
+    pub async fn get_session_by_ref<T: DeserializeOwned>(
+        &self,
+        reference: &SessionRef,
+    ) -> Result<Option<Session<T>>, StoreError> {
+        let id = &reference.0;
+        let Some(row) = self.read_session(id).await? else {
             return Ok(None);
         };
         if !row.2 {
-            return self.open_session(&id, row).map(Some);
+            return self.open_session(id, row).map(Some);
         }
-        let Some(mut tx) = self.lock_session(&id).await? else {
+        let Some(mut tx) = self.lock_session(id).await? else {
             return Ok(None);
         };
-        let result = match self.read_session(&id).await? {
-            Some(row) if !row.2 => Some(self.open_session(&id, row)?),
+        let result = match self.read_session(id).await? {
+            Some(row) if !row.2 => Some(self.open_session(id, row)?),
             Some(_) => {
-                invalidate_locked(&mut tx, &id).await?;
+                invalidate_locked(&mut tx, id).await?;
                 None
             }
             None => None,
@@ -197,30 +240,47 @@ impl SessionStore {
         F: FnOnce(T) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
-        let Some(id) = cookie_id(cookie) else {
+        let Some(reference) = SessionRef::from_cookie(cookie) else {
             return Ok(None);
         };
-        let Some(mut tx) = self.lock_session(&id).await? else {
+        self.refresh_by_ref(&reference, observed_generation, refresh).await
+    }
+
+    /// Renews a session by persistent reference with the same serialized,
+    /// fail-closed refresh semantics as [`Self::refresh`].
+    pub async fn refresh_by_ref<T, F, Fut, E>(
+        &self,
+        reference: &SessionRef,
+        observed_generation: i64,
+        refresh: F,
+    ) -> Result<Option<Session<T>>, StoreError>
+    where
+        T: Serialize + DeserializeOwned,
+        F: FnOnce(T) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let id = &reference.0;
+        let Some(mut tx) = self.lock_session(id).await? else {
             return Ok(None);
         };
-        let Some(row) = self.read_session(&id).await? else {
+        let Some(row) = self.read_session(id).await? else {
             tx.commit().await?;
             return Ok(None);
         };
         if row.2 {
-            invalidate_locked(&mut tx, &id).await?;
+            invalidate_locked(&mut tx, id).await?;
             tx.commit().await?;
             return Ok(None);
         }
         if row.1 > observed_generation {
-            let session = self.open_session(&id, row)?;
+            let session = self.open_session(id, row)?;
             tx.commit().await?;
             return Ok(Some(session));
         }
         if row.1 < observed_generation {
             return Err(StoreError::Generation);
         }
-        let grant = self.open_session::<T>(&id, row)?.grant;
+        let grant = self.open_session::<T>(id, row)?.grant;
 
         // This commit precedes the network call. Rolling back the lock
         // transaction can never restore a possibly consumed refresh token.
@@ -237,14 +297,14 @@ impl SessionStore {
             return Ok(None);
         }
         let Ok(grant) = refresh(grant).await else {
-            invalidate_locked(&mut tx, &id).await?;
+            invalidate_locked(&mut tx, id).await?;
             tx.commit().await?;
             return Err(StoreError::Refresh);
         };
-        let sealed = match self.seal(SESSION_PURPOSE, &id, &grant) {
+        let sealed = match self.seal(SESSION_PURPOSE, id, &grant) {
             Ok(sealed) => sealed,
             Err(error) => {
-                invalidate_locked(&mut tx, &id).await?;
+                invalidate_locked(&mut tx, id).await?;
                 tx.commit().await?;
                 return Err(error);
             }
@@ -271,13 +331,13 @@ impl SessionStore {
             Err(error) => {
                 // A lost database response is not evidence that UPDATE failed.
                 // If it did commit, its newer generation is the only safe grant.
-                if let Some(row) = self.read_session(&id).await? {
+                if let Some(row) = self.read_session(id).await? {
                     if !row.2 && row.1 > observed_generation {
-                        let session = self.open_session(&id, row)?;
+                        let session = self.open_session(id, row)?;
                         tx.commit().await?;
                         return Ok(Some(session));
                     }
-                    invalidate_locked(&mut tx, &id).await?;
+                    invalidate_locked(&mut tx, id).await?;
                 }
                 tx.commit().await?;
                 Err(StoreError::Database(error))
@@ -484,7 +544,8 @@ fn hash(secret: &str) -> RowId {
 }
 
 fn cookie_id(cookie: &str) -> Option<RowId> {
-    if cookie.len() != COOKIE_LEN {
+    let mut decoded = [0; SECRET_LEN + 1];
+    if cookie.len() != COOKIE_LEN || URL_SAFE_NO_PAD.decode_slice(cookie, &mut decoded).ok()? != SECRET_LEN {
         return None;
     }
     Some(hash(cookie))

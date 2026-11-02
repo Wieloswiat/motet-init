@@ -25,7 +25,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
-use super::store::{SessionStore, StoreError};
+use super::store::{SessionRef, SessionStore, StoreError};
 
 const GET_SERVICE_AUTH: &str = "com.atproto.server.getServiceAuth";
 const CREATE_RECORD: &str = "com.atproto.repo.createRecord";
@@ -130,6 +130,20 @@ impl PdsClient {
     /// authorizes the request. Expired access tokens refresh under a
     /// cross-instance lock. Missing, expired or revoked sessions are refused.
     pub async fn service_token(&self, session: &str, audience: &str, method: &str) -> Result<String, PdsError> {
+        let session = SessionRef::from_cookie(session).ok_or(PdsError::Session)?;
+        self.service_token_by_ref(&session, audience, method).await
+    }
+
+    /// Obtain a service token for an already-authorized internal session.
+    ///
+    /// A session reference is a database identifier, not a browser credential.
+    /// The session must still be live when a worker uses this reference.
+    pub async fn service_token_by_ref(
+        &self,
+        session: &SessionRef,
+        audience: &str,
+        method: &str,
+    ) -> Result<String, PdsError> {
         if !audience.starts_with("did:") || !atproto_record::nsid::is_valid_nsid(method) {
             return Err(PdsError::InvalidRequest);
         }
@@ -160,6 +174,21 @@ impl PdsClient {
     pub async fn create_record(
         &self,
         session: &str,
+        collection: &str,
+        rkey: Option<&str>,
+        record: Value,
+    ) -> Result<Value, PdsError> {
+        let session = SessionRef::from_cookie(session).ok_or(PdsError::Session)?;
+        self.create_record_by_ref(&session, collection, rkey, record).await
+    }
+
+    /// Create a record for an already-authorized internal session.
+    ///
+    /// The worker must retain only a session reference, never a browser
+    /// cookie. Revoked and expired sessions cannot write through a reference.
+    pub async fn create_record_by_ref(
+        &self,
+        session: &SessionRef,
         collection: &str,
         rkey: Option<&str>,
         record: Value,
@@ -213,10 +242,10 @@ impl PdsClient {
         Ok(Revocation::Remote)
     }
 
-    async fn fresh_grant(&self, session: &str) -> Result<Grant, PdsError> {
+    async fn fresh_grant(&self, session: &SessionRef) -> Result<Grant, PdsError> {
         let stored = self
             .store
-            .get_session::<Grant>(session)
+            .get_session_by_ref::<Grant>(session)
             .await?
             .ok_or(PdsError::Session)?;
         if stored.grant.expires_at > Utc::now().timestamp().saturating_add(REFRESH_MARGIN_SECS) {
@@ -227,7 +256,7 @@ impl PdsClient {
         // waiter uses a newer generation instead of spending its refresh token.
         let refreshed = self
             .store
-            .refresh(session, stored.generation, |grant: Grant| self.refresh_grant(grant))
+            .refresh_by_ref(session, stored.generation, |grant: Grant| self.refresh_grant(grant))
             .await?
             .ok_or(PdsError::Session)?;
         if refreshed.grant.expires_at <= Utc::now().timestamp() {

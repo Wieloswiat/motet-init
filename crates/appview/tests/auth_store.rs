@@ -7,7 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use motet_appview::MIGRATOR;
-use motet_appview::auth::store::{SessionStore, StoreError};
+use motet_appview::auth::store::{SessionRef, SessionStore, StoreError};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
@@ -47,6 +47,7 @@ async fn concurrent_refresh_uses_each_rotating_token_once() {
         .create_session(&grant("R0"), Utc::now() + Duration::hours(1))
         .await
         .expect("create session");
+    let reference = SessionRef::from_cookie(&cookie).expect("cookie reference");
     let uses = Arc::new(AtomicUsize::new(0));
     let release = Arc::new(Notify::new());
     let (entered_tx, entered_rx) = oneshot::channel();
@@ -69,12 +70,11 @@ async fn concurrent_refresh_uses_each_rotating_token_once() {
     };
     entered_rx.await.expect("first refresh entered PDS");
     let second = {
-        let cookie = cookie.clone();
         let uses = Arc::clone(&uses);
         let store = second_store.clone();
         tokio::spawn(async move {
             store
-                .refresh(&cookie, 0, move |old: Value| async move {
+                .refresh_by_ref(&reference, 0, move |old: Value| async move {
                     uses.fetch_add(1, Ordering::SeqCst);
                     Ok::<_, ()>(old)
                 })
@@ -82,9 +82,8 @@ async fn concurrent_refresh_uses_each_rotating_token_once() {
         })
     };
     let reader = {
-        let cookie = cookie.clone();
         let store = second_store.clone();
-        tokio::spawn(async move { store.get_session::<Value>(&cookie).await })
+        tokio::spawn(async move { store.get_session_by_ref::<Value>(&reference).await })
     };
     release.notify_one();
     let first = first
@@ -399,15 +398,15 @@ async fn logout_during_refresh_revokes_locally_then_takes_the_rotated_grant() {
         .create_session(&grant("R0"), Utc::now() + Duration::hours(1))
         .await
         .expect("session");
+    let reference = SessionRef::from_cookie(&cookie).expect("cookie reference");
     let release = Arc::new(Notify::new());
     let (entered_tx, entered_rx) = oneshot::channel();
     let refresh = {
-        let cookie = cookie.clone();
         let store = store.clone();
         let release = Arc::clone(&release);
         tokio::spawn(async move {
             store
-                .refresh(&cookie, 0, move |mut old: Value| async move {
+                .refresh_by_ref(&reference, 0, move |mut old: Value| async move {
                     entered_tx.send(()).expect("refresh observer");
                     release.notified().await;
                     old["refresh_token"] = json!("R1");
@@ -417,6 +416,22 @@ async fn logout_during_refresh_revokes_locally_then_takes_the_rotated_grant() {
         })
     };
     entered_rx.await.expect("refresh started");
+    let queued_calls = Arc::new(AtomicUsize::new(0));
+    let (queued_tx, queued_rx) = oneshot::channel();
+    let queued_refresh = {
+        let store = store.clone();
+        let calls = Arc::clone(&queued_calls);
+        tokio::spawn(async move {
+            queued_tx.send(()).expect("queue observer");
+            store
+                .refresh_by_ref(&reference, 0, move |old: Value| async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(old)
+                })
+                .await
+        })
+    };
+    queued_rx.await.expect("queued reference started");
     let logout = {
         let cookie = cookie.clone();
         let store = store.clone();
@@ -425,13 +440,21 @@ async fn logout_during_refresh_revokes_locally_then_takes_the_rotated_grant() {
     listener.recv().await.expect("revocation committed");
     assert!(
         store
-            .get_session::<Value>(&cookie)
+            .get_session_by_ref::<Value>(&reference)
             .await
             .expect("revoked read")
             .is_none()
     );
     release.notify_one();
     assert!(refresh.await.expect("refresh task").expect("refresh").is_none());
+    assert!(
+        queued_refresh
+            .await
+            .expect("queued refresh task")
+            .expect("queued refresh")
+            .is_none()
+    );
+    assert_eq!(queued_calls.load(Ordering::SeqCst), 0);
     let taken = logout
         .await
         .expect("logout task")
@@ -440,7 +463,7 @@ async fn logout_during_refresh_revokes_locally_then_takes_the_rotated_grant() {
     assert_eq!(taken.grant["refresh_token"], "R1");
     assert!(
         store
-            .get_session::<Value>(&cookie)
+            .get_session_by_ref::<Value>(&reference)
             .await
             .expect("deleted read")
             .is_none()
@@ -450,6 +473,75 @@ async fn logout_during_refresh_revokes_locally_then_takes_the_rotated_grant() {
             .take_session::<Value>(&cookie)
             .await
             .expect("repeat logout")
+            .is_none()
+    );
+}
+
+// Queued work persists only a hash of the browser cookie. Reopening the
+// store must preserve its grant without turning that hash into a bearer token,
+// and expiry and logout must still block work through a saved reference.
+#[tokio::test]
+#[ignore = "integration: PostgreSQL"]
+async fn persisted_session_reference_survives_reopen_without_bypassing_revocation() {
+    let (pool, store) = setup().await;
+    let future = Utc::now() + Duration::hours(1);
+    let past = Utc::now() - Duration::hours(1);
+    let cookie = store.create_session(&grant("R0"), future).await.expect("live session");
+    let expired = store
+        .create_session(&grant("old"), past)
+        .await
+        .expect("expired session");
+    let revoked = store
+        .create_session(&grant("revoked"), future)
+        .await
+        .expect("revoked session");
+    let reference = SessionRef::from_cookie(&cookie).expect("live reference");
+    let expired_ref = SessionRef::from_cookie(&expired).expect("expired reference");
+    let revoked_ref = SessionRef::from_cookie(&revoked).expect("revoked reference");
+    store.revoke(&revoked).await.expect("revoke");
+
+    let (persisted,): (Vec<u8>,) = sqlx::query_as("SELECT id FROM service.oauth_sessions WHERE id = $1")
+        .bind(reference.as_bytes())
+        .fetch_one(&pool)
+        .await
+        .expect("stored reference");
+    assert!(SessionRef::from_db(&[0; 31]).is_none());
+    assert!(SessionRef::from_db(&[0; 33]).is_none());
+    assert!(SessionRef::from_cookie(&"!".repeat(43)).is_none());
+    let restored = SessionRef::from_db(&persisted).expect("restore reference");
+    assert_eq!(restored, reference);
+    let reopened_pool = PgPool::connect_with((*pool.connect_options()).clone())
+        .await
+        .expect("reopen database");
+    drop(store);
+    drop(pool);
+    let reopened = SessionStore::new(reopened_pool, KEY);
+    let session = reopened
+        .get_session_by_ref::<Value>(&restored)
+        .await
+        .expect("reference lookup")
+        .expect("live grant");
+    assert_eq!(session.grant["refresh_token"], "R0");
+    assert!(
+        reopened
+            .get_session_by_ref::<Value>(&expired_ref)
+            .await
+            .expect("expired reference")
+            .is_none()
+    );
+    assert!(
+        reopened
+            .get_session_by_ref::<Value>(&revoked_ref)
+            .await
+            .expect("revoked reference")
+            .is_none()
+    );
+    let encoded_hash = URL_SAFE_NO_PAD.encode(restored.as_bytes());
+    assert!(
+        reopened
+            .get_session::<Value>(&encoded_hash)
+            .await
+            .expect("database hash is not the browser cookie")
             .is_none()
     );
 }

@@ -140,7 +140,9 @@ async fn create_account(client: &Client, pds: &Url, signup: Url, request_uri: &s
         "the form must preserve the authorization continuation"
     );
 
-    let username = format!("oauth{}", Uuid::now_v7().simple());
+    let id = Uuid::now_v7().simple().to_string();
+    let random_suffix = id.get(20..).expect("a simple UUID has 32 ASCII hexadecimal digits");
+    let username = format!("oauth{random_suffix}");
     let handle = format!("{username}.{}", pds.host_str().expect("the PDS has a hostname"));
     let email = format!("{username}@example.test");
     let password = format!("motet-oauth-test-{}", Uuid::now_v7().simple());
