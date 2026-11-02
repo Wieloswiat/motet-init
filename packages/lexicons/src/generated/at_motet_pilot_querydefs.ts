@@ -36,9 +36,11 @@ export interface StrongRef {
   [extra: string]: unknown;
 }
 
-/** A group or World identified by a public group declaration or a public Motet scene, and its projected handle if known. A group declaration alone does not identify a Motet World. */
+/** A group or World identified by a public group declaration or a public Motet scene, with its projected handle and public meta Space display name if known. A group declaration alone does not identify a Motet World. */
 export interface World {
   did: string;
+  /** The World's name from its public meta Space. */
+  displayName?: string;
   handle?: string;
   /** Fields this version of Motet doesn't know. Kept and written back unchanged. */
   [extra: string]: unknown;

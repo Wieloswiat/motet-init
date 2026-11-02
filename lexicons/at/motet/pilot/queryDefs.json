@@ -4,11 +4,15 @@
 	"defs": {
 		"world": {
 			"type": "object",
-			"description": "A group or World identified by a public group declaration or a public Motet scene, and its projected handle if known. A group declaration alone does not identify a Motet World.",
+			"description": "A group or World identified by a public group declaration or a public Motet scene, with its projected handle and public meta Space display name if known. A group declaration alone does not identify a Motet World.",
 			"required": ["did"],
 			"properties": {
 				"did": { "type": "string", "format": "did" },
-				"handle": { "type": "string", "format": "handle" }
+				"handle": { "type": "string", "format": "handle" },
+				"displayName": {
+					"type": "string",
+					"description": "The World's name from its public meta Space."
+				}
 			}
 		},
 		"record": {

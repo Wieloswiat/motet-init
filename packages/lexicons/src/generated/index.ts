@@ -3,11 +3,15 @@
 export * as at_motet_pilot_admission from './at_motet_pilot_admission.js';
 export * as at_motet_pilot_audit from './at_motet_pilot_audit.js';
 export * as at_motet_pilot_auth_getsession from './at_motet_pilot_auth_getsession.js';
+export * as at_motet_pilot_beginworld from './at_motet_pilot_beginworld.js';
 export * as at_motet_pilot_character from './at_motet_pilot_character.js';
 export * as at_motet_pilot_closing from './at_motet_pilot_closing.js';
+export * as at_motet_pilot_createpost from './at_motet_pilot_createpost.js';
+export * as at_motet_pilot_finishworld from './at_motet_pilot_finishworld.js';
 export * as at_motet_pilot_getscene from './at_motet_pilot_getscene.js';
 export * as at_motet_pilot_getworld from './at_motet_pilot_getworld.js';
 export * as at_motet_pilot_listscenes from './at_motet_pilot_listscenes.js';
+export * as at_motet_pilot_openscene from './at_motet_pilot_openscene.js';
 export * as at_motet_pilot_play_closescene from './at_motet_pilot_play_closescene.js';
 export * as at_motet_pilot_play_openscene from './at_motet_pilot_play_openscene.js';
 export * as at_motet_pilot_play_setscenecast from './at_motet_pilot_play_setscenecast.js';

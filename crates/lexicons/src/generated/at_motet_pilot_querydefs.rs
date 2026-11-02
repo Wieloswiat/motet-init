@@ -52,11 +52,14 @@ pub struct StrongRef {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-/// A group or World identified by a public group declaration or a public Motet scene, and its projected handle if known. A group declaration alone does not identify a Motet World.
+/// A group or World identified by a public group declaration or a public Motet scene, with its projected handle and public meta Space display name if known. A group declaration alone does not identify a Motet World.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct World {
     pub did: String,
+    /// The World's name from its public meta Space.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
     /// Fields this version of Motet doesn't know. Kept and written back unchanged.
