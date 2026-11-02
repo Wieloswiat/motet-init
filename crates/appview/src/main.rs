@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use motet_appview::archive::Archive;
 use motet_appview::config::{Config, Serve};
 use motet_appview::indexer::Indexer;
-use motet_appview::{MIGRATOR, api, projection, tap};
+use motet_appview::{MIGRATOR, api, auth, projection, tap};
 use motet_net::identity::DidResolver;
 use motet_net::{Fetcher, Policy};
 use object_store::aws::{AmazonS3Builder, S3ConditionalPut};
@@ -76,14 +76,31 @@ async fn serve(args: Serve) -> anyhow::Result<()> {
     if args.config.allow_private_network {
         policy = policy.allow_private();
     }
-    let resolver = Arc::new(DidResolver::new(
-        Fetcher::new(policy)?,
-        args.config.plc_directory.clone(),
-    ));
+    let fetcher = Fetcher::new(policy)?;
+    let resolver: Arc<dyn motet_xrpc::IdentityResolver> =
+        Arc::new(DidResolver::new(fetcher.clone(), args.config.plc_directory.clone()));
+    let oauth = auth::Server::new(
+        pool.clone(),
+        args.public_origin.clone(),
+        args.default_pds.clone(),
+        &args.oauth_signing_key_file,
+        &args.session_key_file,
+        fetcher,
+        Arc::clone(&resolver),
+    )
+    .context("AppView OAuth")?;
     let service_did = args.service_did.clone();
-    let authenticate = motet_xrpc::service_auth::authenticate(resolver, Arc::new(move |aud: &str| aud == service_did));
-    let app = api::router(Arc::new(api::State { pool }), authenticate)?
-        .route("/_health", axum::routing::get(|| async { "ok" }));
+    let service_auth = motet_xrpc::service_auth::authenticate(resolver, Arc::new(move |aud: &str| aud == service_did));
+    let authenticate = oauth.authenticate(service_auth);
+    let app = api::router(
+        Arc::new(api::State {
+            pool,
+            auth: Arc::clone(&oauth),
+        }),
+        authenticate,
+    )?
+    .merge(oauth.router())
+    .route("/_health", axum::routing::get(|| async { "ok" }));
 
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     tracing::info!(listen = %args.listen, "appview serving");

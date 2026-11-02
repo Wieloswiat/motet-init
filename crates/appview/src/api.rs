@@ -15,9 +15,13 @@ use motet_xrpc::{Access, Caller, Kind, Method, RegistryError, XrpcError};
 use serde::Serialize;
 use sqlx::PgPool;
 
+use crate::auth;
+
 #[derive(Debug)]
 pub struct State {
     pub pool: PgPool,
+    /// Confidential OAuth and authenticated PDS operations for write handlers.
+    pub auth: Arc<auth::Server>,
 }
 
 /// One exact version of a record, as replies and admissions pin them.
@@ -49,13 +53,28 @@ pub const GET_SCENE: Method = Method {
     max_body: 0,
 };
 
+pub const GET_SESSION: Method = Method {
+    nsid: "at.motet.pilot.auth.getSession",
+    kind: Kind::Query,
+    access: Access::AppviewSession,
+    max_body: 0,
+};
+
 pub fn router(state: Arc<State>, authenticate: Authenticate) -> Result<axum::Router, RegistryError> {
     Service::new(authenticate)
         .method(GET_RECORD_VERSION, get_record_version)
         .method(GET_WORLD, get_world)
         .method(LIST_SCENES, list_scenes)
         .method(GET_SCENE, get_scene)
+        .method(GET_SESSION, get_session)
         .into_router(state)
+}
+
+async fn get_session(_state: Arc<State>, caller: Caller, _input: Input) -> Result<Response, XrpcError> {
+    let Caller::AppviewSession { did, handle } = caller else {
+        return Err(XrpcError::AuthRequired);
+    };
+    Ok(Json(serde_json::json!({ "did": did, "handle": handle })).into_response())
 }
 
 #[derive(Serialize)]
