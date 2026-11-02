@@ -13,6 +13,8 @@ pub struct OpenSceneInput {
     /// Members' handles or DIDs. The opener is added automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast: Option<Vec<String>>,
+    /// A caller-chosen operation ID, unique to this World and actor. Reuse it when retrying the same request.
+    pub op: String,
     pub title: String,
     pub world: String,
     /// Fields this version of Motet doesn't know. Kept and written back unchanged.

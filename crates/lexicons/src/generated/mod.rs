@@ -8,6 +8,7 @@ pub mod at_motet_pilot_character;
 pub mod at_motet_pilot_closing;
 pub mod at_motet_pilot_createpost;
 pub mod at_motet_pilot_finishworld;
+pub mod at_motet_pilot_getpoststatus;
 pub mod at_motet_pilot_getscene;
 pub mod at_motet_pilot_getworld;
 pub mod at_motet_pilot_listscenes;
@@ -71,6 +72,7 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     ("at.motet.pilot.closing", include_str!("../../../../lexicons/at/motet/pilot/closing.json")),
     ("at.motet.pilot.createPost", include_str!("../../../../lexicons/at/motet/pilot/createPost.json")),
     ("at.motet.pilot.finishWorld", include_str!("../../../../lexicons/at/motet/pilot/finishWorld.json")),
+    ("at.motet.pilot.getPostStatus", include_str!("../../../../lexicons/at/motet/pilot/getPostStatus.json")),
     ("at.motet.pilot.getScene", include_str!("../../../../lexicons/at/motet/pilot/getScene.json")),
     ("at.motet.pilot.getWorld", include_str!("../../../../lexicons/at/motet/pilot/getWorld.json")),
     ("at.motet.pilot.listScenes", include_str!("../../../../lexicons/at/motet/pilot/listScenes.json")),

@@ -4,6 +4,7 @@
 	import {
 		at_motet_pilot_createpost,
 		at_motet_pilot_getscene,
+		at_motet_pilot_getpoststatus,
 		type at_motet_pilot_querydefs
 	} from '@motet/lexicons';
 	import { procedure, query, XrpcError } from '#lib/api.js';
@@ -188,6 +189,44 @@
 
 		while (!signal.aborted && Date.now() < deadline) {
 			try {
+				if (!admitted) {
+					const boundedFetch: typeof fetch = (input, init) =>
+						fetch(input, {
+							...init,
+							signal: AbortSignal.any([
+								signal,
+								AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+							])
+						});
+
+					const status = await query<at_motet_pilot_getpoststatus.GetPostStatusOutput>(
+						boundedFetch,
+						at_motet_pilot_getpoststatus.GetPostStatusNsid,
+						{ uri }
+					);
+
+					if (signal.aborted) return;
+
+					if (status.cid !== cid) throw new Error('Post status refers to a different version.');
+
+					if (status.status === 'refused') {
+						postStatus = `Refused: ${status.reason ?? 'No reason was provided.'}`;
+
+						return;
+					}
+
+					if (status.status === 'failed') {
+						postStatus = `Admission failed: ${status.reason ?? 'No reason was provided.'}`;
+
+						return;
+					}
+
+					if (status.status === 'admitted') {
+						admitted = true;
+						postStatus = 'Admitted. Waiting for the post to appear in the scene.';
+					}
+				}
+
 				let pageCursor: string | undefined;
 				let found = false;
 				const collected: at_motet_pilot_querydefs.AdmittedPost[] = [];

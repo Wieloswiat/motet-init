@@ -91,6 +91,8 @@ handlers can't forget it:
   original scene. Posting first publishes to the author's PDS. The outbox
   retries pending or uncertain admissions with the same operation ID and
   exact post version; a failed PDS write cannot trigger admission.
+  The signed-in author can query the outbox for a published post's final
+  admission outcome; other accounts cannot read it.
 - **OAuth key custody**: `MOTET_APPVIEW_PUBLIC_ORIGIN` is the canonical public
   HTTPS origin, and `MOTET_APPVIEW_DEFAULT_PDS` selects the PDS for signup.
   `MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE` names a P-256 private scalar, and

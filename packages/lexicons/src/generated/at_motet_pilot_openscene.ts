@@ -6,6 +6,8 @@ export const OpenSceneNsid = 'at.motet.pilot.openScene' as const;
 export interface OpenSceneInput {
   /** Members' handles or DIDs. The opener is added automatically. */
   cast?: string[];
+  /** A caller-chosen operation ID, unique to this World and actor. Reuse it when retrying the same request. */
+  op: string;
   title: string;
   world: string;
   /** Fields this version of Motet doesn't know. Kept and written back unchanged. */

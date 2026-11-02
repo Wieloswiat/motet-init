@@ -12,6 +12,7 @@ import {
 	at_motet_pilot_beginworld as beginWorld,
 	at_motet_pilot_createpost as createPost,
 	at_motet_pilot_finishworld as finishWorld,
+	at_motet_pilot_getpoststatus as getPostStatus,
 	at_motet_pilot_getscene as getScene,
 	at_motet_pilot_getworld as getWorld,
 	at_motet_pilot_openscene as openScene
@@ -564,6 +565,44 @@ test('a newly opened public scene retains its opener in the projected cast', asy
 	await openPublicScene(page, world, owner);
 });
 
+// If a response is lost after the tenor commits, retrying must not create a
+// second scene or change the scene that the opener reaches.
+test('retrying a lost open-scene response reaches the original scene', async ({ page }) => {
+	await signUp(page);
+	await createWorld(page);
+	await page.getByRole('link', { name: 'Open scene', exact: true }).click();
+	const title = `Scene ${uniqueLabel('s')}`;
+	await page.getByLabel('Scene title').fill(title);
+	let firstScene = '';
+	let firstOperation = '';
+
+	await page.route(`**/xrpc/${openScene.OpenSceneNsid}`, async (route) => {
+		const input: openScene.OpenSceneInput = route.request().postDataJSON();
+		const response = await route.fetch();
+		expect(response.status()).toBe(200);
+		const result: openScene.OpenSceneOutput = await response.json();
+
+		if (!firstScene) {
+			firstScene = result.scene;
+			firstOperation = input.op;
+			await route.abort();
+		} else {
+			expect(input.op).toBe(firstOperation);
+			expect(result.scene).toBe(firstScene);
+			await route.fulfill({ response });
+		}
+	});
+	await page.getByRole('button', { name: 'Open scene', exact: true }).click();
+	await expect(page.getByRole('alert')).toContainText('Retry with the same details');
+	await page.getByRole('button', { name: 'Open scene', exact: true }).click();
+	await page.waitForURL((url) => url.pathname.endsWith(`/play/${encodeURIComponent(firstScene)}`), {
+		timeout: interactionTimeout
+	});
+	await expect(page.getByRole('heading', { name: title })).toBeVisible({
+		timeout: projectionTimeout
+	});
+});
+
 async function admitFirstPost(
 	page: Page,
 	world: World,
@@ -622,18 +661,51 @@ test('the first admitted post is place 1 and a nonmember is refused without appe
 		const stranger = await signUp(outsider);
 		expect(stranger.did).not.toBe(owner.did);
 		await outsider.goto(`/w/${encodeURIComponent(world.did)}/play/${encodeURIComponent(scene)}`);
+		const immediateText = `Immediately refused post ${uniqueLabel('p')}`;
+		const immediate = await post(outsider, immediateText);
+		expect(immediate.status).toBe('refused');
+		expect(immediate.reason).toBe('Forbidden');
+		await expect(outsider.getByText('Refused: Forbidden', { exact: true })).toBeVisible({
+			timeout: interactionTimeout
+		});
+
+		// The outbox may reach a refusal after the browser receives pending.
+		await outsider.route(`**/xrpc/${createPost.CreatePostNsid}`, async (route) => {
+			const response = await route.fetch();
+			const outcome: createPost.CreatePostOutput = await response.json();
+			expect(outcome.status).toBe('refused');
+			expect(outcome.reason).toBe('Forbidden');
+			await route.fulfill({ response, json: { ...outcome, status: 'pending' } });
+		});
+
 		const outsiderText = `Refused outsider post ${uniqueLabel('p')}`;
-		const refused = await post(outsider, outsiderText);
-		expect(refused.status, 'a signed-in person outside this World and cast must be refused').toBe(
-			'refused'
+
+		const statusResponse = outsider.waitForResponse(
+			(response) =>
+				response.request().method() === 'GET' &&
+				new URL(response.url()).pathname === `/xrpc/${getPostStatus.GetPostStatusNsid}`,
+			{ timeout: interactionTimeout }
 		);
-		expect(refused.reason, 'the tenor must explicitly deny the nonmember').toBe('Forbidden');
+
+		const refused = await post(outsider, outsiderText);
+		expect(refused.status).toBe('pending');
+
+		const status = await statusResponse;
+		expect(status.status()).toBe(200);
+		expect(await status.json()).toMatchObject({
+			uri: refused.uri,
+			cid: refused.cid,
+			status: 'refused',
+			reason: 'Forbidden'
+		});
 		await expect(outsider.getByText('Refused: Forbidden', { exact: true })).toBeVisible({
 			timeout: interactionTimeout
 		});
 		const outsiderPosts = outsider.getByRole('region', { name: 'Admitted posts' });
+		await expect(outsiderPosts.getByText(immediateText, { exact: true })).toHaveCount(0);
 		await expect(outsiderPosts.getByText(outsiderText, { exact: true })).toHaveCount(0);
 		await outsider.reload();
+		await expect(outsiderPosts.getByText(immediateText, { exact: true })).toHaveCount(0);
 		await expect(outsiderPosts.getByText(outsiderText, { exact: true })).toHaveCount(0);
 		const afterRefusal = await sceneProjection(page, world, scene);
 		expect(afterRefusal.posts).toHaveLength(1);

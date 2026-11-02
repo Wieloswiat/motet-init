@@ -9,8 +9,13 @@
 				"encoding": "application/json",
 				"schema": {
 					"type": "object",
-					"required": ["world", "title"],
+					"required": ["op", "world", "title"],
 					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "A caller-chosen operation ID, unique to this World and actor. Reuse it when retrying the same request."
+						},
 						"world": { "type": "string", "format": "did" },
 						"title": { "type": "string", "maxGraphemes": 120, "maxLength": 1200 },
 						"cast": {

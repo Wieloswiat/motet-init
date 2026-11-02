@@ -61,13 +61,21 @@ pub const GET_SESSION: Method = Method {
     max_body: 0,
 };
 
+pub const GET_POST_STATUS: Method = Method {
+    nsid: "at.motet.pilot.getPostStatus",
+    kind: Kind::Query,
+    access: Access::AppviewSession,
+    max_body: 0,
+};
+
 pub fn router(state: Arc<State>, authenticate: Authenticate) -> Result<axum::Router, RegistryError> {
     let service = Service::new(authenticate)
         .method(GET_RECORD_VERSION, get_record_version)
         .method(GET_WORLD, get_world)
         .method(LIST_SCENES, list_scenes)
         .method(GET_SCENE, get_scene)
-        .method(GET_SESSION, get_session);
+        .method(GET_SESSION, get_session)
+        .method(GET_POST_STATUS, get_post_status);
     writes::world::register(service)
         .method(writes::post::CREATE_POST, writes::post::create_post)
         .into_router(state)
@@ -78,6 +86,51 @@ async fn get_session(_state: Arc<State>, caller: Caller, _input: Input) -> Resul
         return Err(XrpcError::AuthRequired);
     };
     Ok(Json(serde_json::json!({ "did": did, "handle": handle })).into_response())
+}
+
+async fn get_post_status(state: Arc<State>, caller: Caller, input: Input) -> Result<Response, XrpcError> {
+    let Caller::AppviewSession { did, .. } = caller else {
+        return Err(XrpcError::AuthRequired);
+    };
+    validate_params(&input, &["uri"])?;
+    let uri = param(&input, "uri")?;
+    let row: Option<(String, serde_json::Value, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT state, payload, outcome FROM service.outbox \
+         WHERE account = $1 AND kind = 'create-post' AND payload->>'stage' = 'admission' \
+           AND payload->>'uri' = $2 ORDER BY sequence DESC LIMIT 1",
+    )
+    .bind(did)
+    .bind(uri)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, "getPostStatus");
+        XrpcError::Internal
+    })?;
+    let (status, payload, outcome) = row.ok_or(XrpcError::NotFound)?;
+    if status == "queued" {
+        let cid = payload
+            .get("cid")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(XrpcError::Internal)?;
+        return Ok(Json(serde_json::json!({ "uri": uri, "cid": cid, "status": "pending" })).into_response());
+    }
+    if status == "done" {
+        return Ok(Json(outcome.ok_or(XrpcError::Internal)?).into_response());
+    }
+    let cid = payload
+        .get("cid")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(XrpcError::Internal)?;
+    let failed = outcome
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(
+            || serde_json::json!({ "uri": uri, "cid": cid, "status": "failed" }),
+            |reason| serde_json::json!({ "uri": uri, "cid": cid, "status": "failed", "reason": reason }),
+        );
+    Ok(Json(failed).into_response())
 }
 
 #[derive(Serialize)]

@@ -118,13 +118,26 @@ async fn oauth_owner_creates_a_world_and_sees_the_exact_post_in_first_place() {
     assert!(world.starts_with("did:plc:"), "the World has a PLC DID: {created}");
     assert_eq!(string(&created, "handle"), handle);
 
+    // A lost response must not create another scene when the caller retries.
+    // Minting a new operation ID in the AppView would return a different URI.
     let title = "The first scene";
-    let opened = procedure(
-        &session,
-        "at.motet.pilot.openScene",
-        &json!({"world": world, "title": title}),
-    )
-    .await;
+    let open_input = json!({"op": Uuid::now_v7().to_string(), "world": world, "title": title});
+    let opened = procedure(&session, "at.motet.pilot.openScene", &open_input).await;
+    let retried = procedure(&session, "at.motet.pilot.openScene", &open_input).await;
+    assert_eq!(opened["uri"], retried["uri"], "retry returns the original scene");
+    assert_eq!(opened["scene"], retried["scene"]);
+    let tenor = std::env::var("MOTET_APPVIEW_TENOR_URL").expect("the tenor origin must be configured");
+    let records = session
+        .client
+        .get(format!("{tenor}/xrpc/com.atproto.repo.listRecords"))
+        .query(&[("repo", world), ("collection", "at.motet.pilot.scene")])
+        .send()
+        .await
+        .expect("list the World's scene records");
+    let records = successful_json(records, "list scene records").await;
+    let scenes = records["records"].as_array().expect("scene records are an array");
+    assert_eq!(scenes.len(), 1, "retry must publish exactly one scene: {records}");
+    assert_eq!(scenes[0]["uri"], opened["uri"]);
     let scene = string(&opened, "scene");
     let scene_uri = string(&opened, "uri");
     let scene_cid = string(&opened, "cid");

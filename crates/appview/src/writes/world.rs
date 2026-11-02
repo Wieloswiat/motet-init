@@ -11,7 +11,6 @@ use motet_xrpc::server::{Input, Service};
 use motet_xrpc::{Access, Caller, Kind, Method, XrpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 use crate::api::State;
 use crate::auth::{self, pds::PdsError};
@@ -166,6 +165,7 @@ async fn finish_world(state: Arc<State>, caller: Caller, input: Input) -> Result
 #[derive(Deserialize)]
 struct OpenInput {
     world: String,
+    op: String,
     title: String,
     #[serde(default)]
     cast: Vec<String>,
@@ -182,6 +182,7 @@ async fn open_scene(state: Arc<State>, caller: Caller, input: Input) -> Result<R
     require_session(&caller)?;
     let session = auth::session_cookie(&input.headers)?;
     let request: OpenInput = serde_json::from_slice(&input.body).map_err(invalid)?;
+    atproto_record::record_key::check_record_key(&request.op).map_err(invalid)?;
     if request.title.len() > 1200 {
         return Err(invalid("scene title exceeds 1200 bytes"));
     }
@@ -203,10 +204,8 @@ async fn open_scene(state: Arc<State>, caller: Caller, input: Input) -> Result<R
         .service_token(session, target.audience(), OPEN_SCENE)
         .await
         .map_err(pds_error)?;
-    // No client operation key exists in this lexicon. A new request must not
-    // collapse into an earlier, deliberately identical scene.
     let request = json!({
-        "op": Uuid::now_v7().to_string(),
+        "op": request.op,
         "world": request.world,
         "title": request.title,
         "cast": cast,

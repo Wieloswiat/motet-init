@@ -277,9 +277,9 @@ async fn json_response(response: Response) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&body).expect("JSON response"))
 }
 
-/// A non-cast member's published post must be refused by the real tenor and
-/// remain absent from getScene even after the exact post reaches the archive.
-/// Catches bypassing cast checks or displaying public posts without admissions.
+/// A non-cast member's published post is refused and remains absent from the
+/// public scene. Only its author can track a pending retry through refusal.
+/// Catches bypassed cast checks, leaked outcomes, and stale pending statuses.
 #[tokio::test]
 #[ignore = "integration: needs PostgreSQL (devenv up)"]
 #[expect(
@@ -379,7 +379,7 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
         Arc::clone(&resolver),
     )
     .unwrap();
-    let grant = Grant {
+    let mut grant = Grant {
         did: AUTHOR.into(),
         handle: "author.motet.test".into(),
         pds: pds_url.clone(),
@@ -396,6 +396,12 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
         .create_session(&grant, Utc::now() + ChronoDuration::hours(1))
         .await
         .unwrap();
+    grant.did = OWNER.into();
+    grant.handle = "owner.motet.test".into();
+    let other_cookie = SessionStore::new(pool.clone(), [2; 32])
+        .create_session(&grant, Utc::now() + ChronoDuration::hours(1))
+        .await
+        .unwrap();
     let client = Arc::new(
         writes::client::Client::new(fetcher, Arc::clone(&resolver), &tenor_url, "did:web:tenor.example").unwrap(),
     );
@@ -404,7 +410,7 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
         Arc::new(api::State {
             pool: pool.clone(),
             auth: Arc::clone(&oauth),
-            client,
+            client: Arc::clone(&client),
         }),
         oauth.authenticate(fallback),
     )
@@ -448,6 +454,81 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
         .clone();
     assert_eq!(answer["uri"], written.uri);
     assert_eq!(answer["cid"], written.cid);
+    // Retry the durable admission after an interrupted response. The tenor
+    // must return the original decision for the same operation.
+    sqlx::query(
+        "UPDATE service.outbox SET state = 'queued', outcome = NULL, next_attempt_at = clock_timestamp(), \
+         lease_owner = NULL, lease_until = NULL WHERE account = $1 AND payload->>'uri' = $2",
+    )
+    .bind(AUTHOR)
+    .bind(&written.uri)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut status_url = Url::parse("https://motet.example/xrpc/at.motet.pilot.getPostStatus").unwrap();
+    status_url.query_pairs_mut().append_pair("uri", &written.uri);
+    let status_path = format!("{}?{}", status_url.path(), status_url.query().unwrap());
+    let request = |cookie: Option<&str>| {
+        let mut builder = Request::get(&status_path);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, format!("__Host-motet_session={cookie}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+    let (status, pending) = json_response(app.clone().oneshot(request(Some(&cookie))).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{pending}");
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["uri"], written.uri);
+    assert_eq!(pending["cid"], written.cid);
+    let anonymous = app.clone().oneshot(request(None)).await.unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+    let other = app.clone().oneshot(request(Some(&other_cookie))).await.unwrap();
+    assert_eq!(other.status(), StatusCode::NOT_FOUND);
+
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(motet_appview::outbox::run(
+        pool.clone(),
+        Arc::clone(&oauth),
+        Arc::clone(&client),
+        receiver,
+    ));
+    let refused = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let (status, value) = json_response(app.clone().oneshot(request(Some(&cookie))).await.unwrap()).await;
+            assert_eq!(status, StatusCode::OK, "{value}");
+            if value["status"] != "pending" {
+                break value;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admission retry finishes");
+    assert_eq!(refused["status"], "refused");
+    assert_eq!(refused["reason"], "NotInCast");
+    assert_eq!(refused["uri"], written.uri);
+    assert_eq!(refused["cid"], written.cid);
+    assert_eq!(
+        app.clone()
+            .oneshot(request(Some(&other_cookie)))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    shutdown.send(true).unwrap();
+    worker.await.unwrap();
+    sqlx::query("UPDATE service.outbox SET state = 'failed', outcome = $3 WHERE account = $1 AND payload->>'uri' = $2")
+        .bind(AUTHOR)
+        .bind(&written.uri)
+        .bind(json!({"error": "upstream"}))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (status, failed) = json_response(app.clone().oneshot(request(Some(&cookie))).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["reason"], "upstream");
     let drained = motet_tenor::publication::drain(&handle).await.unwrap();
     assert_eq!(
         (drained.published, drained.failed),

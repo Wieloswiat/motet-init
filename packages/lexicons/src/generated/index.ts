@@ -8,6 +8,7 @@ export * as at_motet_pilot_character from './at_motet_pilot_character.js';
 export * as at_motet_pilot_closing from './at_motet_pilot_closing.js';
 export * as at_motet_pilot_createpost from './at_motet_pilot_createpost.js';
 export * as at_motet_pilot_finishworld from './at_motet_pilot_finishworld.js';
+export * as at_motet_pilot_getpoststatus from './at_motet_pilot_getpoststatus.js';
 export * as at_motet_pilot_getscene from './at_motet_pilot_getscene.js';
 export * as at_motet_pilot_getworld from './at_motet_pilot_getworld.js';
 export * as at_motet_pilot_listscenes from './at_motet_pilot_listscenes.js';

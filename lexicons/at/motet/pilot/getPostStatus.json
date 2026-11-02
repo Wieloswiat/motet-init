@@ -1,0 +1,42 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.getPostStatus",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get the signed-in author's published post admission status. Unknown posts and posts belonging to another author return NotFound.",
+			"parameters": {
+				"type": "params",
+				"required": ["uri"],
+				"properties": {
+					"uri": { "type": "string", "format": "at-uri" }
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["uri", "cid", "status"],
+					"properties": {
+						"uri": { "type": "string", "format": "at-uri" },
+						"cid": { "type": "string", "format": "cid" },
+						"status": {
+							"type": "string",
+							"knownValues": ["admitted", "refused", "pending", "failed"]
+						},
+						"reason": {
+							"type": "string",
+							"description": "The tenor's refusal reason or the failure code, when available."
+						},
+						"epoch": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Recovery epoch when admitted."
+						},
+						"seq": { "type": "integer", "minimum": 0, "description": "Scene place when admitted." }
+					}
+				}
+			}
+		}
+	}
+}

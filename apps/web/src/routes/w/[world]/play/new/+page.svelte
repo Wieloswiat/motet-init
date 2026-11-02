@@ -15,6 +15,7 @@
 	let message = $state('');
 	let opened = $state(false);
 	let openedScene = $state<string | null>(null);
+	let operation = $state<string | null>(null);
 
 	function castMember(value: string): string {
 		return value.trim().replace(/^@/, '');
@@ -65,6 +66,7 @@
 			return;
 		}
 
+		operation ??= crypto.randomUUID();
 		submitting = true;
 		message = '';
 
@@ -75,7 +77,8 @@
 			>(at_motet_pilot_openscene.OpenSceneNsid, {
 				world: data.world.did,
 				title: sceneTitle,
-				cast
+				cast,
+				op: operation
 			});
 
 			opened = true;
@@ -100,6 +103,9 @@
 				: cause instanceof Error
 					? `Could not open the scene: ${cause.message}`
 					: 'Could not open the scene. Please try again.';
+
+			if (!openedScene)
+				message += ' Retry with the same details, or reload to start a different scene.';
 		} finally {
 			submitting = false;
 		}
@@ -125,6 +131,7 @@
 						id="scene-title"
 						bind:value={title}
 						maxlength="1200"
+						disabled={operation !== null}
 						required
 					/>
 				</div>
@@ -141,6 +148,7 @@
 							<button
 								type="button"
 								aria-label={`Remove ${member} from cast`}
+								disabled={operation !== null}
 								onclick={() => (cast = cast.filter((selected) => selected !== member))}
 								>Remove</button
 							>
@@ -157,8 +165,14 @@
 							bind:value={castDraft}
 							aria-describedby="cast-help"
 							autocomplete="off"
+							disabled={operation !== null}
 						/>
-						<button type="button" class="m-button m-button--variant_outline" onclick={addCast}>
+						<button
+							type="button"
+							class="m-button m-button--variant_outline"
+							onclick={addCast}
+							disabled={operation !== null}
+						>
 							Add to cast
 						</button>
 					</div>
