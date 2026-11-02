@@ -99,6 +99,24 @@ async fn a_well_formed_token_names_its_issuer_and_method() {
     );
 }
 
+/// A service issuer must remain distinguishable from its owning account.
+/// Stripping the fragment would let a service be mistaken for a World member.
+#[tokio::test]
+async fn verified_service_issuer_keeps_its_signed_fragment() {
+    let f = Fixture::new();
+    for issuer in ["did:plc:alice#atproto_pds", "did:plc:alice#atproto_labeler"] {
+        let token = f.token(|claims| claims.jose.issuer = Some(issuer.into()));
+        assert_eq!(
+            f.verify(&token).await,
+            Ok(Caller::Service {
+                did: issuer.into(),
+                lxm: METHOD.into(),
+                audience: APPVIEW.into(),
+            })
+        );
+    }
+}
+
 #[tokio::test]
 async fn tokens_for_another_service_are_refused() {
     let f = Fixture::new();

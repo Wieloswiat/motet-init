@@ -37,16 +37,14 @@ pub enum Kind {
 pub enum Access {
     /// Anyone, signed in or not. Results are still filtered per reader.
     Public,
-    /// A signed-in Motet session (the web app's BFF cookie), or service auth
-    /// from the account's own PDS.
+    /// A separately authenticated account, or service auth from its PDS.
+    /// The AppView browser cookie uses `AppviewSession` instead.
     Account,
-    /// A verified OAuth World session only. An account or service token is not a session.
-    Session,
+    /// A verified AppView browser session, never a service credential.
+    AppviewSession,
     /// Service auth only: another service acting for an account, with `lxm`
     /// bound to this method.
     Service,
-    /// Either service auth bound to this method or a verified World session.
-    ServiceOrSession,
     /// An authority-signed Space credential and its bound HTTP Message
     /// Signature. Handlers also check its exact Space and audience.
     SpaceCredential,
@@ -96,16 +94,9 @@ impl Registry {
             (Access::Public, _)
             | (Access::Account, Caller::Account { .. } | Caller::Service { .. })
             | (Access::SpaceCredential, Caller::SpaceCredential { .. })
-            | (Access::Session | Access::ServiceOrSession, Caller::Session { .. })
-            | (Access::Service | Access::ServiceOrSession, Caller::Service { .. }) => true,
-            (
-                Access::Account
-                | Access::Service
-                | Access::ServiceOrSession
-                | Access::SpaceCredential
-                | Access::Session,
-                _,
-            ) => false,
+            | (Access::AppviewSession, Caller::AppviewSession { .. })
+            | (Access::Service, Caller::Service { .. }) => true,
+            (Access::Account | Access::Service | Access::AppviewSession | Access::SpaceCredential, _) => false,
         };
         if !allowed {
             return Err(XrpcError::AuthRequired);
@@ -139,22 +130,21 @@ impl Registry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caller {
     Anonymous,
-    /// A Motet browser session bound to this account.
+    /// An account established by a transport other than the AppView cookie.
     Account {
         did: String,
     },
-    /// A verified OAuth session acting as a World, with its human actor and
-    /// client retained for current-role and scope checks at each write.
-    Session {
-        world: String,
-        actor: String,
-        client_id: String,
-        scopes: Vec<String>,
+    /// A verified AppView session bound to the account's browser cookie.
+    AppviewSession {
+        did: String,
+        handle: String,
     },
     /// A verified service-auth token: issuer, the one method it allows, and
     /// the audience it was minted for. A tenor answers for many Worlds, so
     /// handlers check that the World a request names is the audience.
     Service {
+        /// The exact verified `iss`, including a service fragment if present.
+        /// Account-only methods must reject service-fragment issuers.
         did: String,
         lxm: String,
         audience: String,
@@ -168,12 +158,13 @@ pub enum Caller {
 }
 
 impl Caller {
+    /// The established identity. A service caller retains the exact issuer,
+    /// which can include a service fragment; it is not always an account DID.
     #[must_use]
     pub fn did(&self) -> Option<&str> {
         match self {
             Self::Anonymous | Self::SpaceCredential { .. } => None,
-            Self::Account { did } | Self::Service { did, .. } => Some(did),
-            Self::Session { world, .. } => Some(world),
+            Self::Account { did } | Self::AppviewSession { did, .. } | Self::Service { did, .. } => Some(did),
         }
     }
 }
@@ -279,13 +270,7 @@ mod tests {
             Method {
                 nsid: "test.session",
                 kind: Kind::Procedure,
-                access: Access::Session,
-                max_body: 0,
-            },
-            Method {
-                nsid: "test.serviceOrSession",
-                kind: Kind::Procedure,
-                access: Access::ServiceOrSession,
+                access: Access::AppviewSession,
                 max_body: 0,
             },
         ])
@@ -298,7 +283,6 @@ mod tests {
             Just("at.motet.pilot.submitPost".to_owned()),
             Just("at.motet.pilot.play.submitAdmission".to_owned()),
             Just("test.session".to_owned()),
-            Just("test.serviceOrSession".to_owned()),
             "[a-z.]{1,30}",
         ];
         prop_oneof![
@@ -306,11 +290,9 @@ mod tests {
             Just(Caller::Account {
                 did: "did:plc:a".into()
             }),
-            Just(Caller::Session {
-                world: "did:plc:world".into(),
-                actor: "did:plc:a".into(),
-                client_id: "https://client.test/metadata.json".into(),
-                scopes: vec!["atproto".into()],
+            Just(Caller::AppviewSession {
+                did: "did:plc:a".into(),
+                handle: "alice.example".into(),
             }),
             Just(Caller::SpaceCredential {
                 space: "at://did:plc:world/space/group.opensocial.meta/self".into(),
@@ -339,20 +321,20 @@ mod tests {
         fn service_tokens_open_only_their_own_method(caller in caller()) {
             let r = registry();
             if let Caller::Service { lxm, .. } = &caller {
-                for m in r.methods().filter(|m| matches!(m.access, Access::Account | Access::Service | Access::ServiceOrSession)) {
+                for m in r.methods().filter(|m| matches!(m.access, Access::Account | Access::Service)) {
                     let ok = r.authorize(m.nsid, m.kind, &caller).is_ok();
                     prop_assert_eq!(ok, lxm == m.nsid, "{} with token for {}", m.nsid, lxm);
                 }
             }
         }
 
-        /// Only World sessions reach session methods. Reusing the Account rule
-        /// here would admit browser accounts or a service token with this lxm.
+        /// Only AppView browser sessions reach session methods. The Account
+        /// rule would admit a service token bearing the same method.
         #[test]
         fn session_methods_exclude_every_other_credential(caller in caller()) {
             let registry = registry();
             let result = registry.authorize("test.session", Kind::Procedure, &caller);
-            if matches!(caller, Caller::Session { .. }) {
+            if matches!(caller, Caller::AppviewSession { .. }) {
                 prop_assert!(result.is_ok());
             } else {
                 prop_assert_eq!(result.err(), Some(XrpcError::AuthRequired));

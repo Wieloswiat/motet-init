@@ -28,11 +28,9 @@ fn authentication() -> Authenticate {
             Some("account") => Ok(Caller::Account {
                 did: "did:plc:world".into(),
             }),
-            Some("session") => Ok(Caller::Session {
-                world: "did:plc:world".into(),
-                actor: "did:plc:alice".into(),
-                client_id: "https://client.test/metadata.json".into(),
-                scopes: vec!["atproto".into()],
+            Some("appview") => Ok(Caller::AppviewSession {
+                did: "did:plc:alice".into(),
+                handle: "alice.test".into(),
             }),
             Some(method) => Ok(Caller::Service {
                 did: "did:plc:world".into(),
@@ -50,8 +48,7 @@ fn router(calls: Arc<AtomicUsize>) -> axum::Router {
         ("test.readSpace", Access::SpaceCredential),
         ("test.writeAccount", Access::Account),
         ("test.notify", Access::Service),
-        ("test.delegate", Access::Session),
-        ("test.writeSpace", Access::ServiceOrSession),
+        ("test.writeSpace", Access::Service),
     ] {
         service = service.method(
             Method {
@@ -82,19 +79,16 @@ async fn credential_kinds_cannot_substitute_for_each_other() {
         ("test.readSpace", Some("test.readSpace"), StatusCode::UNAUTHORIZED),
         ("test.writeAccount", Some("space"), StatusCode::UNAUTHORIZED),
         ("test.notify", Some("space"), StatusCode::UNAUTHORIZED),
-        ("test.delegate", Some("space"), StatusCode::UNAUTHORIZED),
-        ("test.delegate", Some("test.delegate"), StatusCode::UNAUTHORIZED),
-        ("test.delegate", Some("account"), StatusCode::UNAUTHORIZED),
-        ("test.delegate", None, StatusCode::UNAUTHORIZED),
-        ("test.delegate", Some("session"), StatusCode::OK),
-        ("test.writeAccount", Some("session"), StatusCode::UNAUTHORIZED),
-        ("test.notify", Some("session"), StatusCode::UNAUTHORIZED),
-        ("test.readSpace", Some("session"), StatusCode::UNAUTHORIZED),
+        ("test.writeAccount", Some("appview"), StatusCode::UNAUTHORIZED),
+        ("test.notify", Some("appview"), StatusCode::UNAUTHORIZED),
+        ("test.readSpace", Some("appview"), StatusCode::UNAUTHORIZED),
+        ("test.writeSpace", Some("appview"), StatusCode::UNAUTHORIZED),
         ("test.writeSpace", Some("account"), StatusCode::UNAUTHORIZED),
         ("test.writeSpace", Some("space"), StatusCode::UNAUTHORIZED),
-        ("test.writeSpace", Some("test.delegate"), StatusCode::UNAUTHORIZED),
+        ("test.writeSpace", Some("test.notify"), StatusCode::UNAUTHORIZED),
+        ("test.writeAccount", Some("account"), StatusCode::OK),
+        ("test.notify", Some("test.notify"), StatusCode::OK),
         ("test.writeSpace", Some("test.writeSpace"), StatusCode::OK),
-        ("test.writeSpace", Some("session"), StatusCode::OK),
         ("test.readSpace", Some("space"), StatusCode::OK),
     ] {
         let mut request = Request::builder().method("POST").uri(format!("/xrpc/{method}"));

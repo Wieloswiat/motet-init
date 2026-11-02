@@ -58,7 +58,8 @@ pub enum ServiceAuthError {
 }
 
 /// Checks a token's claims, after its signature has been verified. Pure, so
-/// the rules are testable without keys or clocks.
+/// the rules are testable without keys or clocks. The caller retains the
+/// exact signed issuer, including any service fragment.
 pub fn check_claims(
     claims: &Claims,
     accepts_audience: impl Fn(&str) -> bool,
@@ -86,7 +87,7 @@ pub fn check_claims(
         return Err(ServiceAuthError::BadLifetime);
     }
     Ok(Caller::Service {
-        did: did_of(iss).to_owned(),
+        did: iss.to_owned(),
         lxm: lxm.to_owned(),
         audience: audience.to_owned(),
     })
