@@ -61,9 +61,11 @@ impl DidResolver {
                 .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
             && !host.starts_with('.')
             && !host.ends_with('.');
-        valid.then(|| match port {
-            Some(port) => format!("https://{host}:{port}/.well-known/did.json"),
-            None => format!("https://{host}/.well-known/did.json"),
+        valid.then(|| {
+            port.map_or_else(
+                || format!("https://{host}/.well-known/did.json"),
+                |port| format!("https://{host}:{port}/.well-known/did.json"),
+            )
         })
     }
 }
