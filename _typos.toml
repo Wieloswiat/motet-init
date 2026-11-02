@@ -1,3 +1,8 @@
+[default]
+# Signatures, keys and CIDs in test fixtures are base64, base64url or base32:
+# long runs of those characters aren't words.
+extend-ignore-re = ["[A-Za-z0-9_+/-]{40,}={0,2}"]
+
 [default.extend-words]
 # Dice notation: NdM is "N dice of M sides".
 Nd = "Nd"
