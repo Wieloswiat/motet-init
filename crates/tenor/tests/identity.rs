@@ -459,12 +459,11 @@ async fn another_key_or_owner_cannot_create_the_reserved_world() {
     assert_eq!(f.create(&reserved, &forged).await.0, StatusCode::BAD_REQUEST);
     let valid = Fixture::signed(&reserved, &f.rotation);
     let request = json!({ "reservation": reserved.reservation, "signedOperation": valid });
-    assert_eq!(
-        f.post(api::CREATE_WORLD.nsid, request, OTHER, f.hosting.service_did())
-            .await
-            .0,
-        StatusCode::UNAUTHORIZED
-    );
+    let (status, body) = f
+        .post(api::CREATE_WORLD.nsid, request, OTHER, f.hosting.service_did())
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "Forbidden");
     let mut changed = reserved.operation.clone();
     changed["alsoKnownAs"] = json!(["at://stolen.motet.test"]);
     let changed: atproto_identity::plc::UnsignedOperation = serde_json::from_value(changed).expect("unsigned op");

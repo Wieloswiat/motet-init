@@ -29,7 +29,13 @@
 						"handle": { "type": "string", "format": "handle" }
 					}
 				}
-			}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The authenticated member did not reserve this World."
+				}
+			]
 		}
 	}
 }

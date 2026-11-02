@@ -13,7 +13,7 @@ use std::time::SystemTime;
 
 use axum::Json;
 use axum::extract::State as AxumState;
-use axum::http::{HeaderMap, header, uri::Authority};
+use axum::http::{HeaderMap, StatusCode, header, uri::Authority};
 use axum::response::{IntoResponse, Response};
 use motet_rules::world::{Outcome, Refusal};
 use motet_rules::{Cid, Did, OperationId, StrongRef};
@@ -320,7 +320,11 @@ async fn handle_did<R: Records>(
 )]
 fn identity_error(error: IdentityError) -> XrpcError {
     match error {
-        IdentityError::NotOwner => XrpcError::AuthRequired,
+        IdentityError::NotOwner => XrpcError::Protocol {
+            status: StatusCode::FORBIDDEN,
+            name: "Forbidden",
+            message: error.to_string(),
+        },
         IdentityError::HandleNotFound | IdentityError::ReservationNotFound => XrpcError::NotFound,
         IdentityError::InvalidHandle
         | IdentityError::HandleTaken
