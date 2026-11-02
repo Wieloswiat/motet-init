@@ -10,14 +10,17 @@
 //! claimed about them is only a hint.
 //!
 //! Requests come from Motet's API as people post (in parallel with the PDS
-//! write), from Spaces write notifications, and from sync. All of them reach
-//! [`admit`], so a post is admitted the same way whichever arrives first.
+//! write), from Spaces write notifications, and from sync. Automatic
+//! ingestion uses [`admit`]; member requests also check current membership
+//! and record their actor in the decision's transaction.
 
-use motet_rules::world::{Command, ReadBack};
+use motet_rules::world::{Command, Outcome, ReadBack};
 use motet_rules::{Cid, Did, OperationId, SceneId, StrongRef};
 use thiserror::Error;
 
-use crate::shard::{Applied, Entry, Handle, SubmitError};
+use crate::authorization::Actor;
+use crate::shard::{Applied, Entry, Handle, Op, SubmitError, Txn};
+use crate::spaces::SpaceError;
 
 /// A post version as its author's PDS returned it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -73,9 +76,34 @@ pub enum Decision {
 pub enum AdmitError {
     #[error(transparent)]
     Shard(#[from] SubmitError),
+    #[error(transparent)]
+    Space(#[from] SpaceError),
 }
 
+/// Read back and decide an admission brought by automatic ingestion.
 pub async fn admit(shard: &Handle, records: &impl Records, request: Request) -> Result<Decision, AdmitError> {
+    admit_inner(shard, records, request, None).await
+}
+
+/// Read back and decide an admission requested by its authenticated author.
+pub(crate) async fn admit_as(
+    shard: &Handle,
+    records: &impl Records,
+    request: Request,
+    actor: Actor,
+) -> Result<Decision, AdmitError> {
+    admit_inner(shard, records, request, Some(actor)).await
+}
+
+async fn admit_inner(
+    shard: &Handle,
+    records: &impl Records,
+    request: Request,
+    actor: Option<Actor>,
+) -> Result<Decision, AdmitError> {
+    if actor.as_ref().is_some_and(|actor| actor.world != request.world) {
+        return Err(SpaceError::NotAuthorized.into());
+    }
     let fetched = match records.fetch(&request.post).await {
         Ok(Some(fetched)) => fetched,
         Ok(None) => return Ok(Decision::NotFound),
@@ -92,18 +120,81 @@ pub async fn admit(shard: &Handle, records: &impl Records, request: Request) -> 
     if fetched.world != request.world {
         return Ok(Decision::OtherWorld);
     }
+    if actor.as_ref().is_some_and(|actor| actor.actor != fetched.author) {
+        return Err(SpaceError::NotAuthorized.into());
+    }
     let read_back = ReadBack {
         post: request.post,
         author: fetched.author,
         scene: fetched.scene,
     };
-    let entry = Entry::Apply {
-        world: request.world,
-        op: request.op,
-        command: Command::Admit {
-            post: read_back,
-            replaces: request.replaces,
-        },
+    let applied = match actor {
+        Some(actor) => {
+            shard
+                .run(AdmitAs {
+                    actor,
+                    op: request.op,
+                    post: read_back,
+                    replaces: request.replaces,
+                })
+                .await??
+        }
+        None => {
+            shard
+                .submit(Entry::Apply {
+                    world: request.world,
+                    op: request.op,
+                    command: Command::Admit {
+                        post: read_back,
+                        replaces: request.replaces,
+                    },
+                })
+                .await?
+        }
     };
-    Ok(Decision::Decided(shard.submit(entry).await?))
+    Ok(Decision::Decided(applied))
+}
+
+struct AdmitAs {
+    actor: Actor,
+    op: OperationId,
+    post: ReadBack,
+    replaces: Option<Cid>,
+}
+
+impl Op for AdmitAs {
+    type Output = Applied;
+    type Error = AdmitError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<Applied, AdmitError> {
+        self.actor.policy(txn).await?;
+        let seen = txn
+            .world(&self.actor.world)
+            .is_some_and(|world| world.has_operation(&self.op));
+        let subject = (!seen).then(|| self.post.post.uri.clone());
+        let applied = txn
+            .command(
+                self.actor.world.clone(),
+                self.op,
+                Command::Admit {
+                    post: self.post,
+                    replaces: self.replaces,
+                },
+            )
+            .await
+            .map_err(SubmitError::from)?;
+        // Refusals also consume an operation ID durably. Attribute the first
+        // decision, but never attribute a retry or a reused operation ID.
+        if let Some(subject) = subject {
+            let action = match &applied {
+                Ok(Outcome::Admitted(_)) => Some("admit"),
+                Ok(Outcome::Refused(_)) => Some("refuseAdmission"),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.actor.audit(txn, action, subject.as_str()).await?;
+            }
+        }
+        Ok(applied)
+    }
 }

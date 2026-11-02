@@ -1,4 +1,4 @@
-//! Consent and mutation policy use the same current opensocial records.
+//! Current member authorization and audit for World operations.
 //! An access record is confined to its own Space; permissions grants are global.
 
 use std::collections::BTreeSet;
@@ -20,48 +20,19 @@ use motet_xrpc::Caller;
 
 use crate::shard::Txn;
 use crate::spaces::{self, AccessRecord, SpaceError, SpaceInfo, SpaceWrite};
-use crate::store::{Reader, keys};
+use crate::store::keys;
 
 pub(crate) const AUDIT: &str = Audit::NSID;
 
-/// Intersect requested permissions with the member's current role grants.
-///
-/// Permission sets expand and collection defaults freeze before scopes are issued.
-/// Nonmembers (including memberships with no surviving roles) are refused.
-/// The authentication-only `atproto` scope never confers a mutation permission.
-pub async fn granted(
-    reader: &Reader,
-    world: &Did,
-    actor: &Did,
-    requested: &[String],
-) -> Result<Vec<String>, SpaceError> {
-    let roles = spaces::roles(reader, world, actor).await?;
-    let mut policy = Policy::member(world, &roles)?;
-    let members = spaces::world_space(world, spaces::MEMBERS)?;
-    if let Some(row) = spaces::record(reader, &members, Permissions::NSID, "self").await? {
-        policy.permissions(&spaces::record_value::<Permissions>(&row)?, &roles)?;
-    }
-    for info in spaces::list_spaces(reader, world).await? {
-        if !info.deleted
-            && let Some(row) = spaces::record(reader, &info.space, AccessRecord::NSID, "self").await?
-        {
-            policy.access(&spaces::record_value::<AccessRecord>(&row)?, &roles, &info.space)?;
-        }
-    }
-    policy.consent(requested)
-}
-
-/// Consent consumption and issuance use the same transaction-current policy as writes.
-pub async fn granted_txn(
-    txn: &Txn<'_>,
-    world: &Did,
-    actor: &Did,
-    requested: &[String],
-) -> Result<Vec<String>, SpaceError> {
-    current(txn, world, actor).await?.consent(requested)
-}
-
 async fn current(txn: &Txn<'_>, world: &Did, actor: &Did) -> Result<Policy, SpaceError> {
+    let raw = txn
+        .get(&keys::world_info(world))
+        .await?
+        .ok_or(SpaceError::NotAuthorized)?;
+    let info: crate::world::WorldInfo = serde_json::from_slice(&raw)?;
+    if info.did != *world || info.status != crate::world::Status::Active {
+        return Err(SpaceError::NotAuthorized);
+    }
     let roles = spaces::access::roles_txn(txn, world, actor.as_str()).await?;
     let mut policy = Policy::member(world, &roles)?;
     let members = spaces::world_space(world, spaces::MEMBERS)?;
@@ -79,39 +50,48 @@ async fn current(txn: &Txn<'_>, world: &Did, actor: &Did) -> Result<Policy, Spac
     Ok(policy)
 }
 
-/// Verified identities come only from the OAuth authenticator, never a body.
-pub(crate) struct Session {
+/// The World is the request target; the actor is the verified token issuer.
+#[derive(Clone, Debug)]
+pub(crate) struct Actor {
     pub world: Did,
     pub actor: Did,
-    scopes: Vec<String>,
 }
 
-impl Session {
-    pub(crate) fn from_caller(caller: Caller) -> Result<Self, SpaceError> {
-        let Caller::Session {
-            world,
-            actor,
-            client_id,
-            scopes,
-        } = caller
-        else {
+impl Actor {
+    fn audience_world(caller: &Caller) -> Result<&str, SpaceError> {
+        let Caller::Service { did, audience, .. } = caller else {
             return Err(SpaceError::NotAuthorized);
         };
-        if client_id.is_empty() {
+        atproto_lexicon::validation::syntax::validate_did(did).map_err(|_| SpaceError::NotAuthorized)?;
+        let world = match audience.split_once('#') {
+            None => audience.as_str(),
+            Some((world, crate::api::SERVICE_FRAGMENT)) => world,
+            Some(_) => return Err(SpaceError::NotAuthorized),
+        };
+        atproto_lexicon::validation::syntax::validate_did(world).map_err(|_| SpaceError::NotAuthorized)?;
+        Ok(world)
+    }
+
+    pub(crate) fn world(caller: &Caller) -> Result<Did, SpaceError> {
+        Ok(Did::new(Self::audience_world(caller)?))
+    }
+
+    pub(crate) fn from_caller(caller: Caller, world: Did) -> Result<Self, SpaceError> {
+        if Self::audience_world(&caller)? != world.as_str() {
             return Err(SpaceError::NotAuthorized);
         }
+        let Caller::Service { did, .. } = caller else {
+            return Err(SpaceError::NotAuthorized);
+        };
         Ok(Self {
-            world: Did::new(world),
-            actor: Did::new(actor),
-            scopes,
+            world,
+            actor: Did::new(did),
         })
     }
 
     /// Load policy inside the mutation's operation, after earlier role removals.
     pub(crate) async fn policy(&self, txn: &Txn<'_>) -> Result<Policy, SpaceError> {
-        let mut policy = current(txn, &self.world, &self.actor).await?;
-        policy.session = Some(expand_all(&self.scopes)?);
-        Ok(policy)
+        current(txn, &self.world, &self.actor).await
     }
 
     /// A failed audit append aborts the enclosing mutation, including its events.
@@ -138,28 +118,9 @@ pub(crate) struct Policy {
     world: Did,
     scopes: Vec<Scope>,
     assignable: BTreeSet<String>,
-    session: Option<Vec<Scope>>,
 }
 
 impl Policy {
-    fn consent(&self, requested: &[String]) -> Result<Vec<String>, SpaceError> {
-        let mut result = BTreeSet::from(["atproto".to_owned()]);
-        for scope in expand_all(requested)? {
-            if self.covers(std::slice::from_ref(&scope))? {
-                if let Some(scope) = frozen(scope) {
-                    result.insert(scope.to_string_normalized());
-                }
-            } else {
-                for grant in &self.scopes {
-                    if let Some(scope) = intersection(&scope, grant, &self.world).and_then(frozen) {
-                        result.insert(scope.to_string_normalized());
-                    }
-                }
-            }
-        }
-        Ok(result.into_iter().collect())
-    }
-
     fn member(world: &Did, roles: &[String]) -> Result<Self, SpaceError> {
         if roles.is_empty() {
             return Err(SpaceError::NotAuthorized);
@@ -168,7 +129,6 @@ impl Policy {
             world: world.clone(),
             scopes: vec![Scope::Atproto],
             assignable: BTreeSet::new(),
-            session: None,
         })
     }
 
@@ -196,19 +156,24 @@ impl Policy {
     }
 
     fn require(&self, requested: Scope) -> Result<(), SpaceError> {
-        let requested = [requested];
-        let Some(session) = &self.session else {
-            return Err(SpaceError::NotAuthorized);
-        };
-        if self.covers(&requested)? && covers(session, &requested, &self.world)? {
+        if self.covers(&[requested])? {
             Ok(())
         } else {
             Err(SpaceError::NotAuthorized)
         }
     }
 
+    pub(crate) fn rpc(&self, nsid: &str) -> Result<(), SpaceError> {
+        let method = RpcLexicon::Nsid(nsid.into());
+        let audience = RpcAudience::Did(format!("{}#{}", self.world, crate::api::SERVICE_FRAGMENT));
+        self.require(Scope::Rpc(atproto_oauth::scopes::RpcScope {
+            lxm: BTreeSet::from([method]),
+            aud: BTreeSet::from([audience]),
+        }))
+    }
+
     pub(crate) fn repo(&self, collection: &str, action: RepoAction) -> Result<(), SpaceError> {
-        if collection == AUDIT {
+        if protected(collection) {
             return Err(SpaceError::NotAuthorized);
         }
         self.require(Scope::Repo(atproto_oauth::scopes::RepoScope {
@@ -223,7 +188,7 @@ impl Policy {
         collection: Option<&str>,
         action: SpaceAction,
     ) -> Result<(), SpaceError> {
-        if collection == Some(AUDIT)
+        if collection.is_some_and(protected)
             && matches!(action, SpaceAction::Create | SpaceAction::Update | SpaceAction::Delete)
         {
             return Err(SpaceError::NotAuthorized);
@@ -313,7 +278,7 @@ impl Policy {
             && !old.is_some_and(|access| access.public.unwrap_or(false))
         {
             // Anonymous access is a whole-Space grant, not an ordinary edit.
-            // Both the actor and the consenting client must be able to read it.
+            // The actor must be able to read it before making it public.
             self.space(space, None, SpaceAction::Read)?;
         }
         for after in new.into_iter().flat_map(|access| &access.grants) {
@@ -426,6 +391,14 @@ fn decode<T: serde::de::DeserializeOwned>(value: &[u8]) -> Result<T, SpaceError>
     atproto_dasl::from_slice(value).map_err(|error| SpaceError::Invalid(error.to_string()))
 }
 
+/// Generic writes cannot forge records owned by the rules state machine or audit.
+fn protected(collection: &str) -> bool {
+    matches!(
+        collection,
+        AUDIT | "at.motet.pilot.scene" | "at.motet.pilot.admission" | "at.motet.pilot.closing"
+    )
+}
+
 fn expand_all(scopes: &[String]) -> Result<Vec<Scope>, SpaceError> {
     let mut result = Vec::new();
     for scope in scopes {
@@ -446,91 +419,6 @@ fn expand(scope: &str) -> Result<Vec<Scope>, SpaceError> {
         }
     }
     Ok(scopes)
-}
-
-// An empty collection set cannot be represented explicitly on the wire.
-// Remove its ineffective write actions rather than serializing a new default.
-fn frozen(mut scope: Scope) -> Option<Scope> {
-    if let Scope::Space(permission) = &mut scope {
-        if matches!(&permission.collection, SpaceCollections::Explicit(collections) if collections.is_empty()) {
-            permission
-                .action
-                .retain(|action| matches!(action, SpaceAction::Read | SpaceAction::ReadSelf));
-        }
-        if permission.action.is_empty() {
-            return None;
-        }
-    }
-    Some(scope)
-}
-
-fn intersection(left: &Scope, right: &Scope, world: &Did) -> Option<Scope> {
-    match (left, right) {
-        (Scope::Repo(left), Scope::Repo(right)) => {
-            let collections = intersect_set(&left.collections, &right.collections, &RepoCollection::All);
-            let actions: BTreeSet<_> = left.actions.intersection(&right.actions).cloned().collect();
-            (!collections.is_empty() && !actions.is_empty())
-                .then_some(Scope::Repo(atproto_oauth::scopes::RepoScope { collections, actions }))
-        }
-        (Scope::Rpc(left), Scope::Rpc(right)) => {
-            let lxm = intersect_set(&left.lxm, &right.lxm, &RpcLexicon::All);
-            let aud = intersect_set(&left.aud, &right.aud, &RpcAudience::All);
-            (!lxm.is_empty() && !aud.is_empty()).then_some(Scope::Rpc(atproto_oauth::scopes::RpcScope { lxm, aud }))
-        }
-        (Scope::Space(left), Scope::Space(right)) => {
-            let space_type = intersect_value(&left.space_type, &right.space_type, &SpaceType::All)?;
-            let resolve = |did: &SpaceDid| {
-                if *did == SpaceDid::SelfDid {
-                    SpaceDid::Did(world.to_string())
-                } else {
-                    did.clone()
-                }
-            };
-            let did = intersect_value(&resolve(&left.did), &resolve(&right.did), &SpaceDid::All)?;
-            let skey = intersect_value(&left.skey, &right.skey, &SpaceSkey::All)?;
-            let mut action: BTreeSet<_> = left.action.intersection(&right.action).copied().collect();
-            if left.action.contains(&SpaceAction::Read) && right.action.contains(&SpaceAction::ReadSelf)
-                || right.action.contains(&SpaceAction::Read) && left.action.contains(&SpaceAction::ReadSelf)
-            {
-                action.insert(SpaceAction::ReadSelf);
-            }
-            Some(Scope::Space(SpacePermission {
-                space_type,
-                did,
-                skey,
-                action,
-                collection: SpaceCollections::Explicit(intersect_set(
-                    &left.collections_resolved_with(&[]),
-                    &right.collections_resolved_with(&[]),
-                    &SpaceCollection::All,
-                )),
-                manage: left.manage.intersection(&right.manage).copied().collect(),
-            }))
-        }
-        _ if left.grants(right) => Some(right.clone()),
-        _ if right.grants(left) => Some(left.clone()),
-        _ => None,
-    }
-}
-
-fn intersect_value<T: Clone + PartialEq>(left: &T, right: &T, all: &T) -> Option<T> {
-    if left == all {
-        Some(right.clone())
-    } else if right == all || left == right {
-        Some(left.clone())
-    } else {
-        None
-    }
-}
-
-fn intersect_set<T: Clone + Ord>(left: &BTreeSet<T>, right: &BTreeSet<T>, all: &T) -> BTreeSet<T> {
-    if left.contains(all) {
-        right.clone()
-    } else if right.contains(all) {
-        left.clone()
-    } else {
-        left.intersection(right).cloned().collect()
-    }
 }
 
 fn confined(scopes: &[String], space: &SpaceUri, world: &Did) -> Result<Vec<Scope>, SpaceError> {
@@ -566,7 +454,7 @@ fn covers(grants: &[Scope], requested: &[Scope], world: &Did) -> Result<bool, Sp
             Scope::Rpc(rpc) => rpc.lxm.iter().all(|method| rpc.aud.iter().all(|audience| {
                 grants.iter().any(|grant| matches!(grant, Scope::Rpc(grant)
                     if (grant.lxm.contains(&RpcLexicon::All) || grant.lxm.contains(method))
-                        && (grant.aud.contains(&RpcAudience::All) || grant.aud.contains(audience))))
+                        && grant.aud.iter().any(|allowed| rpc_audience_covers(allowed, audience))))
             })),
             _ => grants.iter().any(|grant| grant.grants(request)),
         };
@@ -575,6 +463,16 @@ fn covers(grants: &[Scope], requested: &[Scope], world: &Did) -> Result<bool, Sp
         }
     }
     Ok(true)
+}
+
+fn rpc_audience_covers(grant: &RpcAudience, target: &RpcAudience) -> bool {
+    match (grant, target) {
+        (RpcAudience::All, _) => true,
+        (RpcAudience::Did(grant), RpcAudience::Did(target)) => {
+            grant == target || (!grant.contains('#') && target.split_once('#').is_some_and(|(did, _)| did == grant))
+        }
+        (RpcAudience::Did(_), RpcAudience::All) => false,
+    }
 }
 
 fn covers_space(grants: &[Scope], request: &SpacePermission, world: &Did) -> Result<bool, SpaceError> {

@@ -136,7 +136,7 @@ async fn bootstrap_creates_a_readable_owner_group_and_reopen_preserves_it() {
             json!(["owner"])
         );
         let permissions = json_record(handle.reader(), &members, "group.opensocial.permissions", "self").await;
-        assert_eq!(permissions["grants"][0]["assignable"], json!(["owner"]));
+        assert_eq!(permissions["grants"][0]["assignable"], json!(["owner", "gm"]));
         let indexes = spaces::storage::ReadStorage::new(handle.reader(), &world)
             .list_records(&members, "group.opensocial.space", None, 100, true)
             .await

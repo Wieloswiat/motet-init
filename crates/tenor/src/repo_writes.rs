@@ -1,5 +1,4 @@
-//! World-session public-repo mutations. The shard checks current roles, session
-//! collection/action scopes, swaps and audit durability in one operation.
+//! Service-authenticated public-repo mutations, checked and audited on the shard.
 //!
 //! Wire shapes follow the com.atproto.repo lexicons, not the PDS handler's
 //! extra delete-response fields.
@@ -17,14 +16,13 @@ use motet_xrpc::{Access, Caller, Kind, Method, XrpcError};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::grants::{Policy, Session};
+use crate::authorization::{Actor, Policy};
 use crate::repo::{self, RepoError};
 use crate::shard::{Handle, Op, Txn};
 use crate::spaces::SpaceError;
 use crate::store::keys;
 
-/// Register only authenticated World-session mutations; service auth never
-/// becomes a World session merely because it names the World's repository.
+/// Register World-repo mutations authenticated by the member's PDS.
 #[must_use]
 pub fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard: &Handle) -> Service<S> {
     for nsid in [
@@ -38,7 +36,7 @@ pub fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard
             Method {
                 nsid,
                 kind: Kind::Procedure,
-                access: Access::Session,
+                access: Access::Service,
                 max_body: 4 * 1024 * 1024,
             },
             move |_, caller, input| dispatch(shard.clone(), nsid, caller, input),
@@ -190,7 +188,7 @@ impl Pending {
 }
 
 struct Apply {
-    session: Session,
+    caller: Caller,
     repo: String,
     writes: Vec<Pending>,
     swap_commit: Option<Cid>,
@@ -202,23 +200,34 @@ impl Op for Apply {
     type Error = XrpcError;
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Value, XrpcError> {
-        if self.repo != self.session.world.as_str() {
-            let value = txn
-                .get(&keys::world_info(&self.session.world))
+        let world = if self.repo.starts_with("did:") {
+            Did::new(&self.repo)
+        } else {
+            let handle = self.repo.to_ascii_lowercase();
+            let raw = txn
+                .get(&keys::handle(&handle))
                 .await
                 .map_err(internal)?
                 .ok_or(XrpcError::AuthRequired)?;
-            let world: crate::world::WorldInfo = serde_json::from_slice(&value).map_err(internal)?;
-            if self.repo != world.handle {
+            let world = Did::new(std::str::from_utf8(&raw).map_err(internal)?);
+            let value = txn
+                .get(&keys::world_info(&world))
+                .await
+                .map_err(internal)?
+                .ok_or(XrpcError::AuthRequired)?;
+            let info: crate::world::WorldInfo = serde_json::from_slice(&value).map_err(internal)?;
+            if info.did != world || info.handle != handle || !info.document.confirms_handle(&handle) {
                 return Err(XrpcError::AuthRequired);
             }
-        }
-        let policy = self.session.policy(txn).await.map_err(space_error)?;
+            world
+        };
+        let actor = Actor::from_caller(self.caller, world).map_err(space_error)?;
+        let policy = actor.policy(txn).await.map_err(space_error)?;
         let raw = txn
-            .get(&keys::repo_head(&self.session.world))
+            .get(&keys::repo_head(&actor.world))
             .await
             .map_err(internal)?
-            .ok_or_else(|| repo_error(RepoError::UnknownWorld(self.session.world.clone())))?;
+            .ok_or_else(|| repo_error(RepoError::UnknownWorld(actor.world.clone())))?;
         let head: repo::Head = serde_json::from_slice(&raw).map_err(internal)?;
         if self.swap_commit.is_some_and(|expected| expected != head.cid) {
             return Err(repo_error(RepoError::InvalidSwap));
@@ -229,27 +238,24 @@ impl Op for Apply {
         let mut writes = Vec::with_capacity(self.writes.len());
         let mut actions = Vec::with_capacity(self.writes.len());
         for pending in self.writes {
-            match pending.prepare(txn, &self.session.world, &policy, self.batch).await? {
+            match pending.prepare(txn, &actor.world, &policy, self.batch).await? {
                 Prepared::Mutation(write, action) => {
                     writes.push(write);
                     actions.push(action);
                 }
                 Prepared::AbsentDelete(uri) => {
-                    self.session.audit(txn, "delete", &uri).await.map_err(space_error)?;
+                    actor.audit(txn, "delete", &uri).await.map_err(space_error)?;
                     return Ok(json!({}));
                 }
             }
         }
-        let committed = repo::commit(txn, &self.session.world, writes, self.swap_commit)
+        let committed = repo::commit(txn, &actor.world, writes, self.swap_commit)
             .await
             .map_err(repo_error)?;
         let commit = json!({"cid": committed.commit.to_string(), "rev": committed.rev.to_string()});
         let mut results = Vec::with_capacity(committed.results.len());
         for ((uri, cid), action) in committed.results.into_iter().zip(actions) {
-            self.session
-                .audit(txn, action.as_str(), &uri)
-                .await
-                .map_err(space_error)?;
+            actor.audit(txn, action.as_str(), &uri).await.map_err(space_error)?;
             let mut result = match action {
                 RepoAction::Delete => json!({}),
                 RepoAction::Create | RepoAction::Update => json!({
@@ -284,7 +290,6 @@ impl Op for Apply {
 }
 
 async fn dispatch(shard: Handle, nsid: &str, caller: Caller, input: Input) -> Result<Response, XrpcError> {
-    let session = Session::from_caller(caller).map_err(space_error)?;
     let batch = nsid == "com.atproto.repo.applyWrites";
     let (repo, writes, swap_commit) = if batch {
         let request: BatchInput = serde_json::from_slice(&input.body).map_err(|error| invalid(error.to_string()))?;
@@ -366,7 +371,7 @@ async fn dispatch(shard: Handle, nsid: &str, caller: Caller, input: Input) -> Re
     };
     let result = shard
         .run(Apply {
-            session,
+            caller,
             repo,
             writes,
             swap_commit: swap_commit.as_deref().map(parse_cid).transpose()?,
@@ -395,7 +400,7 @@ fn space_error(error: SpaceError) -> XrpcError {
         SpaceError::NotAuthorized => XrpcError::Protocol {
             status: StatusCode::FORBIDDEN,
             name: "InsufficientScope",
-            message: "current membership and session scopes do not permit this action".into(),
+            message: "current membership and role grants do not permit this action".into(),
         },
         SpaceError::Repo(error) => repo_error(error),
         other => internal(other),

@@ -17,7 +17,7 @@
 //! - [`identity`]: owner-signed PLC reservations, handle resolution and discovery.
 //! - [`world`]: the atomic transition from a reservation to a hosted World.
 //! - [`spaces`]: the World's role-derived Space authority and repositories.
-//! - [`oauth`]: `DPoP`-bound World sessions, GM authentication and audited writes.
+//! - `authorization`: current role grants and member-attributed audit.
 //! - [`admission`]: reading a post back from its author and deciding it in
 //!   the World's command stream.
 //! - [`publication`]: durable admission and closing publication to each scene's audience.
@@ -30,6 +30,7 @@
 
 pub mod admission;
 pub mod api;
+mod authorization;
 mod b64;
 pub mod config;
 pub mod crawl;
@@ -37,11 +38,12 @@ pub mod dice;
 pub mod event;
 pub mod identity;
 pub mod keys;
-pub mod oauth;
 pub mod pds;
 mod plc_genesis;
 pub mod publication;
 pub mod repo;
+mod repo_writes;
+mod scenes;
 pub mod shard;
 pub mod spaces;
 pub mod store;

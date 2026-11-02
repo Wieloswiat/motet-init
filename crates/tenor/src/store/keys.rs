@@ -13,8 +13,8 @@
 //! | `q/`        | reservations, their sealed keys and creation receipts   |
 //! | `v/`, `x/`  | reserved handles and reservation expiry order           |
 //! | `s/`        | Spaces (the spaces module)                             |
-//! | `o/`        | OAuth server state (the oauth module)                  |
 //! | `p/`        | admission publication queue and receipts               |
+//! | `c/`        | typed scene operation receipts                         |
 //!
 //! DIDs contain no `/`, so they can be a path component as they are. A
 //! component that can contain `/` is followed by `\0` instead.
@@ -66,6 +66,19 @@ pub fn publication_operation(world: &Did, operation: &motet_rules::OperationId) 
         &(world.as_str().len() as u64).to_be_bytes(),
         world.as_str().as_bytes(),
         operation.as_str().as_bytes(),
+    ])
+}
+
+/// Idempotency receipts are isolated by World and verified actor.
+#[must_use]
+pub fn scene_operation(world: &Did, actor: &Did, operation: &str) -> Vec<u8> {
+    join(&[
+        b"c/scene/",
+        world.as_str().as_bytes(),
+        b"/",
+        actor.as_str().as_bytes(),
+        b"/",
+        operation.as_bytes(),
     ])
 }
 
@@ -418,21 +431,4 @@ pub fn space_info(space: &SpaceUri) -> Vec<u8> {
         b"/",
         space.space_key.as_str().as_bytes(),
     ])
-}
-
-/// OAuth signer and confidential-client keys, sealed under the master key.
-pub const OAUTH_SIGNING_KEY: &[u8] = b"o/key/signing";
-pub const OAUTH_CLIENT_KEY: &[u8] = b"o/key/client";
-/// Expiring OAuth entries, ordered by deadline for bounded maintenance.
-pub const OAUTH_EXPIRIES: &[u8] = b"o/expiry/";
-
-/// Credentials are addressed only by their SHA-256 digest.
-#[must_use]
-pub fn oauth(kind: &str, digest: &str) -> Vec<u8> {
-    join(&[b"o/", kind.as_bytes(), b"/", digest.as_bytes()])
-}
-
-#[must_use]
-pub fn oauth_expiry(expires: u64, key: &[u8]) -> Vec<u8> {
-    join(&[OAUTH_EXPIRIES, &expires.to_be_bytes(), key])
 }

@@ -48,6 +48,16 @@ const MEMBER: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
 const RECORD_REPO: &str = "did:plc:cccccccccccccccccccccccc";
 const RECORD_COLLECTIONS: [&str; 2] = ["com.example.first", "com.example.second"];
 
+fn varies_on_mac(headers: &HeaderMap) -> bool {
+    headers
+        .get_all("vary")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .any(|value| value == "*" || value.eq_ignore_ascii_case(WANT_MAC_HEADER))
+}
+
 fn space() -> SpaceUri {
     spaces::world_space(&Did::new(WORLD), spaces::META).expect("fixture World has a valid meta Space URI")
 }
@@ -240,7 +250,7 @@ impl Fixture {
         });
         let auth = motet_xrpc::service_auth::authenticate(
             resolver,
-            Arc::new(|aud| aud == WORLD || aud == format!("{WORLD}#atproto_pds")),
+            Arc::new(|aud| aud == WORLD || aud == format!("{WORLD}#motet_tenor")),
         );
         let router = http::register(Service::new(http::authenticate(auth, Arc::clone(&state))), &state)
             .into_router(())
@@ -356,8 +366,7 @@ impl Fixture {
     }
 
     async fn write(&self, issuer: &str, key: &KeyData, method: &str, value: Value) -> axum::response::Response {
-        self.write_to(issuer, key, &format!("{WORLD}#atproto_pds"), method, value)
-            .await
+        self.write_to(issuer, key, WORLD, method, value).await
     }
 
     async fn write_to(
@@ -426,7 +435,7 @@ async fn private_bytes_require_an_issued_bound_unrevoked_credential() {
     ];
     let response = f.get("com.atproto.space.getRecord", &query, HeaderMap::new()).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    assert!(response.headers()["vary"].to_str().unwrap().contains(WANT_MAC_HEADER));
+    assert!(varies_on_mac(response.headers()));
 
     let mut missing = f.headers(&credential, MacType::Record);
     missing.remove("signature");
@@ -740,10 +749,10 @@ async fn star_export_and_record_macs_interoperate_with_the_protocol_consumer() {
     );
 }
 
-/// Resolving a member's service token must not authorize signing writes as
-/// the World. Two conditional writers must not both overwrite the same CID.
+/// A valid signature from the World or a read-only member does not bypass
+/// current member policy. Conditional writers must not overwrite a stale CID.
 #[tokio::test]
-async fn only_world_or_owner_authority_writes_and_conditional_updates_serialize() {
+async fn service_auth_requires_member_write_authority_and_conditional_updates_serialize() {
     let f = Fixture::new().await;
     let method = "com.atproto.space.putRecord";
     let rkey = Tid::new().to_string();
@@ -753,7 +762,11 @@ async fn only_world_or_owner_authority_writes_and_conditional_updates_serialize(
         f.write(MEMBER, &f.member, method, request.clone()).await.status(),
         StatusCode::UNAUTHORIZED
     );
-    let created = f.write(WORLD, &f.world, method, request.clone()).await;
+    assert_eq!(
+        f.write(WORLD, &f.world, method, request.clone()).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let created = f.write(OWNER, &f.owner, method, request.clone()).await;
     assert_eq!(created.status(), StatusCode::OK);
     let cid = json_body(created).await["cid"].clone();
     assert_eq!(
@@ -767,7 +780,7 @@ async fn only_world_or_owner_authority_writes_and_conditional_updates_serialize(
         StatusCode::OK
     );
     request["record"]["text"] = "Lost update".into();
-    let stale = f.write(WORLD, &f.world, method, request).await;
+    let stale = f.write(OWNER, &f.owner, method, request).await;
     assert_eq!(stale.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json_body(stale).await["error"], "InvalidSwap");
 }
@@ -799,7 +812,7 @@ async fn missing_kem_precedes_bad_mac_and_refusals_still_vary() {
         )
         .await;
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert!(refused.headers()["vary"].to_str().unwrap().contains(WANT_MAC_HEADER));
+    assert!(varies_on_mac(refused.headers()));
     assert_eq!(json_body(refused).await["error"], "BadSpaceMac");
     f.handle.run(RemoveKem).await.unwrap().unwrap();
     let unavailable = f
@@ -810,12 +823,7 @@ async fn missing_kem_precedes_bad_mac_and_refusals_still_vary() {
         )
         .await;
     assert_eq!(unavailable.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(
-        unavailable.headers()["vary"]
-            .to_str()
-            .unwrap()
-            .contains(WANT_MAC_HEADER)
-    );
+    assert!(varies_on_mac(unavailable.headers()));
     assert_eq!(json_body(unavailable).await["error"], "KemKeyUnavailable");
 }
 

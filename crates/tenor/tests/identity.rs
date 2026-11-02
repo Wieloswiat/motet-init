@@ -5,12 +5,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use atproto_identity::key::{KeyData, KeyType, generate_key, sign, to_public};
+use atproto_identity::key::{KeyData, KeyType, generate_key, identify_key, sign, to_public};
 use atproto_identity::model::{Document, VerificationMethod};
 use atproto_identity::plc::Operation;
+use atproto_space::http_signature::sign_credential_use;
+use atproto_space::kem::encapsulate;
+use atproto_space::mac::{
+    MAC_HEADER, MacType, WANT_MAC_HEADER, format_want_mac_header, parse_mac_header, verify_record_mac,
+};
 use atproto_testkit::highport::{FakePlcDirectory, Fault};
 use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderName, HeaderValue, Request, StatusCode};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use motet_lexicons::at_motet_pilot_tenor_createworld::{CreateWorldInput, CreateWorldOutput};
@@ -25,6 +30,10 @@ use motet_tenor::store::keys;
 use motet_tenor::{api, pds};
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
+use p256::ecdsa::{
+    Signature, SigningKey,
+    signature::{Signer as _, Verifier as _},
+};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -107,7 +116,7 @@ impl Fixture {
         }
     }
 
-    async fn router(&self) -> axum::Router {
+    fn router(&self) -> axum::Router {
         let resolver = Arc::new(DidResolver::new(self.fetcher.clone(), self.plc.origin()));
         let state = Arc::new(api::State {
             shard: self.shard.clone(),
@@ -122,7 +131,6 @@ impl Fixture {
                 Arc::new(move |aud| api::accepts_audience(aud, &audience)),
             ),
         )
-        .await
         .expect("registry")
     }
 
@@ -149,22 +157,38 @@ impl Fixture {
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).expect("request")))
             .expect("request");
-        response_json(self.router().await.oneshot(request).await.expect("response")).await
+        response_json(self.router().oneshot(request).await.expect("response")).await
     }
 
-    async fn reserve(&self, name: &str, tenor_rotation: bool) -> ReserveWorldOutput {
-        let request = ReserveWorldInput {
-            handle: name.into(),
-            rotation_key: to_public(&self.rotation).expect("public rotation key").to_string(),
-            tenor_rotation_key: tenor_rotation,
-            extra: serde_json::Map::new(),
-        };
+    async fn reserve(&self, handle: &str, tenor_rotation: bool) -> ReserveWorldOutput {
+        self.reserve_with(handle, tenor_rotation, None, None).await
+    }
+
+    async fn reserve_with(
+        &self,
+        handle: &str,
+        tenor_rotation: bool,
+        visibility: Option<&str>,
+        name: Option<&str>,
+    ) -> ReserveWorldOutput {
+        let mut body = json!({
+            "handle": handle,
+            "rotationKey": to_public(&self.rotation).expect("public rotation key").to_string(),
+            "tenorRotationKey": tenor_rotation,
+        });
+        if let Some(visibility) = visibility {
+            body["visibility"] = json!(visibility);
+        }
+        if let Some(name) = name {
+            body["name"] = json!(name);
+        }
+        let request: ReserveWorldInput = serde_json::from_value(body).expect("generated reservation input contract");
         let (status, body) = self
             .post(
                 api::RESERVE_WORLD.nsid,
                 serde_json::to_value(request).expect("request"),
                 OWNER,
-                self.hosting.audience(),
+                self.hosting.service_did(),
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
@@ -192,7 +216,7 @@ impl Fixture {
             api::CREATE_WORLD.nsid,
             serde_json::to_value(request).expect("request"),
             OWNER,
-            self.hosting.audience(),
+            self.hosting.service_did(),
         )
         .await
     }
@@ -222,6 +246,78 @@ async fn query(router: axum::Router, path: &str) -> (StatusCode, Value) {
             .expect("response"),
     )
     .await
+}
+
+async fn mint_anonymous(f: &Fixture, space: &str, holder: &KeyData) -> (StatusCode, Value) {
+    let request = Request::post("/xrpc/com.atproto.space.getSpaceCredential")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&json!({
+                "space": space,
+                "credentialKid": to_public(holder).expect("reader public key").to_string()
+            }))
+            .expect("mint request"),
+        ))
+        .expect("mint request");
+    response_json(f.router().oneshot(request).await.expect("mint response")).await
+}
+
+/// A new client can discover the tenor before any World exists and use its DID
+/// as the creation-token audience. Catches an absent document, a service ID
+/// bound to another DID, an endpoint derived from an untrusted Host header, or
+/// discovery of an audience the creation procedure refuses.
+#[tokio::test]
+async fn tenor_did_document_discovers_a_usable_world_creation_service() {
+    let mut f = Fixture::new().await;
+    for (index, (origin, host, did)) in [
+        (
+            "https://tenor.motet.test",
+            "tenor.motet.test",
+            "did:web:tenor.motet.test",
+        ),
+        (
+            "https://tenor.motet.test:8443",
+            "attacker.example",
+            "did:web:tenor.motet.test%3A8443",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        f.hosting = Arc::new(
+            Hosting::new(
+                &origin.parse().expect("origin"),
+                vec![".motet.test".into()],
+                f.plc.origin().into(),
+                f.fetcher.clone(),
+                Vec::new(),
+            )
+            .expect("hosting configuration"),
+        );
+        let request = Request::get("/.well-known/did.json")
+            .header("host", host)
+            .body(Body::empty())
+            .expect("DID document request");
+        let (status, value) = response_json(f.router().oneshot(request).await.expect("DID document response")).await;
+        assert_eq!(status, StatusCode::OK, "{value}");
+        let document: Document = serde_json::from_value(value).expect("a DID document");
+        assert_eq!(document.id, did);
+        assert_eq!(document.service_endpoint("motet_tenor"), Some(origin));
+
+        let (status, body) = f
+            .post(
+                api::RESERVE_WORLD.nsid,
+                json!({
+                    "handle": format!("discovery-{index}.motet.test"),
+                    "rotationKey": to_public(&f.rotation).expect("public rotation key").to_string(),
+                    "tenorRotationKey": false,
+                }),
+                OWNER,
+                &document.id,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
 }
 
 /// The owner can recover from the tenor and signs exactly the bytes returned
@@ -293,7 +389,7 @@ async fn another_key_or_owner_cannot_create_the_reserved_world() {
     let valid = Fixture::signed(&reserved, &f.rotation);
     let request = json!({ "reservation": reserved.reservation, "signedOperation": valid });
     assert_eq!(
-        f.post(api::CREATE_WORLD.nsid, request, OTHER, f.hosting.audience())
+        f.post(api::CREATE_WORLD.nsid, request, OTHER, f.hosting.service_did())
             .await
             .0,
         StatusCode::UNAUTHORIZED
@@ -319,6 +415,267 @@ async fn another_key_or_owner_cannot_create_the_reserved_world() {
     assert_eq!(f.create(&reserved, &valid).await.0, StatusCode::OK);
 }
 
+/// Only the owner's canonical P-256 signature over the raw returned bytes
+/// can start creation. Catches accepting the tenor's lower-priority key,
+/// double-hashing, DER, padded or malleable signatures, or storing a bad intent.
+#[tokio::test]
+async fn p256_genesis_accepts_only_the_owner_low_s_signature_over_raw_signing_bytes() {
+    let f = Fixture::new().await;
+    let reserved = f.reserve("p256.motet.test", true).await;
+    let bytes = URL_SAFE_NO_PAD.decode(&reserved.signing_bytes).expect("raw DAG-CBOR");
+    let signing = SigningKey::from_slice(f.rotation.bytes()).expect("owner P-256 key");
+    let low: Signature = signing.sign(&bytes);
+    let low = low.normalize_s();
+    let high = Signature::from_scalars(low.r().to_owned(), -low.s().to_owned()).expect("high-S twin");
+    signing
+        .verifying_key()
+        .verify(&bytes, &high)
+        .expect("the high-S twin is a mathematically valid P-256 signature");
+
+    let operation_with = |sig: String| -> Operation {
+        let mut operation = reserved.operation.clone();
+        operation["sig"] = json!(sig);
+        serde_json::from_value(operation).expect("signed PLC operation")
+    };
+    let high = operation_with(URL_SAFE_NO_PAD.encode(high.to_bytes()));
+    assert_eq!(f.create(&reserved, &high).await.0, StatusCode::BAD_REQUEST);
+
+    let digest = atproto_identity::plc::encoding::sha256(&bytes);
+    let double_hashed: Signature = signing.sign(&digest);
+    let double_hashed = operation_with(URL_SAFE_NO_PAD.encode(double_hashed.normalize_s().to_bytes()));
+    assert_eq!(f.create(&reserved, &double_hashed).await.0, StatusCode::BAD_REQUEST);
+
+    let padded = operation_with(format!("{}=", URL_SAFE_NO_PAD.encode(low.to_bytes())));
+    assert_eq!(f.create(&reserved, &padded).await.0, StatusCode::BAD_REQUEST);
+
+    let der = operation_with(URL_SAFE_NO_PAD.encode(low.to_der().as_bytes()));
+    assert_eq!(f.create(&reserved, &der).await.0, StatusCode::BAD_REQUEST);
+
+    let stranger = generate_key(KeyType::P256Private).expect("another P-256 rotation key");
+    assert_eq!(
+        f.create(&reserved, &Fixture::signed(&reserved, &stranger)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let sealed = f
+        .shard
+        .reader()
+        .get(&keys::reserved_key(&reserved.reservation, Purpose::Rotation))
+        .await
+        .expect("read reserved tenor key")
+        .expect("tenor rotation key was opted in");
+    let tenor = f
+        .master
+        .unseal(
+            &Did::new(format!("reservation/{}", reserved.reservation)),
+            Purpose::Rotation,
+            &sealed,
+        )
+        .expect("tenor can open its reserved recovery key");
+    assert_eq!(
+        reserved.operation["rotationKeys"][1],
+        to_public(&tenor).expect("tenor public key").to_string()
+    );
+    assert_eq!(
+        f.create(&reserved, &Fixture::signed(&reserved, &tenor)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(f.plc.submission_count(), 0);
+
+    let valid = operation_with(URL_SAFE_NO_PAD.encode(low.to_bytes()));
+    let (status, created) = f.create(&reserved, &valid).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(f.plc.submission_count(), 1);
+}
+
+/// A public selection and profile name survive an unfinished PLC submission
+/// and shard replay. Catches losing or replacing reserved fields, publishing
+/// no group declaration, or marking meta public without readable profiles.
+#[tokio::test]
+async fn public_world_creation_publishes_its_named_meta_after_retry_and_replay() {
+    let mut f = Fixture::new().await;
+    let reserved = f
+        .reserve_with(
+            "lantern.motet.test",
+            false,
+            Some("public"),
+            Some("The Lantern – Étoile"),
+        )
+        .await;
+    let operation = Fixture::signed(&reserved, &f.rotation);
+    f.reopen().await;
+    f.plc.script(Fault::refuse(503, "Unavailable"));
+    assert_eq!(
+        f.create(&reserved, &operation).await.0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    f.reopen().await;
+    // A retry cannot override the options fixed by the original reservation.
+    let (status, created) = f
+        .post(
+            api::CREATE_WORLD.nsid,
+            json!({
+                "reservation": reserved.reservation,
+                "signedOperation": operation,
+                "visibility": "private",
+                "name": "Replaced",
+            }),
+            OWNER,
+            f.hosting.service_did(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let created: CreateWorldOutput = serde_json::from_value(created).expect("creation response");
+    f.reopen().await;
+    let (status, retry) = f.create(&reserved, &operation).await;
+    assert_eq!(status, StatusCode::OK, "{retry}");
+    assert_eq!(retry["did"], created.did);
+    assert_eq!(f.plc.submission_count(), 2);
+
+    let declaration_path = format!(
+        "/xrpc/com.atproto.repo.getRecord?repo={}&collection=group.opensocial.declaration&rkey=self",
+        created.did
+    );
+    let (status, declaration) = query(f.router(), &declaration_path).await;
+    assert_eq!(status, StatusCode::OK, "{declaration}");
+    let world = Did::new(&created.did);
+    let meta = motet_tenor::spaces::world_space(&world, motet_tenor::spaces::META)
+        .expect("World meta Space")
+        .to_string();
+    assert_eq!(declaration["value"]["meta"], meta);
+
+    // An unrelated reader obtains a public credential without a delegation.
+    let holder = generate_key(KeyType::P256Private).expect("reader credential key");
+    let (status, minted) = mint_anonymous(&f, &meta, &holder).await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let credential = minted["credential"].as_str().expect("public reader credential");
+    let signed_headers = sign_credential_use(credential, &created.did, &holder).expect("reader proof");
+    let kem_key = identify_key(
+        reserved.operation["verificationMethods"]["atproto_kem"]
+            .as_str()
+            .expect("reserved public KEM key"),
+    )
+    .expect("KEM did:key");
+    let kem = encapsulate(&kem_key).expect("reader encapsulates to the World's public KEM key");
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("space", &meta)
+        .append_pair("repo", &created.did)
+        .append_pair("collection", "group.opensocial.profile")
+        .append_pair("rkey", "self")
+        .finish();
+    let mut request = Request::get(format!("/xrpc/com.atproto.space.getRecord?{params}"))
+        .body(Body::empty())
+        .expect("public profile query");
+    for (name, value) in signed_headers.iter() {
+        request.headers_mut().insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_str(value).expect("credential proof header"),
+        );
+    }
+    request.headers_mut().insert(
+        WANT_MAC_HEADER,
+        HeaderValue::from_str(&format_want_mac_header(MacType::Record, &kem.key_share).expect("MAC request"))
+            .expect("MAC header"),
+    );
+    let response = f.router().oneshot(request).await.expect("profile response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mac = parse_mac_header(
+        response.headers().get(MAC_HEADER).and_then(|value| value.to_str().ok()),
+        MacType::Record,
+    )
+    .expect("profile MAC");
+    let (_, profile) = response_json(response).await;
+    verify_record_mac(
+        &kem.shared_secret,
+        profile["uri"].as_str().expect("profile URI"),
+        &profile["cid"].as_str().expect("profile CID").parse().expect("CID"),
+        &mac,
+    )
+    .expect("profile MAC verifies against the reserved KEM key");
+    assert_eq!(profile["value"]["displayName"], "The Lantern – Étoile");
+    for space_type in [motet_tenor::spaces::MEMBERS, motet_tenor::spaces::GMS] {
+        let private = motet_tenor::spaces::world_space(&world, space_type)
+            .expect("private World Space")
+            .to_string();
+        let (status, body) = mint_anonymous(&f, &private, &holder).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "SpaceNotFound");
+    }
+}
+
+/// Explicit and omitted private visibility keep names out of public discovery.
+/// Catches treating any supplied visibility as public or changing old defaults.
+#[tokio::test]
+async fn private_worlds_never_publish_a_declaration_or_anonymous_meta_access() {
+    let f = Fixture::new().await;
+    for (handle, visibility, name) in [
+        ("default.motet.test", None, None),
+        ("private.motet.test", Some("private"), Some("Hidden Lantern")),
+    ] {
+        let reserved = f.reserve_with(handle, false, visibility, name).await;
+        let operation = Fixture::signed(&reserved, &f.rotation);
+        let (status, created) = f.create(&reserved, &operation).await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let did = created["did"].as_str().expect("World DID");
+        let declaration_path =
+            format!("/xrpc/com.atproto.repo.getRecord?repo={did}&collection=group.opensocial.declaration&rkey=self");
+        let (status, missing) = query(f.router(), &declaration_path).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{missing}");
+        assert_eq!(missing["error"], "RecordNotFound");
+        let meta =
+            motet_tenor::spaces::world_space(&Did::new(did), motet_tenor::spaces::META).expect("World meta Space");
+        let profile = motet_tenor::spaces::record(f.shard.reader(), &meta, "group.opensocial.profile", "self")
+            .await
+            .expect("profile read")
+            .expect("profile exists");
+        let profile = atproto_dasl::from_slice_to_json(&profile.value).expect("profile DRISL");
+        assert_eq!(profile["displayName"], name.unwrap_or(handle));
+        let holder = generate_key(KeyType::P256Private).expect("reader credential key");
+        let (status, body) = mint_anonymous(&f, &meta.to_string(), &holder).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "SpaceNotFound");
+    }
+}
+
+/// Invalid profile names must fail before irreversible PLC publication.
+/// Catches accepting a reservation which could never bootstrap its profile.
+#[tokio::test]
+async fn invalid_profile_cannot_reserve_a_world_or_strand_its_handle() {
+    let f = Fixture::new().await;
+    let request = json!({
+        "handle": "reusable.motet.test",
+        "rotationKey": to_public(&f.rotation).expect("public key").to_string(),
+        "tenorRotationKey": false,
+        "visibility": "public",
+        "name": "x".repeat(65),
+    });
+    let (status, body) = f
+        .post(api::RESERVE_WORLD.nsid, request, OWNER, f.hosting.service_did())
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let invalid_visibility = json!({
+        "handle": "reusable.motet.test",
+        "rotationKey": to_public(&f.rotation).expect("public key").to_string(),
+        "tenorRotationKey": false,
+        "visibility": "friends",
+    });
+    let (status, body) = f
+        .post(
+            api::RESERVE_WORLD.nsid,
+            invalid_visibility,
+            OWNER,
+            f.hosting.service_did(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(f.plc.submission_count(), 0);
+    let reserved = f
+        .reserve_with("reusable.motet.test", false, Some("public"), Some("Reusable"))
+        .await;
+    let operation = Fixture::signed(&reserved, &f.rotation);
+    let (status, body) = f.create(&reserved, &operation).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 /// Acknowledged identity and repo state survive takeover together. Catches
 /// keeping only an in-memory handle map, losing the genesis, or publishing a
 /// World before the sealed keys and public repo reach the same durable batch.
@@ -331,21 +688,21 @@ async fn created_world_resolves_and_serves_its_repo_after_reopen() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let created: CreateWorldOutput = serde_json::from_value(body).expect("creation response");
     let path = format!("/xrpc/com.atproto.sync.getLatestCommit?did={}", created.did);
-    let (status, before) = query(f.router().await, &path).await;
+    let (status, before) = query(f.router(), &path).await;
     assert_eq!(status, StatusCode::OK, "{before}");
     f.reopen().await;
     let (status, resolved) = query(
-        f.router().await,
+        f.router(),
         "/xrpc/com.atproto.identity.resolveHandle?handle=DURABLE.MOTET.TEST",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{resolved}");
     assert_eq!(resolved["did"], created.did);
-    let (status, after) = query(f.router().await, &path).await;
+    let (status, after) = query(f.router(), &path).await;
     assert_eq!(status, StatusCode::OK, "{after}");
     assert_eq!(before, after);
     let (status, description) = query(
-        f.router().await,
+        f.router(),
         "/xrpc/com.atproto.repo.describeRepo?repo=durable.motet.test",
     )
     .await;
@@ -355,7 +712,6 @@ async fn created_world_resolves_and_serves_its_repo_after_reopen() {
     assert_eq!(description["handleIsCorrect"], true);
     let response = f
         .router()
-        .await
         .oneshot(
             Request::get("/.well-known/atproto-did")
                 .header("host", "durable.motet.test:2584")
@@ -369,7 +725,7 @@ async fn created_world_resolves_and_serves_its_repo_after_reopen() {
         to_bytes(response.into_body(), 1024).await.expect("DID body").as_ref(),
         created.did.as_bytes()
     );
-    let (status, description) = query(f.router().await, "/xrpc/com.atproto.server.describeServer").await;
+    let (status, description) = query(f.router(), "/xrpc/com.atproto.server.describeServer").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(description["availableUserDomains"], json!([".motet.test"]));
     assert_eq!(description["did"], "did:web:tenor.motet.test");
@@ -392,6 +748,8 @@ async fn expired_reservations_cannot_be_created_and_release_their_keys() {
                 handle: "expired.motet.test".into(),
                 rotation_key: to_public(&f.rotation).expect("public key").to_string(),
                 tenor_rotation_key: true,
+                visibility: identity::Visibility::Private,
+                name: None,
             },
             hosting: Arc::clone(&f.hosting),
             now: now - Duration::from_hours(24),
@@ -450,69 +808,53 @@ async fn lost_plc_response_is_reconciled_before_another_submission() {
     assert_eq!(f.plc.submission_count(), 1);
 }
 
-/// PDS proxies mint bare-DID audiences, while direct callers may name the
-/// service fragment. Catches rejecting either form at authentication or the
-/// creation handler, and letting a World-scoped token consume a reservation.
+/// World creation requires the bare tenor service DID. Catches letting a
+/// World-scoped token or another service consume an owner's reservation.
 #[tokio::test]
-async fn proxy_and_service_audiences_can_reserve_and_create_worlds() {
+async fn world_creation_requires_the_bare_tenor_service_audience() {
     let f = Fixture::new().await;
-    for (handle, audience) in [
-        ("proxy.motet.test", f.hosting.service_did()),
-        ("direct.motet.test", f.hosting.audience()),
+    let reserved = f.reserve("direct.motet.test", false).await;
+    let operation = Fixture::signed(&reserved, &f.rotation);
+    let request = json!({ "reservation": reserved.reservation, "signedOperation": operation });
+    for wrong_audience in [
+        f.hosting.audience(),
+        "did:plc:someworld",
+        "did:plc:someworld#motet_tenor",
+        "did:web:other.motet.test",
+        "did:web:other.motet.test#motet_tenor",
+        "did:web:tenor.motet.test#atproto_pds",
     ] {
-        let (status, body) = f
-            .post(
-                api::RESERVE_WORLD.nsid,
-                json!({
-                    "handle": handle,
-                    "rotationKey": to_public(&f.rotation).expect("public key").to_string(),
-                    "tenorRotationKey": false,
-                }),
-                OWNER,
-                audience,
-            )
-            .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let reserved: ReserveWorldOutput = serde_json::from_value(body).expect("reservation");
-        let operation = Fixture::signed(&reserved, &f.rotation);
-        let request = json!({ "reservation": reserved.reservation, "signedOperation": operation });
-        for wrong_audience in [
-            "did:plc:someworld",
-            "did:plc:someworld#motet_tenor",
-            "did:web:other.motet.test",
-            "did:web:other.motet.test#motet_tenor",
-            "did:web:tenor.motet.test#atproto_pds",
-        ] {
-            assert_eq!(
-                f.post(api::CREATE_WORLD.nsid, request.clone(), OWNER, wrong_audience)
-                    .await
-                    .0,
-                StatusCode::UNAUTHORIZED,
-                "{wrong_audience}"
-            );
-        }
-        let (status, body) = f.post(api::CREATE_WORLD.nsid, request, OWNER, audience).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        let created: CreateWorldOutput = serde_json::from_value(body).expect("created World");
         assert_eq!(
-            identity::resolve_handle(f.shard.reader(), handle)
+            f.post(api::CREATE_WORLD.nsid, request.clone(), OWNER, wrong_audience)
                 .await
-                .expect("hosted handle"),
-            Did::new(created.did)
+                .0,
+            StatusCode::UNAUTHORIZED,
+            "{wrong_audience}"
         );
     }
-    assert_eq!(f.plc.submission_count(), 2);
+    let (status, body) = f
+        .post(api::CREATE_WORLD.nsid, request, OWNER, f.hosting.service_did())
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let created: CreateWorldOutput = serde_json::from_value(body).expect("created World");
+    assert_eq!(
+        identity::resolve_handle(f.shard.reader(), "direct.motet.test")
+            .await
+            .expect("hosted handle"),
+        Did::new(created.did)
+    );
+    assert_eq!(f.plc.submission_count(), 1);
 }
 
-/// Tenor creation auth and per-World admission auth never substitute for one
-/// another. Catches broadening `accepts_audience` without checking the method's
-/// scope, and DNS suffix checks that accept an attacker-controlled sibling.
+/// Creation rejects tokens for another audience and handles outside its DNS
+/// domain. Catches confusing the tenor service with a World or sibling domain.
 #[tokio::test]
 async fn service_audiences_and_handle_domains_do_not_cross_scopes() {
     let f = Fixture::new().await;
     let public_key = to_public(&f.rotation).expect("public key").to_string();
     let request = json!({ "handle": "alice.motet.test", "rotationKey": public_key, "tenorRotationKey": false });
     for audience in [
+        f.hosting.audience(),
         "did:web:other.motet.test",
         "did:web:other.motet.test#motet_tenor",
         "did:web:tenor.motet.test#atproto_pds",
@@ -535,7 +877,7 @@ async fn service_audiences_and_handle_domains_do_not_cross_scopes() {
     ] {
         let request = json!({ "handle": handle, "rotationKey": public_key, "tenorRotationKey": false });
         assert_eq!(
-            f.post(api::RESERVE_WORLD.nsid, request, OWNER, f.hosting.audience())
+            f.post(api::RESERVE_WORLD.nsid, request, OWNER, f.hosting.service_did())
                 .await
                 .0,
             StatusCode::BAD_REQUEST,
@@ -545,14 +887,18 @@ async fn service_audiences_and_handle_domains_do_not_cross_scopes() {
     assert_eq!(f.plc.submission_count(), 0);
 }
 
-/// Admission accepts the PDS proxy's bare World DID and its service fragment,
-/// but neither authorizes another World or the creation service. Catches
-/// fragment-only admission gates and dropping the request body's World binding.
+/// Admission accepts both hosted World service audiences but not another
+/// World's. Catches confusing creation auth with a hosted World target.
 #[tokio::test]
-async fn proxy_audiences_reach_admission_only_for_the_named_world() {
+async fn admission_requires_the_named_world_audience() {
     let f = Fixture::new().await;
+    let reserved = f.reserve("admission.motet.test", false).await;
+    let operation = Fixture::signed(&reserved, &f.rotation);
+    let (status, created) = f.create(&reserved, &operation).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let did = created["did"].as_str().expect("World DID");
     let body = json!({
-        "op": "one", "world": "did:plc:worlda",
+        "op": "one", "world": did,
         "post": { "uri": format!("at://{OWNER}/at.motet.pilot.post/one"), "cid": "cid" }
     });
     for audience in [
@@ -569,22 +915,12 @@ async fn proxy_audiences_reach_admission_only_for_the_named_world() {
             StatusCode::UNAUTHORIZED
         );
     }
-    for audience in ["did:plc:worlda", "did:plc:worlda#motet_tenor"] {
-        let (status, response) = f.post(api::SUBMIT_ADMISSION.nsid, body.clone(), OWNER, audience).await;
-        assert_eq!(status, StatusCode::OK, "{audience}: {response}");
+    let fragment = format!("{did}#motet_tenor");
+    for audience in [did, fragment.as_str()] {
         // The author's DID document names no PDS, so read-back stays pending.
+        let (status, response) = f.post(api::SUBMIT_ADMISSION.nsid, body.clone(), OWNER, audience).await;
+        assert_eq!(status, StatusCode::OK, "{response}");
         assert_eq!(response, json!({ "status": "pending" }));
-    }
-    let mut creation_body = body;
-    creation_body["world"] = json!(f.hosting.service_did());
-    for audience in [f.hosting.service_did(), f.hosting.audience()] {
-        assert_eq!(
-            f.post(api::SUBMIT_ADMISSION.nsid, creation_body.clone(), OWNER, audience)
-                .await
-                .0,
-            StatusCode::UNAUTHORIZED,
-            "a matching body must not turn creation auth into admission auth"
-        );
     }
 }
 
@@ -657,7 +993,7 @@ async fn a_handle_without_the_did_documents_confirmation_is_not_served() {
         .expect("identity refresh");
     assert_eq!(
         query(
-            f.router().await,
+            f.router(),
             "/xrpc/com.atproto.identity.resolveHandle?handle=confirmation.motet.test"
         )
         .await
@@ -666,7 +1002,6 @@ async fn a_handle_without_the_did_documents_confirmation_is_not_served() {
     );
     let response = f
         .router()
-        .await
         .oneshot(
             Request::get("/.well-known/atproto-did")
                 .header("host", "confirmation.motet.test")

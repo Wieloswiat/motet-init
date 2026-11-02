@@ -36,6 +36,8 @@ pub enum IdentityError {
     InvalidHandle,
     #[error("handle is already in use or reserved")]
     HandleTaken,
+    #[error("World profile is invalid: {0}")]
+    InvalidProfile(String),
     #[error("rotationKey must be a public P-256 or K-256 did:key")]
     InvalidRotationKey,
     #[error("reservation does not exist")]
@@ -184,12 +186,24 @@ fn normalize_handle(handle: &str) -> Result<String, IdentityError> {
     is_valid_handle(handle).ok_or(IdentityError::InvalidHandle)
 }
 
+/// The initial audience of a World's meta Space.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    #[default]
+    Private,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveRequest {
     pub handle: String,
     pub rotation_key: String,
     pub tenor_rotation_key: bool,
+    #[serde(default)]
+    pub visibility: Visibility,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -216,6 +230,10 @@ pub struct CreateRequest {
 pub(crate) struct Reservation {
     pub(crate) owner: Did,
     pub(crate) handle: String,
+    #[serde(default)]
+    pub(crate) visibility: Visibility,
+    #[serde(default)]
+    pub(crate) name: Option<String>,
     pub(crate) operation: UnsignedOperation,
     pub(crate) expires: u64,
     pub(crate) signed: Option<Operation>,
@@ -245,6 +263,17 @@ impl Op for ReserveWorld {
         {
             return Err(IdentityError::InvalidRotationKey);
         }
+        // An invalid profile must not strand a DID after PLC accepts genesis.
+        let profile = serde_json::json!({
+            "$type": "group.opensocial.profile",
+            "displayName": self.request.name.as_deref().unwrap_or(&handle),
+            "joinPolicy": "invite",
+        });
+        let profile = crate::repo::record_from_json(&profile)?;
+        crate::repo::validate_record("group.opensocial.profile", "self", &profile).map_err(|error| match error {
+            crate::repo::RepoError::InvalidRecord(message) => IdentityError::InvalidProfile(message),
+            other => other.into(),
+        })?;
         if txn.get(&keys::handle(&handle)).await?.is_some() {
             return Err(IdentityError::HandleTaken);
         }
@@ -277,6 +306,8 @@ impl Op for ReserveWorld {
         let reserved = Reservation {
             owner: self.owner,
             handle,
+            visibility: self.request.visibility,
+            name: self.request.name,
             operation,
             expires,
             signed: None,

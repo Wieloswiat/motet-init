@@ -120,10 +120,6 @@ impl Reader {
         Ok(Some(self.master.unseal(world, purpose, &sealed)?))
     }
 
-    pub(crate) fn unseal_secret(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, KeyError> {
-        self.master.unseal_secret(context, sealed)
-    }
-
     /// A World's committed repo blocks, read-only.
     #[must_use]
     pub fn blocks(&self, world: &Did) -> ReadBlocks {

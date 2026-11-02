@@ -26,7 +26,6 @@ use crate::identity::{self, Hosting, IdentityError};
 use crate::shard::{Handle, Rejected};
 
 /// The service fragment a World's DID document gives its tenor endpoint.
-/// Service auth accepts its bare DID or exact `did#motet_tenor` audience.
 pub const SERVICE_FRAGMENT: &str = "motet_tenor";
 
 pub const SUBMIT_ADMISSION: Method = Method {
@@ -76,11 +75,9 @@ pub struct State<R> {
 pub enum RouterError {
     #[error(transparent)]
     Registry(#[from] RegistryError),
-    #[error(transparent)]
-    OAuth(#[from] crate::oauth::Error),
 }
 
-pub async fn router<R: Records + 'static>(
+pub fn router<R: Records + 'static>(
     state: Arc<State<R>>,
     authenticate: Authenticate,
 ) -> Result<axum::Router, RouterError> {
@@ -92,14 +89,6 @@ pub async fn router<R: Records + 'static>(
         )),
         fetcher: state.hosting.fetcher().clone(),
     });
-    let oauth = crate::oauth::Server::open(
-        state.shard.clone(),
-        state.hosting.endpoint().into(),
-        state.hosting.fetcher().clone(),
-        Arc::clone(&spaces.resolver),
-    )
-    .await?;
-    let authenticate = crate::oauth::http::authenticate(authenticate, Arc::clone(&oauth));
     let authenticate = crate::spaces::http::authenticate(authenticate, Arc::clone(&spaces));
     let service = Service::new(authenticate)
         .method(SUBMIT_ADMISSION, submit_admission::<R>)
@@ -107,59 +96,27 @@ pub async fn router<R: Records + 'static>(
         .method(CREATE_WORLD, create_world::<R>)
         .method(RESOLVE_HANDLE, resolve_handle::<R>)
         .method(DESCRIBE_SERVER, describe_server::<R>);
-    // Anyone may resolve a hosted handle; only the Host header selects it.
+    // The public origin identifies this service and its hosted handles.
     let well_known = axum::Router::new()
         .route("/.well-known/atproto-did", axum::routing::get(handle_did::<R>))
+        .route("/.well-known/did.json", axum::routing::get(service_document::<R>))
         .with_state(Arc::clone(&state));
     let service = crate::spaces::http::register(crate::sync::methods(service), &spaces);
-    let service = crate::oauth::writes::register(service, &state.shard);
-    // Discovery is public. PAR/token verify client + DPoP proofs; browser
-    // endpoints require one-use state, a bound cookie and form CSRF tokens.
-    let oauth_documents = axum::Router::new()
-        .route(
-            "/.well-known/oauth-authorization-server",
-            axum::routing::get(crate::oauth::http::authorization_metadata),
-        )
-        .route(
-            "/.well-known/oauth-protected-resource",
-            axum::routing::get(crate::oauth::http::protected_metadata),
-        )
-        .route(
-            "/oauth/client-metadata.json",
-            axum::routing::get(crate::oauth::http::client_metadata),
-        )
-        .route("/oauth/jwks.json", axum::routing::get(crate::oauth::http::jwks))
-        .layer(axum::middleware::from_fn(crate::oauth::http::cors_get));
-    let oauth_protocol = axum::Router::new()
-        .route("/oauth/par", axum::routing::post(crate::oauth::http::par))
-        .route("/oauth/token", axum::routing::post(crate::oauth::http::token))
-        .layer(axum::middleware::from_fn(crate::oauth::http::cors_post));
-    // Cookie-bearing pages do not grant cross-origin access. Public clients
-    // use only the non-credentialed discovery, PAR, token and XRPC surfaces.
-    let oauth_routes = axum::Router::new()
-        .route("/oauth/authorize", axum::routing::get(crate::oauth::http::authorize))
-        .route("/oauth/login", axum::routing::post(crate::oauth::http::login))
-        .route("/oauth/callback", axum::routing::get(crate::oauth::http::callback))
-        .route("/oauth/consent", axum::routing::post(crate::oauth::http::consent))
-        .merge(oauth_documents)
-        .merge(oauth_protocol)
-        .layer(axum::extract::DefaultBodyLimit::max(16 * 1024))
-        .with_state(oauth);
+    let service = crate::repo_writes::register(service, &state.shard);
+    let service = crate::scenes::register(service, &state.shard);
     Ok(service
         .into_router(state)?
         .merge(well_known)
-        .merge(oauth_routes)
         .layer(axum::middleware::from_fn(crate::spaces::http::vary_mac)))
 }
 
-/// Accepts the tenor's bare DID or creation audience, and per-World audiences.
-/// Each handler binds the audience to its own scope before performing any work.
+/// Admits candidate World and Space-notification audiences for signature checks.
+/// Each handler binds that audience to its own target before doing work.
 #[must_use]
 pub fn accepts_audience(aud: &str, tenor_audience: &str) -> bool {
-    aud == tenor_audience
-        || tenor_audience
-            .split_once('#')
-            .is_some_and(|(did, fragment)| aud == did && fragment == SERVICE_FRAGMENT)
+    tenor_audience
+        .split_once('#')
+        .is_some_and(|(did, fragment)| aud == did && fragment == SERVICE_FRAGMENT)
         || (!aud.contains('#') && aud.starts_with("did:plc:"))
         || aud.split_once('#').is_some_and(|(did, fragment)| {
             did.starts_with("did:plc:") && matches!(fragment, SERVICE_FRAGMENT | "atproto_pds")
@@ -192,18 +149,11 @@ async fn submit_admission<R: Records>(
     caller: Caller,
     input: Input,
 ) -> Result<Response, XrpcError> {
-    let Caller::Service { did, audience, .. } = caller else {
+    let Caller::Service { did, .. } = &caller else {
         return Err(XrpcError::AuthRequired);
     };
     let body: SubmitAdmission =
         serde_json::from_slice(&input.body).map_err(|e| XrpcError::InvalidRequest(e.to_string()))?;
-    // The token was minted for one World; it opens nothing in another.
-    if audience == state.hosting.audience()
-        || audience == state.hosting.service_did()
-        || (audience != body.world && audience.split_once('#') != Some((body.world.as_str(), SERVICE_FRAGMENT)))
-    {
-        return Err(XrpcError::AuthRequired);
-    }
     // Only a post's author asks for its admission. A DID in the body is never
     // the caller: the post URI's authority must be the token's issuer.
     if !body.post.uri.as_str().starts_with(&format!("at://{did}/")) {
@@ -217,9 +167,17 @@ async fn submit_admission<R: Records>(
     };
     // The rules transaction also queues publication. Acknowledging admission
     // does not wait for the publisher, and a process exit cannot lose its work.
-    let decision = admission::admit(&state.shard, &state.records, request)
+    let actor =
+        crate::authorization::Actor::from_caller(caller, request.world.clone()).map_err(|_| XrpcError::AuthRequired)?;
+    let decision = admission::admit_as(&state.shard, &state.records, request, actor)
         .await
         .map_err(|e| {
+            if matches!(
+                &e,
+                admission::AdmitError::Space(crate::spaces::SpaceError::NotAuthorized)
+            ) {
+                return XrpcError::AuthRequired;
+            }
             tracing::error!(error = %e, "admission failed");
             XrpcError::Internal
         })?;
@@ -263,7 +221,7 @@ fn refusal_code(refusal: &Refusal) -> &'static str {
 fn creation_owner(caller: Caller, hosting: &Hosting) -> Result<Did, XrpcError> {
     match caller {
         Caller::Service { did, audience, .. }
-            if audience == hosting.audience() || audience == hosting.service_did() =>
+            if audience == hosting.service_did() && atproto_lexicon::validation::syntax::validate_did(&did).is_ok() =>
         {
             Ok(Did::new(did))
         }
@@ -329,6 +287,18 @@ async fn describe_server<R: Records>(
     .into_response())
 }
 
+async fn service_document<R: Records>(AxumState(state): AxumState<Arc<State<R>>>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": state.hosting.service_did(),
+        "service": [{
+            "id": state.hosting.audience(),
+            "type": "MotetTenor",
+            "serviceEndpoint": state.hosting.endpoint(),
+        }],
+    }))
+}
+
 async fn handle_did<R: Records>(
     AxumState(state): AxumState<Arc<State<R>>>,
     headers: HeaderMap,
@@ -356,6 +326,7 @@ fn identity_error(error: IdentityError) -> XrpcError {
         | IdentityError::HandleTaken
         | IdentityError::InvalidRotationKey
         | IdentityError::ReservationExpired
+        | IdentityError::InvalidProfile(_)
         | IdentityError::InvalidOperation => XrpcError::InvalidRequest(error.to_string()),
         _ => {
             tracing::error!(%error, "World identity operation failed");

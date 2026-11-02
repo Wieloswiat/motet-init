@@ -41,6 +41,7 @@ pub const META: &str = "group.opensocial.meta";
 pub const MEMBERS: &str = "group.opensocial.members";
 pub const GMS: &str = "at.motet.pilot.space.gms";
 pub const OWNER_ROLE: &str = "owner";
+pub const GM_ROLE: &str = "gm";
 
 /// An authority refusal is distinct from a failed storage operation.
 #[derive(Debug, thiserror::Error)]
@@ -557,22 +558,40 @@ pub async fn bootstrap(txn: &mut Txn<'_>, world: &Did, owner: &Did, profile: Pro
         display_name: "Owner".into(),
         extra: serde_json::Map::new(),
     };
+    let gm_role = Role {
+        default: Some(false),
+        description: None,
+        display_name: "GM".into(),
+        extra: serde_json::Map::new(),
+    };
     let permissions = Permissions {
-        grants: vec![GroupGrant {
-            role: OWNER_ROLE.into(),
-            assignable: vec![OWNER_ROLE.into()],
-            scopes: vec![
-                "space:*?authority=*&collection=*&manage=create&manage=update&manage=delete".into(),
-                "repo:*".into(),
-                "rpc:*".into(),
-                "blob:*/*".into(),
-                "identity:*".into(),
-                "account:email?action=manage".into(),
-                "account:repo?action=manage".into(),
-                "account:status?action=manage".into(),
-            ],
-            extra: serde_json::Map::new(),
-        }],
+        grants: vec![
+            GroupGrant {
+                role: OWNER_ROLE.into(),
+                assignable: vec![OWNER_ROLE.into(), GM_ROLE.into()],
+                scopes: vec![
+                    "space:*?authority=*&collection=*&manage=create&manage=update&manage=delete".into(),
+                    "repo:*".into(),
+                    "rpc:*".into(),
+                    "blob:*/*".into(),
+                    "identity:*".into(),
+                    "account:email?action=manage".into(),
+                    "account:repo?action=manage".into(),
+                    "account:status?action=manage".into(),
+                ],
+                extra: serde_json::Map::new(),
+            },
+            GroupGrant {
+                role: GM_ROLE.into(),
+                assignable: Vec::new(),
+                scopes: vec![
+                    "rpc:at.motet.pilot.play.openScene".into(),
+                    "rpc:at.motet.pilot.play.setSceneCast".into(),
+                    "rpc:at.motet.pilot.play.closeScene".into(),
+                ],
+                extra: serde_json::Map::new(),
+            },
+        ],
         extra: serde_json::Map::new(),
     };
     let membership = Membership {
@@ -586,6 +605,7 @@ pub async fn bootstrap(txn: &mut Txn<'_>, world: &Did, owner: &Did, profile: Pro
         &members,
         vec![
             SpaceWrite::create(Role::NSID, OWNER_ROLE, &role)?,
+            SpaceWrite::create(Role::NSID, GM_ROLE, &gm_role)?,
             SpaceWrite::create(Permissions::NSID, "self", &permissions)?,
             SpaceWrite::create(Membership::NSID, owner.as_str(), &membership)?,
             SpaceWrite::create(AccessRecord::NSID, "self", &owner_access(false))?,

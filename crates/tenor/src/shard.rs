@@ -22,7 +22,7 @@
 //! The log records two kinds of entry. Rules commands are deterministic, so
 //! they're logged as commands and replayed by re-running them; the rules
 //! state lives in memory and is snapshotted into the database at checkpoints.
-//! Everything else (keys, repo commits, Spaces, sessions) is logged as the
+//! Everything else (keys, repo commits, Spaces) is logged as the
 //! key-value mutations and firehose events it produced, and replayed by
 //! re-applying them: signing and revisions aren't functions of a command.
 //!
@@ -391,15 +391,6 @@ impl Txn<'_> {
             return Ok(None);
         };
         Ok(Some(self.master.unseal(world, purpose, &sealed)?))
-    }
-
-    /// OAuth secrets use their full database key as authenticated context.
-    pub(crate) fn seal_secret(&self, context: &[u8], plaintext: &[u8]) -> Result<Bytes, KeyError> {
-        self.master.seal_secret(context, plaintext).map(Bytes::from)
-    }
-
-    pub(crate) fn unseal_secret(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, KeyError> {
-        self.master.unseal_secret(context, sealed)
     }
 
     /// Generates a key before the owner's signature determines the World DID.

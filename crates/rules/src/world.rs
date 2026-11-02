@@ -64,6 +64,11 @@ pub enum Command {
     CloseScene {
         scene: SceneId,
     },
+    /// Replace the complete cast in one authority revision.
+    SetSceneCast {
+        scene: SceneId,
+        cast: BTreeSet<Did>,
+    },
     JoinCast {
         scene: SceneId,
         member: Did,
@@ -185,6 +190,12 @@ impl World {
         self.authority_rev
     }
 
+    /// Whether this operation already has a recorded outcome.
+    #[must_use]
+    pub fn has_operation(&self, op: &OperationId) -> bool {
+        self.operations.contains_key(op)
+    }
+
     /// The open admission for a post, if it has one.
     #[must_use]
     pub fn admission(&self, post: &RecordUri) -> Option<&Admission> {
@@ -262,6 +273,7 @@ impl World {
                 self.authority_changed()
             }
             Command::CloseScene { scene } => self.with_scene(scene, |s| s.open = false),
+            Command::SetSceneCast { scene, cast } => self.with_scene(scene, |s| s.cast.clone_from(cast)),
             Command::JoinCast { scene, member } => self.with_scene(scene, |s| {
                 s.cast.insert(member.clone());
             }),
