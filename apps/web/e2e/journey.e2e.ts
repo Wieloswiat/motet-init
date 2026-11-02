@@ -470,20 +470,12 @@ test('a newly opened public scene retains its opener in the projected cast', asy
 	await openPublicScene(page, world, owner);
 });
 
-// A wrong World host, stale session, lost admission or unguarded cast could
-// otherwise make a plausible-looking scene accept an outsider's post.
-test('complete HTTPS journey hosts the World on the tenor and admits only the cast at the first place', async ({
-	page,
-	context,
-	browser
-}) => {
-	const observed = requestsFrom(context);
-	const tenorDid = await describeTenor(page);
-	const owner = await signUp(page);
-	await signOutAndIn(page, owner);
-	const world = await createWorld(page);
-	await assertTenorHost(page, world, tenorDid);
-	const scene = await openPublicScene(page, world, owner);
+async function admitFirstPost(
+	page: Page,
+	world: World,
+	scene: string,
+	owner: Account
+): Promise<createPost.CreatePostOutput> {
 	const ownerText = `Owner post ${uniqueLabel('p')} <img src=x onerror=alert(1)>`;
 	const admitted = await post(page, ownerText);
 	expect(['admitted', 'pending']).toContain(admitted.status);
@@ -507,6 +499,19 @@ test('complete HTTPS journey hosts the World on the tenor and admits only the ca
 	await expect(posts.getByRole('article').first().locator('img')).toHaveCount(0);
 	await expect(posts.getByRole('article').first()).toContainText('Place 1');
 
+	return admitted;
+}
+
+// A missing cast or membership check could admit an outsider, or the AppView
+// could display a refused version alongside the owner's first post.
+test('the first admitted post is place 1 and a nonmember is refused without appearing', async ({
+	page,
+	browser
+}) => {
+	const owner = await signUp(page);
+	const world = await createWorld(page);
+	const scene = await openPublicScene(page, world, owner);
+	const admitted = await admitFirstPost(page, world, scene, owner);
 	const outsiderContext = await browser.newContext({ baseURL: app });
 
 	try {
@@ -531,6 +536,21 @@ test('complete HTTPS journey hosts the World on the tenor and admits only the ca
 	} finally {
 		await outsiderContext.close();
 	}
+});
 
+// Wrong service discovery or a lost OAuth, creation, projection or admission
+// link could make individual screens work while the complete journey fails.
+test('complete HTTPS journey signs up, hosts a World on the tenor, opens a scene and admits a post', async ({
+	page,
+	context
+}) => {
+	const observed = requestsFrom(context);
+	const tenorDid = await describeTenor(page);
+	const owner = await signUp(page);
+	await signOutAndIn(page, owner);
+	const world = await createWorld(page);
+	await assertTenorHost(page, world, tenorDid);
+	const scene = await openPublicScene(page, world, owner);
+	await admitFirstPost(page, world, scene, owner);
 	assertNoSecrets(observed, world.secrets);
 });
