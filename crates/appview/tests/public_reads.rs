@@ -274,7 +274,7 @@ proptest! {
 
 fn named_scene_streams() -> Vec<Vec<Event>> {
     let mut final_scene = scene_value(SCENE);
-    final_scene["cast"] = json!([AUTHOR, "did:plc:player"]);
+    *final_scene.get_mut("cast").expect("fixture scene has a cast") = json!([AUTHOR, "did:plc:player"]);
     let mut update = record(WORLD, SCENES, SCENE, 4, "scene-new", final_scene);
     if let Event::Record(scene) = &mut update {
         scene.action = Action::Update;
@@ -367,6 +367,10 @@ proptest! {
 /// An unscoped join or a stale declaration would expose the wrong or no longer public name.
 #[tokio::test]
 #[ignore = "integration: needs PostgreSQL and S3 (devenv up)"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The ordered visibility and tombstone transitions share one World and archive"
+)]
 async fn public_name_requires_current_matching_meta_and_respects_profile_tombstones() {
     let (pool, archive, mut indexer, router) = setup().await;
     let profile_type = "group.opensocial.profile";
