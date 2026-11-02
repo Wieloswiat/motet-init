@@ -31,7 +31,7 @@ function publicPoint(did: string): Uint8Array {
 		value >>= 8n;
 	}
 
-	expect(bytes.slice(0, 2)).toEqual([0x80, 0x24]);
+	expect(bytes.slice(0, 2)).toEqual(new Uint8Array([0x80, 0x24]));
 
 	return bytes.slice(2);
 }
@@ -153,15 +153,13 @@ describe('World owner rotation key', () => {
 
 		const message = new TextEncoder().encode('motet owner signing interoperability');
 		const signature = await sign(privateKey, message);
-		console.info('OWNER_KEY_VECTOR', signature);
 		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', message));
-		expect(
-			p256.verify(
-				decode(signature),
-				digest,
-				p256.getPublicKey(new Uint8Array([...new Uint8Array(31), 1])),
-				{ lowS: true }
-			)
-		).toBe(true);
+
+		const fixed =
+			'uHdj6i0snbfhBFwoqfMs_40G5YzlZJjii5lXCFimfQcwhHJ3KgUs81p6SENc77zTrK_qNhAUHqD8a1Ub5tZLNA';
+
+		const point = p256.getPublicKey(new Uint8Array([...new Uint8Array(31), 1]));
+		expect(p256.verify(decode(fixed), digest, point, { lowS: true })).toBe(true);
+		expect(p256.verify(decode(signature), digest, point, { lowS: true })).toBe(true);
 	});
 });
