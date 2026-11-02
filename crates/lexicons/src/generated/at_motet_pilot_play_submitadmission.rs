@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Ask the World to admit a post version authored by the service-auth issuer. The token audience is the hosted World DID or that DID with #motet_tenor, and lxm is this method. The tenor reads the version back from the author's PDS and checks the author's current membership and scene cast in the World transaction. Retry a pending result with the same op.
+/// Ask the World to admit a post version authored by the service-auth issuer. The token audience is the hosted World DID or that DID with #motet_tenor, and lxm is this method. Identical retries return the recorded outcome even if membership changes. For a new operation, the tenor reads the version back from the author's PDS and checks current membership and scene cast in the World transaction.
 pub const NSID: &str = "at.motet.pilot.play.submitAdmission";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,7 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Ask the World to admit a post version authored by the service-auth issuer. The token audience is the hosted World DID or that DID with #motet_tenor, and lxm is this method. The tenor reads the version back from the author's PDS and checks the author's current membership and scene cast in the World transaction. Retry a pending result with the same op.",
+			"description": "Ask the World to admit a post version authored by the service-auth issuer. The token audience is the hosted World DID or that DID with #motet_tenor, and lxm is this method. Identical retries return the recorded outcome even if membership changes. For a new operation, the tenor reads the version back from the author's PDS and checks current membership and scene cast in the World transaction.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
@@ -67,6 +67,10 @@
 				{
 					"name": "InvalidRequest",
 					"description": "The operation ID was reused for a different request."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The issuer's DID document could not be resolved; retry with a fresh service token."
 				}
 			]
 		}

@@ -4,13 +4,14 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.",
+			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
 					"type": "object",
-					"required": ["handle", "rotationKey", "tenorRotationKey"],
+					"required": ["op", "handle", "rotationKey", "tenorRotationKey"],
 					"properties": {
+						"op": { "type": "string", "format": "record-key", "description": "Client-chosen operation ID, unique per owner." },
 						"handle": { "type": "string", "format": "handle" },
 						"rotationKey": {
 							"type": "string",
@@ -57,7 +58,10 @@
 						}
 					}
 				}
-			}
+			},
+			"errors": [
+				{ "name": "UpstreamFailure", "description": "The issuer's DID document could not be resolved; retry with a fresh service token." }
+			]
 		}
 	}
 }

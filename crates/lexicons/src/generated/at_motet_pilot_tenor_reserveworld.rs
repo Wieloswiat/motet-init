@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.
+/// Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.
 pub const NSID: &str = "at.motet.pilot.tenor.reserveWorld";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +14,8 @@ pub struct ReserveWorldInput {
     /// Initial group profile display name. If omitted, the World handle is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Client-chosen operation ID, unique per owner.
+    pub op: String,
     /// The owner's public P-256 or K-256 did:key, listed first for PLC recovery priority. Never send the private key.
     pub rotation_key: String,
     /// Opt in to a tenor-held recovery key listed after the owner's key.
