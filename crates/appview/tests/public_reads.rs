@@ -1,5 +1,7 @@
 //! Public reads must reflect admitted archive records, independently of delivery order.
 
+mod support;
+
 use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
@@ -72,7 +74,7 @@ fn scene(key: &str) -> Event {
 }
 
 fn scene_value(key: &str) -> Value {
-    json!({"$type": SCENES, "title": key, "state": "open", "createdAt": TIME})
+    json!({"$type": SCENES, "title": key, "state": "open", "cast": [AUTHOR], "openedBy": AUTHOR, "createdAt": TIME})
 }
 
 fn post_value(world: &str, scene: &str, body: &str) -> Value {
@@ -115,7 +117,14 @@ async fn setup() -> (PgPool, Archive, Indexer, axum::Router) {
     let archive = Archive::new(motet_testkit::services::bucket(), "archive");
     let indexer = Indexer::start(pool.clone(), &archive).await.expect("indexer");
     let authenticate: Authenticate = Arc::new(|_| Box::pin(async { Ok(Caller::Anonymous) }));
-    let router = api::router(Arc::new(State { pool: pool.clone() }), authenticate).expect("router");
+    let router = api::router(
+        Arc::new(State {
+            pool: pool.clone(),
+            auth: support::oauth(pool.clone()),
+        }),
+        authenticate,
+    )
+    .expect("router");
     (pool, archive, indexer, router)
 }
 

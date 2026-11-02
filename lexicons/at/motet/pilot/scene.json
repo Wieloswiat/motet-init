@@ -1,19 +1,30 @@
 {
 	"lexicon": 1,
 	"id": "at.motet.pilot.scene",
-	"description": "DRAFT. A scene, written as the World in its public repo or in the Space of the scene's audience.",
+	"description": "A scene written as the World. For a public scene, the complete cast is public because it controls post admission.",
 	"defs": {
 		"main": {
 			"type": "record",
 			"key": "any",
 			"record": {
 				"type": "object",
-				"required": ["title", "state", "createdAt"],
+				"required": ["title", "state", "cast", "openedBy", "createdAt"],
 				"properties": {
 					"title": { "type": "string", "maxGraphemes": 120, "maxLength": 1200 },
 					"location": { "type": "string", "format": "record-key" },
 					"arc": { "type": "string", "format": "record-key" },
 					"state": { "type": "string", "knownValues": ["planned", "open", "closed"] },
+					"cast": {
+						"type": "array",
+						"maxLength": 100,
+						"description": "The complete set of DIDs whose posts may be admitted while the scene is open.",
+						"items": { "type": "string", "format": "did" }
+					},
+					"openedBy": {
+						"type": "string",
+						"format": "did",
+						"description": "The member who opened the scene and must remain in its cast."
+					},
 					"createdAt": { "type": "string", "format": "datetime" }
 				}
 			}

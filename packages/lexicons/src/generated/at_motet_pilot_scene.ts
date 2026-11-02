@@ -5,8 +5,12 @@ export const SceneNsid = 'at.motet.pilot.scene' as const;
 export interface Scene {
   $type: 'at.motet.pilot.scene';
   arc?: string;
+  /** The complete set of DIDs whose posts may be admitted while the scene is open. */
+  cast: string[];
   createdAt: string;
   location?: string;
+  /** The member who opened the scene and must remain in its cast. */
+  openedBy: string;
   state: string;
   title: string;
   /** Fields this version of Motet doesn't know. Kept and written back unchanged. */

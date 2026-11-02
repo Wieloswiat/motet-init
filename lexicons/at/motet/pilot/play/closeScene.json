@@ -1,0 +1,52 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.play.closeScene",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Close a public scene. Service auth must come from the acting member's PDS for the World DID or the World's #motet_tenor service and this exact method. The actor needs the World's current RPC grant. The public record and admission rules change atomically; closed scenes refuse new posts. Repeating an operation with the same input returns its original result; reusing its ID for different input is refused.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["op", "world", "scene", "swapRecord"],
+					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "A caller-chosen operation ID, unique to this World and actor."
+						},
+						"world": { "type": "string", "format": "did" },
+						"scene": { "type": "string", "format": "record-key" },
+						"swapRecord": {
+							"type": "string",
+							"format": "cid",
+							"description": "The current scene CID. A stale value is refused."
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["scene", "uri", "cid"],
+					"properties": {
+						"scene": { "type": "string", "format": "record-key" },
+						"uri": { "type": "string", "format": "at-uri" },
+						"cid": { "type": "string", "format": "cid" }
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The actor is not authorized to close this World's scenes."
+				},
+				{ "name": "NotFound", "description": "The public scene or repository was not found." },
+				{ "name": "InvalidSwap", "description": "The scene record changed since swapRecord." },
+				{ "name": "SceneClosed", "description": "The scene is already closed." }
+			]
+		}
+	}
+}

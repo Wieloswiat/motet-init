@@ -1,0 +1,56 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.play.openScene",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Open a public scene as the World. Service auth must be issued by the acting member's PDS for the World DID or the World's #motet_tenor service and this exact method. The actor needs the World's current RPC grant. The opener always remains in the cast. The public record and admission rules change atomically. Repeating an operation with the same input returns its original result; reusing its ID for different input is refused.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["op", "world", "title"],
+					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "A caller-chosen operation ID, unique to this World and actor."
+						},
+						"world": { "type": "string", "format": "did" },
+						"title": { "type": "string", "maxGraphemes": 120, "maxLength": 1200 },
+						"location": { "type": "string", "format": "record-key" },
+						"arc": { "type": "string", "format": "record-key" },
+						"cast": {
+							"type": "array",
+							"maxLength": 100,
+							"items": { "type": "string", "format": "did" }
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["scene", "uri", "cid"],
+					"properties": {
+						"scene": {
+							"type": "string",
+							"format": "record-key",
+							"description": "The scene record key."
+						},
+						"uri": { "type": "string", "format": "at-uri" },
+						"cid": { "type": "string", "format": "cid" }
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The actor is not authorized to open a scene in this World."
+				},
+				{ "name": "NotFound", "description": "The hosted World has no public repository." }
+			]
+		}
+	}
+}

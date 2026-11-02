@@ -4,7 +4,7 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's did:web service with #motet_tenor as audience. The owner signs the returned PLC genesis on their device; its DID is determined only by that signature.",
+			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
@@ -20,6 +20,17 @@
 						"tenorRotationKey": {
 							"type": "boolean",
 							"description": "Opt in to a tenor-held recovery key listed after the owner's key."
+						},
+						"visibility": {
+							"type": "string",
+							"enum": ["public", "private"],
+							"description": "Initial meta Space visibility. Omit for private. Public Worlds publish a group declaration in their public repo."
+						},
+						"name": {
+							"type": "string",
+							"maxGraphemes": 64,
+							"maxLength": 640,
+							"description": "Initial group profile display name. If omitted, the World handle is used."
 						}
 					}
 				}
@@ -37,7 +48,7 @@
 						},
 						"signingBytes": {
 							"type": "string",
-							"description": "Unpadded base64url of the canonical DAG-CBOR unsigned operation. Sign these bytes with rotationKey."
+							"description": "Unpadded base64url of the raw canonical DAG-CBOR unsigned operation. Sign the decoded bytes with ECDSA using rotationKey and SHA-256, not a precomputed digest."
 						},
 						"expiresAt": {
 							"type": "integer",

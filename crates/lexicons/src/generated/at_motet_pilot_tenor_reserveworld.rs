@@ -4,17 +4,23 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's did:web service with #motet_tenor as audience. The owner signs the returned PLC genesis on their device; its DID is determined only by that signature.
+/// Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.
 pub const NSID: &str = "at.motet.pilot.tenor.reserveWorld";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveWorldInput {
     pub handle: String,
+    /// Initial group profile display name. If omitted, the World handle is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The owner's public P-256 or K-256 did:key, listed first for PLC recovery priority. Never send the private key.
     pub rotation_key: String,
     /// Opt in to a tenor-held recovery key listed after the owner's key.
     pub tenor_rotation_key: bool,
+    /// Initial meta Space visibility. Omit for private. Public Worlds publish a group declaration in their public repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
     /// Fields this version of Motet doesn't know. Kept and written back unchanged.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
@@ -28,7 +34,7 @@ pub struct ReserveWorldOutput {
     /// Unsigned plc_operation genesis with prev explicitly null.
     pub operation: serde_json::Value,
     pub reservation: String,
-    /// Unpadded base64url of the canonical DAG-CBOR unsigned operation. Sign these bytes with rotationKey.
+    /// Unpadded base64url of the raw canonical DAG-CBOR unsigned operation. Sign the decoded bytes with ECDSA using rotationKey and SHA-256, not a precomputed digest.
     pub signing_bytes: String,
     /// Fields this version of Motet doesn't know. Kept and written back unchanged.
     #[serde(flatten)]
