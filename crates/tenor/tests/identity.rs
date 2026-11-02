@@ -135,25 +135,34 @@ impl Fixture {
     }
 
     fn token(&self, issuer: &str, audience: &str, method: &str) -> String {
+        let jti = atproto_record::tid::Tid::new().to_string();
+        self.token_with_jti(issuer, audience, method, Some(&jti))
+    }
+
+    fn token_with_jti(&self, issuer: &str, audience: &str, method: &str, jti: Option<&str>) -> String {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs();
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"ES256K","typ":"JWT"}"#);
-        let claims = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&json!({
-                "iss": issuer, "aud": audience, "lxm": method, "iat": now, "exp": now + 60,
-            }))
-            .expect("claims"),
-        );
+        let mut claims = json!({"iss": issuer, "aud": audience, "lxm": method, "iat": now, "exp": now + 60});
+        if let Some(jti) = jti {
+            claims
+                .as_object_mut()
+                .expect("service claims are an object")
+                .insert("jti".into(), json!(jti));
+        }
+        let claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"));
         let input = format!("{header}.{claims}");
         let signature = sign(&self.signing, input.as_bytes()).expect("signature");
         format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature))
     }
 
     async fn post(&self, method: &str, body: Value, issuer: &str, audience: &str) -> (StatusCode, Value) {
+        self.post_token(method, body, &self.token(issuer, audience, method))
+            .await
+    }
+
+    async fn post_token(&self, method: &str, body: Value, token: &str) -> (StatusCode, Value) {
         let request = Request::post(format!("/xrpc/{method}"))
-            .header(
-                "authorization",
-                format!("Bearer {}", self.token(issuer, audience, method)),
-            )
+            .header("authorization", format!("Bearer {token}"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(&body).expect("request")))
             .expect("request");
@@ -331,6 +340,85 @@ async fn read_public_profile(
     )
     .expect("profile MAC verifies against the reserved KEM key");
     profile
+}
+
+/// Tenor-scoped reservation and creation intents spend signed tokens in the
+/// shard. Catches changed-body replay before a World exists, cross-method jti
+/// reuse and a failed validation consuming the owner's only token.
+#[tokio::test]
+async fn world_creation_intents_require_fresh_tokens_and_roll_back_failed_attempts() {
+    let f = Fixture::new().await;
+    let audience = f.hosting.service_did();
+    let reserve = api::RESERVE_WORLD.nsid;
+    let create = api::CREATE_WORLD.nsid;
+    let rotation = to_public(&f.rotation).expect("public rotation key").to_string();
+    let reserve_body = |handle: &str| json!({"handle":handle,"rotationKey":rotation,"tenorRotationKey":false});
+    let without_jti = f.token_with_jti(OWNER, audience, reserve, None);
+    assert_eq!(
+        f.post_token(reserve, reserve_body("first.motet.test"), &without_jti)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let reserve_token = f.token_with_jti(OWNER, audience, reserve, Some("reservation-token"));
+    assert_eq!(
+        f.post_token(reserve, reserve_body("bad/handle"), &reserve_token)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, result) = f
+        .post_token(reserve, reserve_body("first.motet.test"), &reserve_token)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let first: ReserveWorldOutput = serde_json::from_value(result).expect("reservation");
+    assert_eq!(
+        f.post_token(reserve, reserve_body("second.motet.test"), &reserve_token)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let second = f.reserve("second.motet.test", false).await;
+    let first_request = json!({
+        "reservation":first.reservation,
+        "signedOperation":Fixture::signed(&first, &f.rotation),
+    });
+    let second_request = json!({
+        "reservation":second.reservation,
+        "signedOperation":Fixture::signed(&second, &f.rotation),
+    });
+    let no_create_jti = f.token_with_jti(OWNER, audience, create, None);
+    assert_eq!(
+        f.post_token(create, first_request.clone(), &no_create_jti).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let cross_method = f.token_with_jti(OWNER, audience, create, Some("reservation-token"));
+    assert_eq!(
+        f.post_token(create, first_request.clone(), &cross_method).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let create_token = f.token_with_jti(OWNER, audience, create, Some("creation-token"));
+    let stranger = generate_key(KeyType::P256Private).expect("stranger rotation key");
+    let invalid = json!({
+        "reservation":first.reservation,
+        "signedOperation":Fixture::signed(&first, &stranger),
+    });
+    assert_eq!(
+        f.post_token(create, invalid, &create_token).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, created) = f.post_token(create, first_request.clone(), &create_token).await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(
+        f.post_token(create, second_request.clone(), &create_token).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, retried) = f.post(create, first_request, OWNER, audience).await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert_eq!(retried, created);
+    let (status, created_second) = f.post(create, second_request, OWNER, audience).await;
+    assert_eq!(status, StatusCode::OK, "{created_second}");
+    assert_ne!(created["did"], created_second["did"]);
 }
 
 /// A new client can discover the tenor before any World exists and use its DID
@@ -786,17 +874,15 @@ async fn expired_reservations_cannot_be_created_and_release_their_keys() {
         .expect("writer")
         .expect("reservation");
     let operation = reserved.operation.sign(&f.rotation).expect("signature");
-    let result = identity::create(
-        &f.shard,
-        &f.hosting,
-        Did::new(OWNER),
-        identity::CreateRequest {
-            reservation: reserved.reservation.clone(),
-            signed_operation: operation,
-        },
-    )
-    .await;
-    assert!(matches!(result, Err(IdentityError::ReservationExpired)));
+    let (status, _) = f
+        .post(
+            api::CREATE_WORLD.nsid,
+            json!({"reservation": reserved.reservation.clone(), "signedOperation": operation}),
+            OWNER,
+            f.hosting.service_did(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(f.plc.submission_count(), 0);
     assert_eq!(
         f.shard

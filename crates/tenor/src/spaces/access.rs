@@ -87,15 +87,36 @@ pub async fn access(reader: &Reader, space: &SpaceUri, member: Option<&str>) -> 
 /// Commit-time equivalent of [`access`]. A prepared delegation never bypasses
 /// a membership removal which reached the shard first.
 pub async fn access_txn(txn: &Txn<'_>, space: &SpaceUri, member: Option<&str>) -> Result<MemberAccess, SpaceError> {
+    evaluate_txn(txn, space, member, true).await
+}
+
+/// Explicit role grants, excluding anonymous public read, for roster entries.
+pub(crate) async fn granted_access_txn(
+    txn: &Txn<'_>,
+    space: &SpaceUri,
+    member: &str,
+) -> Result<MemberAccess, SpaceError> {
+    evaluate_txn(txn, space, Some(member), false).await
+}
+
+async fn evaluate_txn(
+    txn: &Txn<'_>,
+    space: &SpaceUri,
+    member: Option<&str>,
+    include_public: bool,
+) -> Result<MemberAccess, SpaceError> {
     require_live(&info_txn(txn, space).await?)?;
     if member == Some(space.space_did.as_str()) {
         return Ok(MemberAccess::FULL);
     }
-    let access: AccessRecord = record_value(
+    let mut access: AccessRecord = record_value(
         &record_txn(txn, space, AccessRecord::NSID, "self")
             .await?
             .ok_or(SpaceError::NotFound)?,
     )?;
+    if !include_public {
+        access.public = Some(false);
+    }
     let world = Did::new(&space.space_did);
     let roles = match member {
         Some(member) => roles_txn(txn, &world, member).await?,

@@ -2,6 +2,7 @@
 //! An access record is confined to its own Space; permissions grants are global.
 
 use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use atproto_oauth::scopes::{
     RepoAction, RepoCollection, RpcAudience, RpcLexicon, Scope, SpaceAction, SpaceCollection, SpaceCollections,
@@ -9,6 +10,7 @@ use atproto_oauth::scopes::{
 };
 use atproto_record::{datetime::Datetime, tid::Tid};
 use atproto_space::{SpaceUri, space_repo::OpAction};
+use bytes::Bytes;
 use motet_lexicons::Record;
 use motet_lexicons::at_motet_pilot_audit::Audit;
 use motet_lexicons::group_opensocial_defs::GroupGrant;
@@ -23,6 +25,9 @@ use crate::spaces::{self, AccessRecord, SpaceError, SpaceInfo, SpaceWrite};
 use crate::store::keys;
 
 pub(crate) const AUDIT: &str = Audit::NSID;
+
+const MAX_SERVICE_TOKEN_ID_BYTES: usize = 256;
+const TOKEN_CLEANUP_LIMIT: usize = 64;
 
 async fn current(txn: &Txn<'_>, world: &Did, actor: &Did) -> Result<Policy, SpaceError> {
     let raw = txn
@@ -50,11 +55,61 @@ async fn current(txn: &Txn<'_>, world: &Did, actor: &Did) -> Result<Policy, Spac
     Ok(policy)
 }
 
+/// Check the origin member's current explicit read grant, even for public Spaces.
+pub(crate) async fn member_can_read_space(
+    txn: &Txn<'_>,
+    world: &Did,
+    member: &Did,
+    space: &SpaceUri,
+) -> Result<bool, SpaceError> {
+    let policy = match current(txn, world, member).await {
+        Ok(policy) => policy,
+        Err(SpaceError::NotAuthorized) => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match policy.space(space, None, SpaceAction::Read) {
+        Ok(()) => Ok(true),
+        Err(SpaceError::NotAuthorized) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// A verified member token for a tenor-scoped creation operation.
+#[derive(Debug)]
+pub(crate) struct ServiceToken {
+    pub issuer: Did,
+    jti: Option<String>,
+    expires_at: u64,
+}
+
+impl ServiceToken {
+    pub(crate) fn from_caller(caller: Caller) -> Result<Self, SpaceError> {
+        let Caller::Service {
+            did, jti, expires_at, ..
+        } = caller
+        else {
+            return Err(SpaceError::NotAuthorized);
+        };
+        atproto_lexicon::validation::syntax::validate_did(&did).map_err(|_| SpaceError::NotAuthorized)?;
+        Ok(Self {
+            issuer: Did::new(did),
+            jti,
+            expires_at,
+        })
+    }
+
+    pub(crate) async fn consume(&self, txn: &mut Txn<'_>) -> Result<(), SpaceError> {
+        consume_token(txn, &self.issuer, self.jti.as_deref(), self.expires_at).await
+    }
+}
+
 /// The World is the request target; the actor is the verified token issuer.
 #[derive(Clone, Debug)]
 pub(crate) struct Actor {
     pub world: Did,
-    pub actor: Did,
+    pub member: Did,
+    jti: Option<String>,
+    expires_at: u64,
 }
 
 impl Actor {
@@ -80,25 +135,52 @@ impl Actor {
         if Self::audience_world(&caller)? != world.as_str() {
             return Err(SpaceError::NotAuthorized);
         }
-        let Caller::Service { did, .. } = caller else {
+        let Caller::Service {
+            did, jti, expires_at, ..
+        } = caller
+        else {
             return Err(SpaceError::NotAuthorized);
         };
         Ok(Self {
             world,
-            actor: Did::new(did),
+            member: Did::new(did),
+            jti,
+            expires_at,
         })
     }
 
     /// Load policy inside the mutation's operation, after earlier role removals.
     pub(crate) async fn policy(&self, txn: &Txn<'_>) -> Result<Policy, SpaceError> {
-        current(txn, &self.world, &self.actor).await
+        current(txn, &self.world, &self.member).await
+    }
+
+    /// Recheck expiry at the shard without requiring or spending a token ID.
+    pub(crate) async fn check_fresh(&self, txn: &Txn<'_>) -> Result<(), SpaceError> {
+        fresh_time(txn, self.expires_at).await.map(|_| ())
+    }
+
+    /// Check a mutation token without spending it during a network read-back.
+    pub(crate) async fn check_unused(&self, txn: &Txn<'_>) -> Result<(), SpaceError> {
+        let jti = token_id(self.jti.as_deref())?;
+        let now = fresh_time(txn, self.expires_at).await?;
+        if let Some(raw) = txn.get(&keys::service_token(&self.member, jti)).await?
+            && token_expiration(&raw)? > now
+        {
+            return Err(SpaceError::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    /// Spend the verified member token with the mutation, never before it.
+    pub(crate) async fn consume(&self, txn: &mut Txn<'_>) -> Result<(), SpaceError> {
+        consume_token(txn, &self.member, self.jti.as_deref(), self.expires_at).await
     }
 
     /// A failed audit append aborts the enclosing mutation, including its events.
     pub(crate) async fn audit(&self, txn: &mut Txn<'_>, action: &str, subject: &str) -> Result<(), SpaceError> {
         let space = spaces::world_space(&self.world, spaces::GMS)?;
         let record = Audit {
-            actor: self.actor.to_string(),
+            actor: self.member.to_string(),
             action: action.into(),
             subject: subject.into(),
             at: Datetime::now().into_string(),
@@ -112,6 +194,107 @@ impl Actor {
         .await?;
         Ok(())
     }
+}
+
+async fn consume_token(txn: &mut Txn<'_>, issuer: &Did, jti: Option<&str>, expires_at: u64) -> Result<(), SpaceError> {
+    let jti = token_id(jti)?;
+    let now = fresh_time(txn, expires_at).await?;
+
+    let token_key = keys::service_token(issuer, jti);
+    if let Some(raw) = txn.get(&token_key).await? {
+        let expires = token_expiration(&raw)?;
+        if expires > now {
+            return Err(SpaceError::NotAuthorized);
+        }
+        txn.delete(keys::service_token_expiry(expires, issuer, jti));
+    }
+
+    cleanup_tokens(txn, now, TOKEN_CLEANUP_LIMIT).await?;
+    txn.put(
+        keys::SERVICE_TOKEN_CLOCK.to_vec(),
+        Bytes::copy_from_slice(&now.to_be_bytes()),
+    );
+    txn.put(token_key.clone(), Bytes::copy_from_slice(&expires_at.to_be_bytes()));
+    txn.put(
+        keys::service_token_expiry(expires_at, issuer, jti),
+        Bytes::from(token_key),
+    );
+    Ok(())
+}
+
+/// Sweep expired tokens on the shard writer, including when it has no writes.
+pub(crate) async fn sweep_service_tokens(
+    txn: &mut Txn<'_>,
+    clock: SystemTime,
+    limit: usize,
+) -> Result<usize, SpaceError> {
+    let now = token_clock(txn, clock).await?;
+    let removed = if limit == 0 {
+        0
+    } else {
+        cleanup_tokens(txn, now, limit).await?
+    };
+    txn.put(
+        keys::SERVICE_TOKEN_CLOCK.to_vec(),
+        Bytes::copy_from_slice(&now.to_be_bytes()),
+    );
+    Ok(removed)
+}
+
+async fn fresh_time(txn: &Txn<'_>, expires_at: u64) -> Result<u64, SpaceError> {
+    let now = token_clock(txn, SystemTime::now()).await?;
+    if expires_at <= now {
+        return Err(SpaceError::NotAuthorized);
+    }
+    Ok(now)
+}
+
+async fn token_clock(txn: &Txn<'_>, clock: SystemTime) -> Result<u64, SpaceError> {
+    let current = clock
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| SpaceError::NotAuthorized)?
+        .as_secs();
+    let previous = txn
+        .get(keys::SERVICE_TOKEN_CLOCK)
+        .await?
+        .map(|raw| token_expiration(&raw))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(current.max(previous))
+}
+
+async fn cleanup_tokens(txn: &mut Txn<'_>, now: u64, limit: usize) -> Result<usize, SpaceError> {
+    let mut removed = 0;
+    // The watermark commits with deletions, so clock rollback stays fail-closed.
+    for (expiry_key, spent_key) in txn.scan(keys::SERVICE_TOKEN_EXPIRIES, limit).await? {
+        let expires = keys::service_token_expiry_time(&expiry_key)
+            .ok_or_else(|| SpaceError::Invalid("invalid service token expiry key".into()))?;
+        if expires > now {
+            break;
+        }
+        if txn
+            .get(&spent_key)
+            .await?
+            .is_some_and(|stored| stored.as_ref() == expires.to_be_bytes().as_slice())
+        {
+            txn.delete(spent_key.to_vec());
+        }
+        txn.delete(expiry_key.to_vec());
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+fn token_id(jti: Option<&str>) -> Result<&str, SpaceError> {
+    jti.filter(|id| !id.is_empty() && id.len() <= MAX_SERVICE_TOKEN_ID_BYTES)
+        .ok_or(SpaceError::NotAuthorized)
+}
+
+fn token_expiration(raw: &[u8]) -> Result<u64, SpaceError> {
+    let bytes: [u8; 8] = raw
+        .try_into()
+        .map_err(|_| SpaceError::Invalid("invalid service token expiry".into()))?;
+    Ok(u64::from_be_bytes(bytes))
 }
 
 pub(crate) struct Policy {
@@ -391,11 +574,15 @@ fn decode<T: serde::de::DeserializeOwned>(value: &[u8]) -> Result<T, SpaceError>
     atproto_dasl::from_slice(value).map_err(|error| SpaceError::Invalid(error.to_string()))
 }
 
-/// Generic writes cannot forge records owned by the rules state machine or audit.
+/// Generic writes cannot forge rules-backed, tenor-authored or audit records.
 fn protected(collection: &str) -> bool {
     matches!(
         collection,
-        AUDIT | "at.motet.pilot.scene" | "at.motet.pilot.admission" | "at.motet.pilot.closing"
+        AUDIT
+            | "at.motet.pilot.scene"
+            | "at.motet.pilot.admission"
+            | "at.motet.pilot.closing"
+            | "at.motet.pilot.roll.result"
     )
 }
 

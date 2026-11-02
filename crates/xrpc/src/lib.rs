@@ -148,6 +148,10 @@ pub enum Caller {
         did: String,
         lxm: String,
         audience: String,
+        /// The verified token identifier, when the issuer supplied one.
+        jti: Option<String>,
+        /// The verified expiry in seconds since the Unix epoch.
+        expires_at: u64,
     },
     /// A verified Space credential, not an account session. Its subject is
     /// a Space, so it must never inherit account or service privileges.
@@ -302,6 +306,8 @@ mod tests {
                 did: "did:plc:a".into(),
                 lxm,
                 audience: "did:web:motet.test".into(),
+                jti: None,
+                expires_at: u64::MAX,
             }),
         ]
     }

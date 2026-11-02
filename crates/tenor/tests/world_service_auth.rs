@@ -21,13 +21,14 @@ use motet_rules::Did;
 use motet_tenor::identity::Hosting;
 use motet_tenor::keys::{MasterKey, Purpose};
 use motet_tenor::repo;
-use motet_tenor::shard::{Handle, Op, Options, Shard, Txn, spawn};
+use motet_tenor::shard::{Handle, Op, Options, Shard, SweepServiceTokens, Txn, spawn};
 use motet_tenor::spaces::{self, ProfileInput, SpaceError, SpaceWrite};
 use motet_tenor::store::keys;
 use motet_tenor::world::{Status, WorldInfo};
 use motet_tenor::{api, pds};
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
+use proptest::prelude::*;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -94,6 +95,41 @@ impl Op for AdminWrites {
     async fn run(self, txn: &mut Txn<'_>) -> Result<(), SpaceError> {
         spaces::write_as_world(txn, &self.space, self.writes).await?;
         Ok(())
+    }
+}
+
+struct SeedExpiredTokens {
+    expires: u64,
+    count: usize,
+}
+
+impl Op for SeedExpiredTokens {
+    type Output = ();
+    type Error = SpaceError;
+
+    fn run(self, txn: &mut Txn<'_>) -> impl Future<Output = Result<(), SpaceError>> + Send {
+        let issuer = Did::new(OWNER);
+        for index in 0..self.count {
+            let jti = format!("expired-{index:02}");
+            let key = keys::service_token(&issuer, &jti);
+            txn.put(key.clone(), Bytes::copy_from_slice(&self.expires.to_be_bytes()));
+            txn.put(keys::service_token_expiry(self.expires, &issuer, &jti), key.into());
+        }
+        std::future::ready(Ok(()))
+    }
+}
+
+struct SeedCorruptExpiry;
+
+impl Op for SeedCorruptExpiry {
+    type Output = ();
+    type Error = SpaceError;
+
+    fn run(self, txn: &mut Txn<'_>) -> impl Future<Output = Result<(), SpaceError>> + Send {
+        let mut key = keys::SERVICE_TOKEN_EXPIRIES.to_vec();
+        key.extend_from_slice(&[u8::MAX; 7]);
+        txn.put(key, Bytes::from_static(b"corrupt"));
+        std::future::ready(Ok(()))
     }
 }
 
@@ -290,13 +326,18 @@ fn profile(name: &str) -> Value {
 }
 
 fn token(client: &Client, audience: &str, method: &str) -> String {
+    let jti = atproto_record::tid::Tid::new().to_string();
+    token_with_jti(client, audience, method, Some(&jti))
+}
+
+fn token_with_jti(client: &Client, audience: &str, method: &str, jti: Option<&str>) -> String {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs();
     let mut claims = Claims::new(JoseClaims {
         issuer: Some(client.actor.clone()),
         audience: Some(audience.into()),
         issued_at: Some(now),
         expiration: Some(now + 60),
-        json_web_token_id: Some(atproto_record::tid::Tid::new().to_string()),
+        json_web_token_id: jti.map(str::to_owned),
         ..JoseClaims::default()
     });
     claims.private.insert("lxm".into(), method.into());
@@ -361,6 +402,343 @@ async fn delegation(client: &Client, space: &SpaceUri) -> (StatusCode, Value) {
         )
         .expect("delegation response is JSON"),
     )
+}
+
+/// A verified issuer's token can authorize only one committed body. Missing
+/// IDs and a concurrent replay must not become additional attributed writes.
+#[tokio::test]
+async fn signed_token_id_is_required_and_one_body_wins_even_when_requests_race() {
+    let fixture = Fixture::new().await;
+    fixture
+        .editor(&["repo:at.motet.pilot.profile?action=create&action=update"])
+        .await;
+    let owner = fixture.router(OWNER);
+    let method = "com.atproto.repo.putRecord";
+    let body = |name: &str| json!({"repo":WORLD,"collection":PROFILE,"rkey":"self","record":profile(name)});
+    let too_long = "x".repeat(257);
+    let before = fixture.visible().await;
+    for jti in [None, Some(""), Some(too_long.as_str())] {
+        let missing = token_with_jti(&owner, WORLD, method, jti);
+        let (status, reply) = request_with_token(&owner, method, body("forbidden"), &missing).await;
+        assert!(!status.is_success(), "invalid jti {jti:?}: {reply}");
+    }
+    assert_eq!(fixture.visible().await, before);
+
+    let signed = token_with_jti(&owner, WORLD, method, Some("one-use"));
+    let (first, second) = tokio::join!(
+        request_with_token(&owner, method, body("first"), &signed),
+        request_with_token(&owner, method, body("changed"), &signed),
+    );
+    assert!(
+        (first.0 == StatusCode::OK && second.0 == StatusCode::FORBIDDEN)
+            || (second.0 == StatusCode::OK && first.0 == StatusCode::FORBIDDEN),
+        "only one request may commit: {first:?}, {second:?}"
+    );
+    assert_eq!(fixture.audits().await.len(), 1);
+    let independently_signed = token_with_jti(&owner, WORLD, method, Some("one-use"));
+    assert_eq!(
+        request_with_token(&owner, method, body("third"), &independently_signed)
+            .await
+            .0,
+        StatusCode::FORBIDDEN,
+        "the ledger keys on issuer and jti, not serialized JWT bytes"
+    );
+    let fresh = token_with_jti(&owner, WORLD, method, Some("fresh-use"));
+    assert_eq!(
+        request_with_token(&owner, method, body("fresh"), &fresh).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(fixture.audits().await.len(), 2);
+    let editor = fixture.router(EDITOR);
+    let other_issuer = token_with_jti(&editor, WORLD, method, Some("one-use"));
+    assert_eq!(
+        request_with_token(&editor, method, body("other issuer"), &other_issuer)
+            .await
+            .0,
+        StatusCode::OK,
+        "different issuers have independent token IDs"
+    );
+    assert_eq!(fixture.audits().await.len(), 3);
+}
+
+/// A clock rollback after expiring markers must not make an old signed token
+/// usable again. Catches cleanup based on time without a durable watermark.
+#[tokio::test]
+async fn replay_clock_rollback_does_not_reopen_expired_credentials() {
+    let fixture = Fixture::new().await;
+    let owner = fixture.router(OWNER);
+    let method = "com.atproto.repo.putRecord";
+    let signed = token_with_jti(&owner, WORLD, method, Some("clock-rollback"));
+    let body = json!({"repo":WORLD,"collection":PROFILE,"rkey":"self","record":profile("must not commit twice")});
+    assert_eq!(
+        request_with_token(&owner, method, body.clone(), &signed).await.0,
+        StatusCode::OK
+    );
+    let future = SystemTime::now() + Duration::from_secs(120);
+    let swept = fixture
+        .handle
+        .run(SweepServiceTokens { now: future, limit: 64 })
+        .await
+        .expect("sweep reaches writer")
+        .expect("sweep commits");
+    assert_eq!(swept, 1);
+    assert!(
+        fixture
+            .handle
+            .reader()
+            .get(&keys::service_token(&Did::new(OWNER), "clock-rollback"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let before = fixture.visible().await;
+    assert_eq!(
+        request_with_token(&owner, method, body, &signed).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(fixture.visible().await, before);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+
+    /// Empty sweeps must retain the greatest observed time across arbitrary
+    /// clock rollbacks and limits. Otherwise an unused expired JWT can write.
+    #[test]
+    fn empty_sweep_watermark_prevents_first_use_after_clock_rollback(
+        later in 61_u64..=300,
+        earlier in 0_u64..=60,
+        first_limit in 0_usize..=1,
+        second_limit in 0_usize..=1,
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let fixture = Fixture::new().await;
+            let owner = fixture.router(OWNER);
+            let method = "com.atproto.repo.putRecord";
+            let signed = token_with_jti(&owner, WORLD, method, Some("unused-before-expiry"));
+            let now = SystemTime::now();
+            let swept = fixture
+                .handle
+                .run(SweepServiceTokens { now: now + Duration::from_secs(later), limit: first_limit })
+                .await
+                .expect("empty sweep reaches writer")
+                .expect("empty sweep records its clock");
+            assert_eq!(swept, 0);
+            let swept = fixture
+                .handle
+                .run(SweepServiceTokens { now: now + Duration::from_secs(earlier), limit: second_limit })
+                .await
+                .expect("second empty sweep reaches writer")
+                .expect("older observation cannot reduce the watermark");
+            assert_eq!(swept, 0);
+            let body = json!({"repo":WORLD,"collection":PROFILE,"rkey":"self","record":profile("expired")});
+            assert_eq!(
+                request_with_token(&owner, method, body, &signed).await.0,
+                StatusCode::FORBIDDEN
+            );
+            assert_eq!(fixture.audits().await.len(), 0);
+        });
+    }
+}
+
+/// A transaction that fails after token consumption leaves the token usable.
+/// Catches committing the replay marker before a failed conditional write.
+#[tokio::test]
+async fn rejected_repo_swap_does_not_spend_the_signed_token() {
+    let fixture = Fixture::new().await;
+    let owner = fixture.router(OWNER);
+    let method = "com.atproto.repo.putRecord";
+    let body = json!({"repo":WORLD,"collection":PROFILE,"rkey":"self","record":profile("initial")});
+    assert_eq!(request(&owner, method, body.clone()).await.0, StatusCode::OK);
+    let signed = token_with_jti(&owner, WORLD, method, Some("rollback"));
+    let mut conflicting = body.clone();
+    conflicting["swapRecord"] = Value::Null;
+    let (status, result) = request_with_token(&owner, method, conflicting, &signed).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+    assert_eq!(result["error"], "InvalidSwap");
+    let (status, result) = request_with_token(&owner, method, body, &signed).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    assert_eq!(fixture.audits().await.len(), 2);
+}
+
+/// Expired markers are reclaimed in bounded batches without deleting live
+/// markers. Catches stale-key leaks and sweeps that reopen a live replay.
+#[tokio::test]
+async fn expired_token_markers_are_boundedly_reclaimed_without_unspending_live_tokens() {
+    let fixture = Fixture::new().await;
+    let owner = fixture.router(OWNER);
+    let expires = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        .saturating_sub(1);
+    fixture
+        .handle
+        .run(SeedExpiredTokens { expires, count: 66 })
+        .await
+        .expect("seed reaches writer")
+        .expect("seeded expiry markers");
+    let method = "com.atproto.repo.putRecord";
+    let body = |name: &str| json!({"repo":WORLD,"collection":PROFILE,"rkey":"self","record":profile(name)});
+    let live = token_with_jti(&owner, WORLD, method, Some("still-live"));
+    assert_eq!(
+        request_with_token(&owner, method, body("one"), &live).await.0,
+        StatusCode::OK
+    );
+    let remaining = fixture
+        .handle
+        .reader()
+        .scan(keys::SERVICE_TOKEN_EXPIRIES, None, 100)
+        .await
+        .expect("expiry index is readable");
+    assert_eq!(remaining.len(), 3, "one request prunes at most 64 expired entries");
+    let next = token_with_jti(&owner, WORLD, method, Some("expired-65"));
+    assert_eq!(
+        request_with_token(&owner, method, body("two"), &next).await.0,
+        StatusCode::OK
+    );
+    let remaining = fixture
+        .handle
+        .reader()
+        .scan(keys::SERVICE_TOKEN_EXPIRIES, None, 100)
+        .await
+        .expect("expiry index is readable");
+    assert_eq!(
+        remaining.len(),
+        2,
+        "both expired entries are reclaimed by the next request"
+    );
+    assert_eq!(
+        request_with_token(&owner, method, body("replay"), &live).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request_with_token(&owner, method, body("replay renewed ID"), &next)
+            .await
+            .0,
+        StatusCode::FORBIDDEN,
+        "cleaning an old marker must not remove the replacement"
+    );
+    let reused_after_expiry = token_with_jti(&owner, WORLD, method, Some("expired-00"));
+    assert_eq!(
+        request_with_token(&owner, method, body("new token"), &reused_after_expiry)
+            .await
+            .0,
+        StatusCode::OK
+    );
+}
+
+/// Maintenance reclaims expired tokens without later member traffic, while
+/// retaining live replays. Catches unbounded idle ledger growth or a sweep
+/// that deletes an unexpired marker.
+#[tokio::test]
+async fn idle_token_sweep_is_bounded_and_preserves_unexpired_tokens() {
+    let fixture = Fixture::new().await;
+    let owner = fixture.router(OWNER);
+    let method = "com.atproto.repo.putRecord";
+    let body = json!({"repo":WORLD,"collection":PROFILE,"rkey":"self","record":profile("live")});
+    let live = token_with_jti(&owner, WORLD, method, Some("idle-live"));
+    assert_eq!(
+        request_with_token(&owner, method, body.clone(), &live).await.0,
+        StatusCode::OK
+    );
+    let now = SystemTime::now();
+    let expires = now
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        .saturating_sub(1);
+    fixture
+        .handle
+        .run(SeedExpiredTokens { expires, count: 66 })
+        .await
+        .expect("seed reaches writer")
+        .expect("expired markers seeded");
+    let swept = fixture
+        .handle
+        .run(SweepServiceTokens { now, limit: 64 })
+        .await
+        .expect("sweep reaches writer")
+        .expect("sweep succeeds");
+    assert_eq!(swept, 64);
+    let remaining = fixture
+        .handle
+        .reader()
+        .scan(keys::SERVICE_TOKEN_EXPIRIES, None, 100)
+        .await
+        .expect("expiry index");
+    assert_eq!(remaining.len(), 3);
+    let swept = fixture
+        .handle
+        .run(SweepServiceTokens { now, limit: 64 })
+        .await
+        .expect("sweep reaches writer")
+        .expect("sweep succeeds");
+    assert_eq!(swept, 2);
+    for id in ["expired-00", "expired-65"] {
+        assert!(
+            fixture
+                .handle
+                .reader()
+                .get(&keys::service_token(&Did::new(OWNER), id))
+                .await
+                .expect("spent token lookup")
+                .is_none(),
+            "the sweep removes the primary marker as well as its expiry index"
+        );
+    }
+    assert_eq!(
+        request_with_token(&owner, method, body, &live).await.0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// A damaged expiry index must not make a partial sweep durable. Catches
+/// deleting earlier replay markers before a later storage error aborts.
+#[tokio::test]
+async fn failed_idle_token_sweep_rolls_back_prior_deletions_and_clock() {
+    let fixture = Fixture::new().await;
+    let now = SystemTime::now();
+    let expires = now
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        .saturating_sub(1);
+    fixture
+        .handle
+        .run(SeedExpiredTokens { expires, count: 2 })
+        .await
+        .expect("seed reaches writer")
+        .expect("expired markers seeded");
+    fixture
+        .handle
+        .run(SeedCorruptExpiry)
+        .await
+        .expect("seed reaches writer")
+        .expect("corrupt marker seeded");
+    let reader = fixture.handle.reader();
+    let before = reader
+        .scan(keys::SERVICE_TOKEN_EXPIRIES, None, 100)
+        .await
+        .expect("expiry index");
+    let failure = fixture
+        .handle
+        .run(SweepServiceTokens { now, limit: 100 })
+        .await
+        .expect("sweep reaches writer");
+    assert!(failure.is_err());
+    assert_eq!(
+        reader.scan(keys::SERVICE_TOKEN_EXPIRIES, None, 100).await.unwrap(),
+        before
+    );
+    assert!(
+        reader
+            .get(&keys::service_token(&Did::new(OWNER), "expired-00"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(reader.get(keys::SERVICE_TOKEN_CLOCK).await.unwrap().is_none());
 }
 
 /// Only the verified issuer, the targeted World audience and exact method
@@ -1195,10 +1573,10 @@ async fn role_reactivation_and_deletion_require_assignment_authority() {
     );
 }
 
-/// Rules-backed records and audit evidence are not generic writer inputs.
+/// Rules-backed and tenor-authored records are not generic writer inputs.
 /// Catches bypasses through either CRUD or a mixed-authority batch.
 #[tokio::test]
-async fn rules_backed_records_refuse_all_generic_repo_and_space_mutations() {
+async fn protected_records_refuse_all_generic_repo_and_space_mutations() {
     let fixture = Fixture::new().await;
     let router = fixture.router(OWNER);
     let rkey = atproto_record::tid::Tid::new().to_string();
@@ -1223,6 +1601,10 @@ async fn rules_backed_records_refuse_all_generic_repo_and_space_mutations() {
         (
             "at.motet.pilot.audit",
             json!({"$type":"at.motet.pilot.audit","actor":OWNER,"action":"create","subject":format!("at://{WORLD}/{PROFILE}/self"),"at":"2026-10-26T00:00:00Z"}),
+        ),
+        (
+            "at.motet.pilot.roll.result",
+            json!({"$type":"at.motet.pilot.roll.result","request":{"uri":format!("at://{OWNER}/at.motet.pilot.roll.request/{rkey}"),"cid":cid},"grammar":"motet-dice/1","algorithm":"os-csprng","expression":"1d6","outcome":"rolled","total":3,"createdAt":"2026-10-26T00:00:00Z"}),
         ),
     ];
     let seeded = records

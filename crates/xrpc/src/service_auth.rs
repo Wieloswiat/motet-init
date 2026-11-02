@@ -4,13 +4,13 @@
 //!
 //! A token is accepted only if all of these hold:
 //!
-//! - it is signed by the `#atproto` key in the issuer's current DID document;
+//! - it is signed by the `#atproto` key in the resolved issuer DID document;
 //! - its audience is one this service answers for (the AppView's DID, or for
 //!   a tenor, a World it hosts with the tenor's service fragment);
 //! - it names exactly one method (`lxm`), which the registry then matches
 //!   against the method being called;
-//! - it has an expiry, is not expired, and doesn't live longer than
-//!   [`MAX_LIFETIME_SECS`].
+//! - it has an issuance time and expiry, is not expired, and doesn't live
+//!   longer than [`MAX_LIFETIME_SECS`].
 //!
 //! The issuer is the caller. A DID inside a request body never is.
 //!
@@ -35,7 +35,7 @@ use crate::{Caller, XrpcError};
 
 /// Longest lifetime accepted for a token. PDSes mint them for about a minute;
 /// anything much longer is a credential someone is keeping around.
-pub const MAX_LIFETIME_SECS: u64 = 300;
+pub const MAX_LIFETIME_SECS: u64 = 60;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ServiceAuthError {
@@ -53,18 +53,48 @@ pub enum ServiceAuthError {
     WrongAudience,
     #[error("the token names no method")]
     NoMethod,
-    #[error("the token has no expiry, has expired, or lives too long")]
+    #[error("the token names another method")]
+    WrongMethod,
+    #[error("the token's issuance or expiry time is invalid, or its lifetime is too long")]
     BadLifetime,
 }
 
-/// Checks a token's claims, after its signature has been verified. Pure, so
-/// the rules are testable without keys or clocks. The caller retains the
-/// exact signed issuer, including any service fragment.
+/// Checks claims against the audience and clock. This does not verify a
+/// signature; only callers of [`verify`] may treat the returned issuer and
+/// token identifier as authenticated.
 pub fn check_claims(
     claims: &Claims,
     accepts_audience: impl Fn(&str) -> bool,
     now: u64,
 ) -> Result<Caller, ServiceAuthError> {
+    Ok(checked_claims(claims, &accepts_audience, now)?.into_caller())
+}
+
+struct CheckedClaims<'a> {
+    did: &'a str,
+    lxm: &'a str,
+    audience: &'a str,
+    jti: Option<&'a str>,
+    expires_at: u64,
+}
+
+impl CheckedClaims<'_> {
+    fn into_caller(self) -> Caller {
+        Caller::Service {
+            did: self.did.to_owned(),
+            lxm: self.lxm.to_owned(),
+            audience: self.audience.to_owned(),
+            jti: self.jti.map(str::to_owned),
+            expires_at: self.expires_at,
+        }
+    }
+}
+
+fn checked_claims<'a>(
+    claims: &'a Claims,
+    accepts_audience: &impl Fn(&str) -> bool,
+    now: u64,
+) -> Result<CheckedClaims<'a>, ServiceAuthError> {
     let jose = &claims.jose;
     let iss = jose.issuer.as_deref().ok_or(ServiceAuthError::NoIssuer)?;
     let audience = jose
@@ -79,39 +109,53 @@ pub fn check_claims(
         .filter(|s| !s.is_empty())
         .ok_or(ServiceAuthError::NoMethod)?;
     let exp = jose.expiration.ok_or(ServiceAuthError::BadLifetime)?;
-    let starts = jose.issued_at.or(jose.not_before).unwrap_or(now);
-    if exp <= now || exp.saturating_sub(starts.min(now)) > MAX_LIFETIME_SECS {
+    let issued_at = jose.issued_at.ok_or(ServiceAuthError::BadLifetime)?;
+    if exp <= now
+        || exp <= issued_at
+        || exp.saturating_sub(issued_at.min(now)) > MAX_LIFETIME_SECS
+        || issued_at > now.saturating_add(60)
+        || jose.not_before.is_some_and(|nbf| now < nbf)
+    {
         return Err(ServiceAuthError::BadLifetime);
     }
-    if jose.not_before.is_some_and(|nbf| now < nbf) {
-        return Err(ServiceAuthError::BadLifetime);
-    }
-    Ok(Caller::Service {
-        did: iss.to_owned(),
-        lxm: lxm.to_owned(),
-        audience: audience.to_owned(),
+    Ok(CheckedClaims {
+        did: iss,
+        lxm,
+        audience,
+        jti: jose.json_web_token_id.as_deref(),
+        expires_at: exp,
     })
 }
 
 /// Verifies `token` end to end using `now` for every time check.
 ///
-/// Resolves the issuer, verifies its `#atproto` signature, then checks claims.
+/// Rejects invalid claims and methods before resolving the issuer, then
+/// verifies its `#atproto` signature and checks the signed claims again.
 /// Signed tokens with invalid time claims return [`ServiceAuthError::BadLifetime`].
 pub async fn verify(
     token: &str,
     resolver: &dyn IdentityResolver,
     accepts_audience: impl Fn(&str) -> bool,
+    expected_method: &str,
     now: u64,
 ) -> Result<Caller, ServiceAuthError> {
     let unverified = unverified_claims(token)?;
-    let iss = unverified.jose.issuer.as_deref().ok_or(ServiceAuthError::NoIssuer)?;
+    let unverified = checked_claims(&unverified, &accepts_audience, now)?;
+    if unverified.lxm != expected_method {
+        return Err(ServiceAuthError::WrongMethod);
+    }
+    let issuer = did_of(unverified.did);
     let document = resolver
-        .resolve(did_of(iss))
+        .resolve(issuer)
         .await
         .map_err(|_| ServiceAuthError::Unresolvable)?;
+    if document.id != issuer {
+        return Err(ServiceAuthError::Unresolvable);
+    }
     let key = signing_key(&document).ok_or(ServiceAuthError::NoSigningKey)?;
     let key = identify_key(key).map_err(|_| ServiceAuthError::NoSigningKey)?;
     let config = JwtValidationConfig {
+        require_issued_at: true,
         now: Some(now),
         ..JwtValidationConfig::default()
     };
@@ -124,7 +168,11 @@ pub async fn verify(
             _ => ServiceAuthError::BadSignature,
         }
     })?;
-    check_claims(&claims, accepts_audience, now)
+    let checked = checked_claims(&claims, &accepts_audience, now)?;
+    if checked.lxm != expected_method {
+        return Err(ServiceAuthError::WrongMethod);
+    }
+    Ok(checked.into_caller())
 }
 
 /// An [`Authenticate`] for services that accept service auth only: a bearer
@@ -146,7 +194,7 @@ pub fn authenticate(
                 Some(None) => Err(XrpcError::AuthRequired),
                 Some(Some(token)) => {
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                    verify(token, resolver.as_ref(), |aud| accepts_audience(aud), now)
+                    verify(token, resolver.as_ref(), |aud| accepts_audience(aud), request.nsid, now)
                         .await
                         .map_err(|_| XrpcError::AuthRequired)
                 }
@@ -172,16 +220,20 @@ fn unverified_claims(token: &str) -> Result<Claims, ServiceAuthError> {
     serde_json::from_slice(&bytes).map_err(|_| ServiceAuthError::Malformed)
 }
 
-/// The key atproto signs with: the verification method whose id ends in
-/// `#atproto`. Other keys in the document (labeler keys, say) never sign
-/// service auth.
+/// Atproto requires both the method ID and its controller to belong to the
+/// issuer. The identity library's fragment lookup does not check controller.
 fn signing_key(document: &Document) -> Option<&str> {
     document.verification_method.iter().find_map(|method| match method {
         VerificationMethod::Multikey {
             id,
+            controller,
             public_key_multibase,
             ..
-        } if id.ends_with("#atproto") => Some(public_key_multibase.as_str()),
+        } if controller == &document.id
+            && (id == "#atproto" || id.strip_prefix(document.id.as_str()) == Some("#atproto")) =>
+        {
+            Some(public_key_multibase.as_str())
+        }
         _ => None,
     })
 }

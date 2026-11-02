@@ -173,6 +173,10 @@ async fn submit_admission<R: Records>(
         .await
         .map_err(|error| match error {
             admission::AdmitError::ActorMismatch => XrpcError::AuthRequired,
+            admission::AdmitError::Rejected(Rejected::UnknownWorld(_)) => XrpcError::NotFound,
+            admission::AdmitError::Rejected(Rejected::OperationReused(_)) => {
+                XrpcError::InvalidRequest("operation ID reused for a different request".into())
+            }
             admission::AdmitError::Space(crate::spaces::SpaceError::NotAuthorized) => XrpcError::Protocol {
                 status: StatusCode::FORBIDDEN,
                 name: "Forbidden",
@@ -220,15 +224,11 @@ fn refusal_code(refusal: &Refusal) -> &'static str {
     }
 }
 
-fn creation_owner(caller: Caller, hosting: &Hosting) -> Result<Did, XrpcError> {
-    match caller {
-        Caller::Service { did, audience, .. }
-            if audience == hosting.service_did() && atproto_lexicon::validation::syntax::validate_did(&did).is_ok() =>
-        {
-            Ok(Did::new(did))
-        }
-        _ => Err(XrpcError::AuthRequired),
+fn creation_owner(caller: Caller, hosting: &Hosting) -> Result<crate::authorization::ServiceToken, XrpcError> {
+    if !matches!(&caller, Caller::Service { audience, .. } if audience == hosting.service_did()) {
+        return Err(XrpcError::AuthRequired);
     }
+    crate::authorization::ServiceToken::from_caller(caller).map_err(|_| XrpcError::AuthRequired)
 }
 
 async fn reserve_world<R: Records>(state: Arc<State<R>>, caller: Caller, input: Input) -> Result<Response, XrpcError> {
@@ -236,8 +236,8 @@ async fn reserve_world<R: Records>(state: Arc<State<R>>, caller: Caller, input: 
     let request = serde_json::from_slice(&input.body).map_err(|e| XrpcError::InvalidRequest(e.to_string()))?;
     let reserved = state
         .shard
-        .run(identity::ReserveWorld {
-            owner,
+        .run(identity::AuthorizedReserve {
+            token: owner,
             request,
             hosting: Arc::clone(&state.hosting),
             now: SystemTime::now(),
@@ -322,11 +322,13 @@ async fn handle_did<R: Records>(
 )]
 fn identity_error(error: IdentityError) -> XrpcError {
     match error {
-        IdentityError::NotOwner => XrpcError::Protocol {
-            status: StatusCode::FORBIDDEN,
-            name: "Forbidden",
-            message: error.to_string(),
-        },
+        IdentityError::NotOwner | IdentityError::Space(crate::spaces::SpaceError::NotAuthorized) => {
+            XrpcError::Protocol {
+                status: StatusCode::FORBIDDEN,
+                name: "Forbidden",
+                message: error.to_string(),
+            }
+        }
         IdentityError::HandleNotFound | IdentityError::ReservationNotFound => XrpcError::NotFound,
         IdentityError::InvalidHandle
         | IdentityError::HandleTaken

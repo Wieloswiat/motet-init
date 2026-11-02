@@ -143,5 +143,45 @@ async fn maintain(hosting: Arc<identity::Hosting>, handle: shard::Handle) {
                 }
             }
         }
+        loop {
+            match handle
+                .run(motet_tenor::spaces::credentials::SweepDelegationOrigins {
+                    now: SystemTime::now(),
+                    limit: 256,
+                })
+                .await
+            {
+                Ok(Ok(256)) => {}
+                Ok(Ok(_)) => break,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "delegation-origin sweep failed");
+                    break;
+                }
+                Err(error) => {
+                    tracing::error!(%error, "delegation-origin writer stopped");
+                    return;
+                }
+            }
+        }
+        loop {
+            match handle
+                .run(shard::SweepServiceTokens {
+                    now: SystemTime::now(),
+                    limit: 256,
+                })
+                .await
+            {
+                Ok(Ok(256)) => {}
+                Ok(Ok(_)) => break,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "service-token sweep failed");
+                    break;
+                }
+                Err(error) => {
+                    tracing::error!(%error, "service-token writer stopped");
+                    return;
+                }
+            }
+        }
     }
 }

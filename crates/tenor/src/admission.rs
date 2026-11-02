@@ -19,7 +19,7 @@ use motet_rules::{Cid, Did, OperationId, SceneId, StrongRef};
 use thiserror::Error;
 
 use crate::authorization::Actor;
-use crate::shard::{Applied, Entry, Handle, Op, SubmitError, Txn};
+use crate::shard::{Applied, Entry, Handle, Op, Rejected, SubmitError, Txn};
 use crate::spaces::SpaceError;
 
 /// A post version as its author's PDS returned it.
@@ -80,6 +80,8 @@ pub enum AdmitError {
     Shard(#[from] SubmitError),
     #[error(transparent)]
     Space(#[from] SpaceError),
+    #[error("admission command was rejected: {0}")]
+    Rejected(Rejected),
 }
 
 /// Read back and decide an admission brought by automatic ingestion.
@@ -94,6 +96,7 @@ pub(crate) async fn admit_as(
     request: Request,
     actor: Actor,
 ) -> Result<Decision, AdmitError> {
+    let actor = shard.run(CheckActor(actor)).await??;
     admit_inner(shard, records, request, Some(actor)).await
 }
 
@@ -108,21 +111,21 @@ async fn admit_inner(
     }
     let fetched = match records.fetch(&request.post).await {
         Ok(Some(fetched)) => fetched,
-        Ok(None) => return Ok(Decision::NotFound),
+        Ok(None) => return pending(shard, actor, Decision::NotFound).await,
         Err(FetchError::Unavailable(reason)) => {
             tracing::debug!(post = %request.post.uri, %reason, "read-back failed; request stays pending");
-            return Ok(Decision::Unreachable);
+            return pending(shard, actor, Decision::Unreachable).await;
         }
     };
     if fetched.cid != request.post.cid {
         // The repo holds another version now. That version gets its own
         // request; this one never pins something that isn't there.
-        return Ok(Decision::NotFound);
+        return pending(shard, actor, Decision::NotFound).await;
     }
     if fetched.world != request.world {
         return Ok(Decision::OtherWorld);
     }
-    if actor.as_ref().is_some_and(|actor| actor.actor != fetched.author) {
+    if actor.as_ref().is_some_and(|actor| actor.member != fetched.author) {
         return Err(AdmitError::ActorMismatch);
     }
     let read_back = ReadBack {
@@ -157,6 +160,27 @@ async fn admit_inner(
     Ok(Decision::Decided(applied))
 }
 
+/// Recheck pending results after network I/O without spending the token.
+async fn pending(shard: &Handle, actor: Option<Actor>, decision: Decision) -> Result<Decision, AdmitError> {
+    if let Some(actor) = actor {
+        shard.run(CheckActor(actor)).await??;
+    }
+    Ok(decision)
+}
+
+struct CheckActor(Actor);
+
+impl Op for CheckActor {
+    type Output = Actor;
+    type Error = AdmitError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<Actor, AdmitError> {
+        self.0.policy(txn).await?;
+        self.0.check_unused(txn).await?;
+        Ok(self.0)
+    }
+}
+
 struct AdmitAs {
     actor: Actor,
     op: OperationId,
@@ -170,6 +194,7 @@ impl Op for AdmitAs {
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Applied, AdmitError> {
         self.actor.policy(txn).await?;
+        self.actor.consume(txn).await?;
         let seen = txn
             .world(&self.actor.world)
             .is_some_and(|world| world.has_operation(&self.op));
@@ -184,19 +209,20 @@ impl Op for AdmitAs {
                 },
             )
             .await
-            .map_err(SubmitError::from)?;
+            .map_err(SubmitError::from)?
+            .map_err(AdmitError::Rejected)?;
         // Refusals also consume an operation ID durably. Attribute the first
         // decision, but never attribute a retry or a reused operation ID.
         if let Some(subject) = subject {
             let action = match &applied {
-                Ok(Outcome::Admitted(_)) => Some("admit"),
-                Ok(Outcome::Refused(_)) => Some("refuseAdmission"),
+                Outcome::Admitted(_) => Some("admit"),
+                Outcome::Refused(_) => Some("refuseAdmission"),
                 _ => None,
             };
             if let Some(action) = action {
                 self.actor.audit(txn, action, subject.as_str()).await?;
             }
         }
-        Ok(applied)
+        Ok(Ok(applied))
     }
 }

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
+use crate::authorization::ServiceToken;
 use crate::keys::{KeyError, Purpose};
 use crate::shard::{Handle, Op, SubmitError, Txn, TxnError};
 use crate::store::{ReadError, Reader, keys};
@@ -240,6 +241,31 @@ pub(crate) struct Reservation {
     pub(crate) created: bool,
 }
 
+/// A reservation and its verified token share one shard transaction.
+pub(crate) struct AuthorizedReserve {
+    pub token: ServiceToken,
+    pub request: ReserveRequest,
+    pub hosting: Arc<Hosting>,
+    pub now: SystemTime,
+}
+
+impl Op for AuthorizedReserve {
+    type Output = Reserved;
+    type Error = IdentityError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<Reserved, IdentityError> {
+        self.token.consume(txn).await?;
+        ReserveWorld {
+            owner: self.token.issuer,
+            request: self.request,
+            hosting: self.hosting,
+            now: self.now,
+        }
+        .run(txn)
+        .await
+    }
+}
+
 /// Reserves a handle and sealed keys on the one writer. The caller supplies
 /// its clock instant so expiry is the same decision for the whole operation.
 #[derive(Debug)]
@@ -380,7 +406,7 @@ impl Op for SweepReservations {
 }
 
 struct BeginCreate {
-    owner: Did,
+    token: ServiceToken,
     request: CreateRequest,
 }
 
@@ -396,12 +422,13 @@ impl Op for BeginCreate {
     type Error = IdentityError;
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Prepared, IdentityError> {
+        self.token.consume(txn).await?;
         let id = self.request.reservation;
         if id.len() != 43 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
             return Err(IdentityError::ReservationNotFound);
         }
         let mut reserved = load(txn, &id).await?;
-        if reserved.owner != self.owner {
+        if reserved.owner != self.token.issuer {
             return Err(IdentityError::NotOwner);
         }
         if reserved.signed.is_none() && reserved.expires <= unix_seconds(SystemTime::now())? {
@@ -465,14 +492,15 @@ fn verify_reserved(reserved: &UnsignedOperation, signed: &Operation) -> Result<(
 }
 
 /// Publishes the exact owner-signed operation, then atomically creates the
-/// World. Retrying the same request reconciles PLC before another submission.
-pub async fn create(
+/// World. A committed intent spends its token even if the PLC response fails;
+/// retrying with a fresh token reconciles PLC before another submission.
+pub(crate) async fn create(
     shard: &Handle,
     hosting: &Hosting,
-    owner: Did,
+    token: ServiceToken,
     request: CreateRequest,
 ) -> Result<WorldInfo, IdentityError> {
-    let prepared = shard.run(BeginCreate { owner, request }).await??;
+    let prepared = shard.run(BeginCreate { token, request }).await??;
     if prepared.created {
         return world::get(shard.reader(), &prepared.did)
             .await?

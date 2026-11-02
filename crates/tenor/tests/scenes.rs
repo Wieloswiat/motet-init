@@ -280,6 +280,7 @@ impl Fixture {
         let claims = URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&json!({
                 "iss": issuer, "aud": audience, "lxm": method, "iat": now, "exp": now + 60,
+                "jti": atproto_record::tid::Tid::new().to_string(),
             }))
             .expect("claims"),
         );
@@ -373,6 +374,33 @@ async fn response(response: axum::response::Response) -> (StatusCode, Value) {
         .await
         .expect("response body");
     (status, serde_json::from_slice(&body).expect("JSON response"))
+}
+
+/// A scene receipt is retryable with a fresh JWT, but a spent JWT never
+/// authorizes another body or a receipt after restart. Catches replay before
+/// the receipt check and a ledger omitted from durable shard effects.
+#[tokio::test]
+async fn scene_retry_requires_fresh_signed_token_even_after_shard_replay() {
+    let mut f = Fixture::new().await;
+    let body = json!({"op":"one-use","world":WORLD,"title":"Original","cast":[MEMBER]});
+    let signed = f.token(GM, WORLD, OPEN);
+    let (status, opened) = f.post_token(OPEN, body.clone(), &signed).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let changed = json!({"op":"another-op","world":WORLD,"title":"Forged"});
+    assert_eq!(
+        f.post_token(OPEN, changed.clone(), &signed).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(f.post_token(OPEN, body.clone(), &signed).await.0, StatusCode::FORBIDDEN);
+    f.reopen().await;
+    assert_eq!(f.post_token(OPEN, body.clone(), &signed).await.0, StatusCode::FORBIDDEN);
+    let (status, receipt) = f.post(OPEN, body, GM).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt, opened);
+    let (status, another) = f.post(OPEN, changed, GM).await;
+    assert_eq!(status, StatusCode::OK, "{another}");
+    assert_ne!(another["scene"], opened["scene"]);
+    assert_eq!(f.audit().await.len(), 2);
 }
 
 /// The signed issuer and its live role decide permission, not a body field or

@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use atproto_dasl::{BlockStorage, Cid, StorageError};
 use atproto_identity::key::KeyData;
@@ -176,6 +176,25 @@ pub trait Op: Send + 'static {
     type Output: Send + 'static;
     type Error: Send + 'static;
     fn run(self, txn: &mut Txn<'_>) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send;
+}
+
+/// Reclaim up to `limit` expired service-token markers on an idle shard.
+///
+/// The observed expiry watermark commits even when no markers are removed,
+/// so a clock rollback cannot revive a previously unused expired token.
+#[derive(Debug)]
+pub struct SweepServiceTokens {
+    pub now: SystemTime,
+    pub limit: usize,
+}
+
+impl Op for SweepServiceTokens {
+    type Output = usize;
+    type Error = crate::spaces::SpaceError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<usize, Self::Error> {
+        crate::authorization::sweep_service_tokens(txn, self.now, self.limit).await
+    }
 }
 
 /// Rules entries capture their publication effects before becoming durable.

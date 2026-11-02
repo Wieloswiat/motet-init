@@ -36,6 +36,8 @@ fn authentication() -> Authenticate {
                 did: "did:plc:world".into(),
                 lxm: method.into(),
                 audience: "did:plc:world#atproto_pds".into(),
+                jti: None,
+                expires_at: u64::MAX,
             }),
         };
         Box::pin(async move { result })

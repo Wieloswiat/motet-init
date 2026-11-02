@@ -15,6 +15,7 @@
 //! | `s/`        | Spaces (the spaces module)                             |
 //! | `p/`        | admission publication queue and receipts               |
 //! | `c/`        | typed scene operation receipts                         |
+//! | `t/`        | spent member service tokens and their expiry order     |
 //!
 //! DIDs contain no `/`, so they can be a path component as they are. A
 //! component that can contain `/` is followed by `\0` instead.
@@ -46,6 +47,87 @@ pub const PUBLICATIONS: &[u8] = b"p/queue/";
 
 /// The next per-shard publication decision sequence.
 pub const PUBLICATION_SEQ: &[u8] = b"p/next";
+
+/// Spent member service tokens, ordered by expiration for bounded cleanup.
+pub const SERVICE_TOKEN_EXPIRIES: &[u8] = b"t/expiry/";
+/// Greatest time used to expire a spent token, persisted across clock rollback.
+pub const SERVICE_TOKEN_CLOCK: &[u8] = b"t/clock";
+/// Pending Space delegation origins, ordered by their expiration.
+pub const SPACE_DELEGATION_EXPIRY: &[u8] = b"s/delegation-origin-expiry/";
+/// Cross-World credential reverse entries, ordered by credential expiration.
+pub const SPACE_DELEGATED_CREDENTIAL_EXPIRY: &[u8] = b"s/delegated-credential-expiry/";
+
+/// The issuer and token ID identify a token regardless of its request body.
+#[must_use]
+pub fn service_token(issuer: &Did, jti: &str) -> Vec<u8> {
+    join(&[b"t/token/", issuer.as_str().as_bytes(), b"/", jti.as_bytes()])
+}
+
+#[must_use]
+pub fn service_token_expiry(expires: u64, issuer: &Did, jti: &str) -> Vec<u8> {
+    join(&[
+        SERVICE_TOKEN_EXPIRIES,
+        &expires.to_be_bytes(),
+        issuer.as_str().as_bytes(),
+        b"/",
+        jti.as_bytes(),
+    ])
+}
+
+#[must_use]
+pub fn service_token_expiry_time(key: &[u8]) -> Option<u64> {
+    let bytes = key.strip_prefix(SERVICE_TOKEN_EXPIRIES)?.get(..8)?;
+    Some(u64::from_be_bytes(bytes.try_into().ok()?))
+}
+
+#[must_use]
+pub fn space_delegation_origins(world: &Did) -> Vec<u8> {
+    space_delegation_origin(world, "")
+}
+
+/// A World-issued Space delegation is bound to its requesting member.
+#[must_use]
+pub fn space_delegation_origin(world: &Did, jti: &str) -> Vec<u8> {
+    join(&[
+        b"s/delegation-origin/",
+        world.as_str().as_bytes(),
+        b"\0",
+        jti.as_bytes(),
+    ])
+}
+
+#[must_use]
+pub fn space_delegation_expiry(expires: u64, world: &Did, jti: &str) -> Vec<u8> {
+    join(&[
+        SPACE_DELEGATION_EXPIRY,
+        &expires.to_be_bytes(),
+        world.as_str().as_bytes(),
+        b"\0",
+        jti.as_bytes(),
+    ])
+}
+
+/// Credentials obtained through a locally hosted World's delegations.
+#[must_use]
+pub fn space_delegated_credentials(world: &Did) -> Vec<u8> {
+    space_delegated_credential(world, &[])
+}
+
+#[must_use]
+pub fn space_delegated_credential(world: &Did, credential: &[u8]) -> Vec<u8> {
+    join(&[b"s/delegated-credential/", world.as_str().as_bytes(), b"\0", credential])
+}
+
+#[must_use]
+pub fn space_delegated_credential_expiry(expires: u64, world: &Did, credential: &[u8]) -> Vec<u8> {
+    join(&[
+        SPACE_DELEGATED_CREDENTIAL_EXPIRY,
+        &expires.to_be_bytes(),
+        world.as_str().as_bytes(),
+        b"\0",
+        credential,
+    ])
+}
 
 #[must_use]
 pub fn publication(sequence: u64) -> Vec<u8> {

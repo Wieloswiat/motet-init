@@ -306,14 +306,14 @@ async fn prepare(
             arc,
             mut cast,
         } => {
-            cast.insert(actor.actor.clone());
+            cast.insert(actor.member.clone());
             if cast.len() > MAX_CAST {
                 return Err(invalid("cast including the opener exceeds 100 members"));
             }
             let scene = Tid::new().to_string();
             let mut record = json!({
                 "$type": SCENE, "title": title, "state": "open", "cast": cast,
-                "openedBy": actor.actor, "createdAt": Datetime::now().to_string(),
+                "openedBy": actor.member, "createdAt": Datetime::now().to_string(),
             });
             let fields = record
                 .as_object_mut()
@@ -378,10 +378,11 @@ impl Op for Mutate {
             .map_err(space_error)?
             .rpc(self.method)
             .map_err(space_error)?;
+        self.actor.consume(txn).await.map_err(space_error)?;
         if txn.world(world).is_none() {
             return Err(internal("hosted World has no rules state"));
         }
-        let receipt_key = keys::scene_operation(world, &self.actor.actor, &self.op);
+        let receipt_key = keys::scene_operation(world, &self.actor.member, &self.op);
         if let Some(raw) = txn.get(&receipt_key).await.map_err(internal)? {
             let receipt: Receipt = serde_json::from_slice(&raw).map_err(internal)?;
             if receipt.method != self.method || receipt.request != self.request {
@@ -406,7 +407,7 @@ impl Op for Mutate {
                 record: encoded,
             }
         };
-        let operation = OperationId::new(format!("scene/{}/{}", self.actor.actor, self.op));
+        let operation = OperationId::new(format!("scene/{}/{}", self.actor.member, self.op));
         match txn.command(world.clone(), operation, command).await.map_err(internal)? {
             Ok(Outcome::AuthorityChanged { .. }) => {}
             Err(Rejected::UnknownWorld(_)) | Ok(Outcome::Refused(_)) => return Err(XrpcError::NotFound),

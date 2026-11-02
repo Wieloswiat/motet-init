@@ -23,6 +23,8 @@ fn authenticate() -> Authenticate {
                 did: "did:plc:alice".into(),
                 lxm: lxm.into(),
                 audience: "did:web:motet.test".into(),
+                jti: None,
+                expires_at: u64::MAX,
             }),
         };
         Box::pin(async move { caller })
@@ -234,6 +236,8 @@ fn service_caller(lxm: &str) -> Caller {
         did: "did:plc:alice".into(),
         lxm: lxm.to_owned(),
         audience: "did:web:motet.test".into(),
+        jti: None,
+        expires_at: u64::MAX,
     }
 }
 
@@ -584,11 +588,15 @@ fn appview_router(authentications: &Arc<AtomicUsize>, calls: &Arc<AtomicUsize>) 
                 did: "did:plc:alice".into(),
                 lxm: "test.appviewWrite".into(),
                 audience: "did:web:motet.test".into(),
+                jti: None,
+                expires_at: u64::MAX,
             }),
             (None, Some("Bearer world-service")) => Ok(Caller::Service {
                 did: "did:plc:world".into(),
                 lxm: "test.appviewWrite".into(),
                 audience: "did:web:motet.test".into(),
+                jti: None,
+                expires_at: u64::MAX,
             }),
             (None, Some("Account account")) => Ok(Caller::Account {
                 did: "did:plc:alice".into(),

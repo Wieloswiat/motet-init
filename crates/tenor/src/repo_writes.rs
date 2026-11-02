@@ -223,6 +223,7 @@ impl Op for Apply {
         };
         let actor = Actor::from_caller(self.caller, world).map_err(space_error)?;
         let policy = actor.policy(txn).await.map_err(space_error)?;
+        actor.consume(txn).await.map_err(space_error)?;
         let raw = txn
             .get(&keys::repo_head(&actor.world))
             .await

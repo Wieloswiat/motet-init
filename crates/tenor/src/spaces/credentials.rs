@@ -23,6 +23,7 @@ use atproto_space::mac::{MacType, WANT_MAC_HEADER, parse_want_mac_header};
 use atproto_space::types::SpaceUri;
 use axum::http::HeaderMap;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use bytes::Bytes;
 use motet_net::Fetcher;
 use motet_rules::Did;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -156,12 +157,127 @@ impl Op for PreparedMint {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct DelegationOrigin {
+    claims: DelegationToken,
+    generation: String,
+    member: String,
+}
+
+/// Bind a locally signed delegation to the member who requested it.
+pub(super) async fn remember_delegation(
+    txn: &mut Txn<'_>,
+    world: &Did,
+    member: &Did,
+    space: &SpaceUri,
+    generation: &str,
+    token: &str,
+) -> Result<(), SpaceError> {
+    let claims = peek_delegation_token(token)?;
+    if claims.iss != world.as_str() || claims.sub != space.to_string() {
+        return Err(SpaceError::Invalid("delegation does not match its origin".into()));
+    }
+    let expiry = claims.exp.saturating_add(CLOCK_SKEW_SECS);
+    let key = keys::space_delegation_origin(world, &claims.jti);
+    if txn.get(&key).await?.is_some()
+        || txn
+            .get(&keys::space_delegation_replay(world.as_str(), &claims.jti))
+            .await?
+            .is_some()
+    {
+        return Err(SpaceError::Conflict);
+    }
+    txn.put(
+        keys::space_delegation_expiry(expiry, world, &claims.jti),
+        Bytes::copy_from_slice(&key),
+    );
+    txn.put(
+        key,
+        encode(&DelegationOrigin {
+            claims,
+            generation: generation.to_owned(),
+            member: member.to_string(),
+        })?,
+    );
+    Ok(())
+}
+/// Reclaim expired delegation bindings and their reverse entries in bounded batches.
+#[derive(Debug)]
+pub struct SweepDelegationOrigins {
+    pub now: SystemTime,
+    pub limit: usize,
+}
+
+impl Op for SweepDelegationOrigins {
+    type Output = usize;
+    type Error = SpaceError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<usize, SpaceError> {
+        let now = self
+            .now
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| SpaceError::Invalid(error.to_string()))?
+            .as_secs();
+        let mut removed = 0;
+        for (key, origin_key) in txn.scan(keys::SPACE_DELEGATION_EXPIRY, self.limit).await? {
+            let expiry = delegation_expiry(&key, keys::SPACE_DELEGATION_EXPIRY)?;
+            if expiry > now {
+                break;
+            }
+            if let Some(value) = txn.get(&origin_key).await? {
+                let origin: DelegationOrigin = decode(&value)?;
+                if origin.claims.exp.saturating_add(CLOCK_SKEW_SECS) != expiry {
+                    return Err(SpaceError::Invalid(
+                        "delegation expiry index disagrees with origin".into(),
+                    ));
+                }
+                txn.delete(origin_key.to_vec());
+            }
+            txn.delete(key.to_vec());
+            removed += 1;
+        }
+        for (key, reverse_key) in txn
+            .scan(
+                keys::SPACE_DELEGATED_CREDENTIAL_EXPIRY,
+                self.limit.saturating_sub(removed),
+            )
+            .await?
+        {
+            if delegation_expiry(&key, keys::SPACE_DELEGATED_CREDENTIAL_EXPIRY)? > now {
+                break;
+            }
+            txn.delete(reverse_key.to_vec());
+            txn.delete(key.to_vec());
+            removed += 1;
+        }
+        Ok(removed)
+    }
+}
+
+fn delegation_expiry(key: &[u8], prefix: &[u8]) -> Result<u64, SpaceError> {
+    let expiry: [u8; 8] = key
+        .strip_prefix(prefix)
+        .and_then(|suffix| suffix.get(..8))
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| SpaceError::Invalid("invalid delegation expiry index".into()))?;
+    Ok(u64::from_be_bytes(expiry))
+}
+
+/// The requesting member behind a locally hosted World's delegation.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CredentialOrigin {
+    pub world: String,
+    pub member: String,
+}
+
 /// Durable identity of one issued credential. Revocation never depends on another member's credential.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IssuedCredential {
     pub space: SpaceUri,
     pub generation: String,
     pub member: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<CredentialOrigin>,
     pub claims: SpaceCredential,
     pub revoked: bool,
 }
@@ -282,28 +398,51 @@ async fn member_key(
     Ok(key)
 }
 
-/// Mint with the World's Signing key, only after current access and replay checks.
-/// All effects disappear if this operation fails.
-pub async fn mint(txn: &mut Txn<'_>, prepared: PreparedMint) -> Result<MintedSpaceCredential, CredentialError> {
-    let state = info_txn(txn, &prepared.space).await?;
-    if state.deleted {
-        return Err(CredentialError::SpaceDeleted);
+pub(super) async fn locally_hosted(txn: &Txn<'_>, world: &Did) -> Result<bool, SpaceError> {
+    Ok(txn.get(&keys::world_info(world)).await?.is_some()
+        || txn.get(&keys::sealed_key(world, Purpose::Signing)).await?.is_some())
+}
+
+async fn local_delegation_origin(
+    txn: &Txn<'_>,
+    prepared: &PreparedMint,
+    generation: &str,
+) -> Result<Option<(Vec<u8>, DelegationOrigin)>, CredentialError> {
+    let Some(claims) = prepared.delegation.as_ref() else {
+        return Ok(None);
+    };
+    let issuer = Did::new(&claims.iss);
+    if !locally_hosted(txn, &issuer).await? {
+        return Ok(None);
     }
-    if state.generation != prepared.generation {
-        return Err(SpaceError::Conflict.into());
+    // A World signature alone cannot identify the member who requested it.
+    let key = keys::space_delegation_origin(&issuer, &claims.jti);
+    let origin: DelegationOrigin = txn
+        .get(&key)
+        .await
+        .map_err(SpaceError::from)?
+        .as_deref()
+        .map(decode)
+        .transpose()?
+        .ok_or_else(|| CredentialError::InvalidDelegationToken("missing delegation origin".into()))?;
+    if origin.claims != *claims {
+        return Err(CredentialError::InvalidDelegationToken(
+            "delegation does not match its origin".into(),
+        ));
     }
-    let member = prepared.delegation.as_ref().map(|claims| claims.iss.as_str());
-    let current = access_txn(txn, &prepared.space, member).await?;
-    if member.is_none() && !current.read {
-        return Err(CredentialError::SpaceNotFound);
+    if origin.generation != generation {
+        return Err(CredentialError::InvalidDelegationToken(
+            "delegation belongs to an earlier Space generation".into(),
+        ));
     }
-    let client = prepared.attestation.as_ref().map(|claims| claims.iss.as_str());
-    if !app_allowed(&state, client) {
-        return Err(CredentialError::AppNotAuthorized);
-    }
-    if !current.read {
-        return Err(CredentialError::UserNotAuthorized);
-    }
+    Ok(Some((key, origin)))
+}
+
+async fn spend_mint_assertions(
+    txn: &mut Txn<'_>,
+    prepared: &PreparedMint,
+    origin: Option<&(Vec<u8>, DelegationOrigin)>,
+) -> Result<(), CredentialError> {
     let now = now_secs();
     if let Some(claims) = &prepared.delegation {
         if claims.exp.saturating_add(CLOCK_SKEW_SECS) <= now {
@@ -316,6 +455,14 @@ pub async fn mint(txn: &mut Txn<'_>, prepared: PreparedMint) -> Result<MintedSpa
             return Err(CredentialError::InvalidDelegationToken("jti already used".into()));
         }
         txn.put(replay_key, encode(&claims.exp)?);
+        if let Some((key, _)) = origin {
+            txn.delete(key.clone());
+            txn.delete(keys::space_delegation_expiry(
+                claims.exp.saturating_add(CLOCK_SKEW_SECS),
+                &Did::new(&claims.iss),
+                &claims.jti,
+            ));
+        }
     }
     if let Some(claims) = &prepared.attestation {
         validate_attestation_claims(claims, &prepared.space, now)?;
@@ -327,6 +474,53 @@ pub async fn mint(txn: &mut Txn<'_>, prepared: PreparedMint) -> Result<MintedSpa
         }
         txn.put(replay_key, encode(&claims.exp)?);
     }
+    Ok(())
+}
+
+/// Mint with the World's Signing key, only after current access and replay checks.
+/// All effects disappear if this operation fails.
+pub async fn mint(txn: &mut Txn<'_>, prepared: PreparedMint) -> Result<MintedSpaceCredential, CredentialError> {
+    let state = info_txn(txn, &prepared.space).await?;
+    if state.deleted {
+        return Err(CredentialError::SpaceDeleted);
+    }
+    if state.generation != prepared.generation {
+        return Err(SpaceError::Conflict.into());
+    }
+    let origin = local_delegation_origin(txn, &prepared, &state.generation).await?;
+    if let Some((_, origin)) = &origin
+        && !crate::authorization::member_can_read_space(
+            txn,
+            &Did::new(&origin.claims.iss),
+            &Did::new(&origin.member),
+            &prepared.space,
+        )
+        .await?
+    {
+        return Err(CredentialError::UserNotAuthorized);
+    }
+    let member = origin
+        .as_ref()
+        .map(|(_, origin)| {
+            if origin.claims.iss == prepared.space.space_did {
+                origin.member.as_str()
+            } else {
+                origin.claims.iss.as_str()
+            }
+        })
+        .or_else(|| prepared.delegation.as_ref().map(|claims| claims.iss.as_str()));
+    let current = access_txn(txn, &prepared.space, member).await?;
+    if member.is_none() && !current.read {
+        return Err(CredentialError::SpaceNotFound);
+    }
+    let client = prepared.attestation.as_ref().map(|claims| claims.iss.as_str());
+    if !app_allowed(&state, client) {
+        return Err(CredentialError::AppNotAuthorized);
+    }
+    if !current.read {
+        return Err(CredentialError::UserNotAuthorized);
+    }
+    spend_mint_assertions(txn, &prepared, origin.as_ref()).await?;
     let world = Did::new(&prepared.space.space_did);
     let key = txn
         .key(&world, Purpose::Signing)
@@ -346,10 +540,29 @@ pub async fn mint(txn: &mut Txn<'_>, prepared: PreparedMint) -> Result<MintedSpa
     if txn.get(&ledger_key).await.map_err(SpaceError::from)?.is_some() {
         return Err(SpaceError::Conflict.into());
     }
+    let member = member.map(str::to_owned);
+    let origin = origin.map(|(_, origin)| CredentialOrigin {
+        world: origin.claims.iss,
+        member: origin.member,
+    });
+    if let Some(origin) = &origin {
+        let world = Did::new(&origin.world);
+        let reverse_key = keys::space_delegated_credential(&world, &ledger_key);
+        txn.put(
+            keys::space_delegated_credential_expiry(
+                minted.claims.exp.saturating_add(CLOCK_SKEW_SECS),
+                &world,
+                &ledger_key,
+            ),
+            Bytes::copy_from_slice(&reverse_key),
+        );
+        txn.put(reverse_key, Bytes::copy_from_slice(&ledger_key));
+    }
     let issued = IssuedCredential {
         space: prepared.space,
         generation: state.generation,
-        member: prepared.delegation.map(|claims| claims.iss),
+        member,
+        origin,
         claims: minted.claims,
         revoked: false,
     };
@@ -366,12 +579,75 @@ pub async fn issued(reader: &Reader, space: &SpaceUri, jti: &str) -> Result<Opti
     reader.get(&key).await?.map(|value| decode(&value)).transpose()
 }
 
+async fn provenance_current(txn: &Txn<'_>, issued: &IssuedCredential) -> Result<bool, SpaceError> {
+    if let Some(origin) = &issued.origin {
+        return crate::authorization::member_can_read_space(
+            txn,
+            &Did::new(&origin.world),
+            &Did::new(&origin.member),
+            &issued.space,
+        )
+        .await;
+    }
+    let Some(member) = &issued.member else {
+        return Ok(true);
+    };
+    // Old credentials naming a hosted World did not record the requesting member.
+    Ok(member != &issued.space.space_did && !locally_hosted(txn, &Did::new(member)).await?)
+}
+
+async fn cached_provenance(
+    txn: &Txn<'_>,
+    issued: &IssuedCredential,
+    cache: &mut BTreeMap<String, BTreeMap<String, bool>>,
+) -> Result<bool, SpaceError> {
+    let Some(origin) = &issued.origin else {
+        return provenance_current(txn, issued).await;
+    };
+    if let Some(current) = cache.get(&origin.world).and_then(|members| members.get(&origin.member)) {
+        return Ok(*current);
+    }
+    let current = provenance_current(txn, issued).await?;
+    cache
+        .entry(origin.world.clone())
+        .or_default()
+        .insert(origin.member.clone(), current);
+    Ok(current)
+}
+
+async fn legacy_hosted_issuer(reader: &Reader, issued: &IssuedCredential) -> Result<bool, SpaceError> {
+    if issued.origin.is_some() {
+        return Ok(false);
+    }
+    let Some(member) = &issued.member else {
+        return Ok(false);
+    };
+    let member = Did::new(member);
+    Ok(member.as_str() == issued.space.space_did.as_str()
+        || reader.get(&keys::world_info(&member)).await?.is_some()
+        || reader
+            .get(&keys::sealed_key(&member, Purpose::Signing))
+            .await?
+            .is_some())
+}
+
 /// Revoke every credential that its World would no longer issue, including secret Spaces.
 /// Call after membership, role, access, app-policy or deletion changes, inside the same operation.
 pub async fn reconcile(txn: &mut Txn<'_>, world: &Did) -> Result<(), SpaceError> {
-    let rows = txn.scan(&keys::space_credentials(world), usize::MAX).await?;
+    let own_prefix = keys::space_credentials(world);
+    let mut rows = txn.scan(&own_prefix, usize::MAX).await?;
+    let delegated = txn.scan(&keys::space_delegated_credentials(world), usize::MAX).await?;
+    rows.reserve(delegated.len());
+    for (_, key) in delegated {
+        if !key.starts_with(&own_prefix)
+            && let Some(value) = txn.get(&key).await?
+        {
+            rows.push((key, value));
+        }
+    }
     let mut cached_space: Option<(SpaceUri, Option<SpaceInfo>)> = None;
     let mut members = BTreeMap::<Option<String>, bool>::new();
+    let mut origins = BTreeMap::<String, BTreeMap<String, bool>>::new();
     let now = now_secs();
     for (key, value) in rows {
         let mut issued: IssuedCredential = decode(&value)?;
@@ -386,6 +662,7 @@ pub async fn reconcile(txn: &mut Txn<'_>, world: &Did) -> Result<(), SpaceError>
             };
             cached_space = Some((issued.space.clone(), state));
             members.clear();
+            origins.clear();
         }
         let state = cached_space.as_ref().and_then(|(_, state)| state.as_ref());
         let active = state.is_some_and(|state| !state.deleted && state.generation == issued.generation);
@@ -402,10 +679,19 @@ pub async fn reconcile(txn: &mut Txn<'_>, world: &Did) -> Result<(), SpaceError>
         } else {
             false
         };
-        if read {
+        if read && cached_provenance(txn, &issued, &mut origins).await? {
             continue;
         }
         issued.revoked = true;
+        if let Some(origin) = &issued.origin {
+            let world = Did::new(&origin.world);
+            txn.delete(keys::space_delegated_credential(&world, &key));
+            txn.delete(keys::space_delegated_credential_expiry(
+                issued.claims.exp.saturating_add(CLOCK_SKEW_SECS),
+                &world,
+                &key,
+            ));
+        }
         txn.put(key.to_vec(), encode(&issued)?);
         if issued.claims.exp.saturating_add(CLOCK_SKEW_SECS) > now {
             let expires = i64::try_from(issued.claims.exp)
@@ -456,6 +742,7 @@ pub async fn recheck(txn: &Txn<'_>, verified: &VerifiedCredential) -> Result<(),
     let issued: IssuedCredential = decode(&row)?;
     check_issued(&issued, &state, &verified.claims)?;
     if notify::is_revoked_txn(txn, &verified.space, &verified.claims.jti).await?
+        || !provenance_current(txn, &issued).await?
         || !access_txn(txn, &verified.space, issued.member.as_deref()).await?.read
     {
         return Err(CredentialError::CredentialRevoked);
@@ -573,6 +860,7 @@ pub async fn verify_http(
         .ok_or_else(|| CredentialError::InvalidToken("credential was not issued here".into()))?;
     check_issued(&issued, &state, &claims)?;
     if notify::is_revoked(reader, space, &claims.jti).await?
+        || legacy_hosted_issuer(reader, &issued).await?
         || !access(reader, space, issued.member.as_deref()).await?.read
     {
         return Err(CredentialError::CredentialRevoked);

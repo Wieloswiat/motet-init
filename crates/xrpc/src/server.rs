@@ -51,6 +51,8 @@ pub struct AuthenticationContext<'a> {
     pub headers: &'a HeaderMap,
     pub method: &'a Verb,
     pub uri: &'a Uri,
+    /// The registry's resolved XRPC method, independent of URI encoding.
+    pub nsid: &'a str,
 }
 
 /// Establishes who is calling from their credentials and HTTP context.
@@ -202,6 +204,7 @@ async fn serve<S: Clone + Send + Sync + 'static>(
         headers: &parts.headers,
         method: &parts.method,
         uri: &parts.uri,
+        nsid: method.nsid,
     })
     .await?;
     *private_cors |= matches!(&caller, Caller::AppviewSession { .. });
