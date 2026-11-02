@@ -186,11 +186,13 @@ struct Network {
 struct AuthorRepo(Arc<Network>);
 
 impl Records for AuthorRepo {
-    async fn fetch(&self, post: &StrongRef) -> Result<Option<Fetched>, FetchError> {
-        if !self.0.visible.load(Ordering::SeqCst) {
-            return Ok(None);
-        }
-        Ok(self.0.records.lock().expect("records").get(post.uri.as_str()).cloned())
+    fn fetch(&self, post: &StrongRef) -> impl Future<Output = Result<Option<Fetched>, FetchError>> + Send {
+        let record = if self.0.visible.load(Ordering::SeqCst) {
+            self.0.records.lock().expect("records").get(post.uri.as_str()).cloned()
+        } else {
+            None
+        };
+        std::future::ready(Ok(record))
     }
 }
 
@@ -309,6 +311,10 @@ struct Fixture {
 }
 
 impl Fixture {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "This fixture wires one real AppView, authenticated tenor shard, and controllable PDS boundary"
+    )]
     async fn new(fail_pds: bool) -> Self {
         let pool = motet_testkit::services::database().await;
         MIGRATOR.run(&pool).await.expect("migrations");
@@ -804,6 +810,7 @@ async fn fault_pending_then_lost_response_survives_takeover_and_admits_once() {
         let submissions = fixture.network.submissions.lock().expect("submissions");
         assert_eq!(submissions.len(), 3);
         assert!(submissions.iter().all(|body| body == &original));
+        drop(submissions);
     }
     let published = publication::drain(&fixture.tenor).await.expect("publication");
     assert_eq!(published.published, 1);
@@ -843,11 +850,11 @@ async fn revoked_session_pauses_until_same_account_signs_in_again() {
     assert_eq!(state, "queued");
     assert!(paused);
     assert_eq!(fixture.network.tokens.load(Ordering::SeqCst), tokens_before);
-    assert!(
+    assert_eq!(
         outbox::claim(&fixture.pool, "other", 1, Duration::from_secs(60))
             .await
-            .expect("claim")
-            .is_empty()
+            .expect("claim"),
+        [] as [outbox::Job; 0]
     );
     let old_reference = SessionRef::from_cookie(&fixture.cookie).expect("reference");
     assert!(
@@ -894,6 +901,7 @@ async fn revoked_session_pauses_until_same_account_signs_in_again() {
     {
         let submissions = fixture.network.submissions.lock().expect("submissions");
         assert!(submissions.iter().all(|request| request == &first_request));
+        drop(submissions);
     }
     stop.send(true).expect("stop");
     worker.await.expect("worker exits");
@@ -932,11 +940,11 @@ async fn expired_generation_cannot_finish_the_same_owners_new_lease() {
             .await
             .expect("stale finish")
     );
-    assert!(
+    assert_eq!(
         outbox::claim(&pool, "another-worker", 1, Duration::from_secs(60))
             .await
-            .expect("blocked")
-            .is_empty()
+            .expect("blocked"),
+        [] as [outbox::Job; 0]
     );
     assert!(
         outbox::finish(&pool, &replacement[0], "worker", false, &json!({"status":"done"}))
