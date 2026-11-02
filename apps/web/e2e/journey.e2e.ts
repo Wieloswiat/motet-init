@@ -472,7 +472,7 @@ async function openPublicScene(page: Page, world: World, owner: Account): Promis
 }
 
 async function post(page: Page, text: string): Promise<createPost.CreatePostOutput> {
-	await page.getByLabel('Write a post').fill(text);
+	await page.getByRole('textbox', { name: 'Write a post' }).fill(text);
 
 	const responseEvent = page.waitForResponse(
 		(response) =>
