@@ -184,8 +184,11 @@ async fn metadata_publishes_the_matching_public_key_without_the_private_scalar()
         .expect("public key");
     let private = KeyData::new(KeyType::P256Private, vec![1; 32]);
     let header: Header = private.clone().try_into().expect("JWT header");
+    let now = u64::try_from(Utc::now().timestamp()).expect("current time after epoch");
     let claims = Claims::new(JoseClaims {
         issuer: Some(format!("{ORIGIN}/oauth/client-metadata.json")),
+        issued_at: Some(now),
+        expiration: Some(now + 60),
         ..Default::default()
     });
     let assertion = mint(&private, &header, &claims).expect("client assertion");
