@@ -60,6 +60,8 @@
 				}
 			},
 			"errors": [
+				{ "name": "HandleTaken", "description": "The handle is already in use or reserved by another operation." },
+				{ "name": "InvalidRequest", "description": "The operation ID is invalid or was reused with different fields." },
 				{ "name": "UpstreamFailure", "description": "The issuer's DID document could not be resolved; retry with a fresh service token." }
 			]
 		}
