@@ -371,6 +371,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "atproto-space-client"
+version = "0.15.0-rc.6"
+source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "atproto-client",
+ "atproto-dasl",
+ "atproto-identity",
+ "atproto-space",
+ "base64 0.23.1",
+ "bytes",
+ "futures",
+ "rand 0.10.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "url",
+]
+
+[[package]]
 name = "atproto-tap"
 version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
@@ -3121,10 +3145,14 @@ name = "motet-appview"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "atproto-client",
+ "atproto-dasl",
  "atproto-identity",
  "atproto-oauth",
  "atproto-record",
+ "atproto-space",
+ "atproto-space-client",
  "atproto-tap",
  "axum",
  "base64 0.22.1",
@@ -3134,9 +3162,11 @@ dependencies = [
  "clap",
  "futures",
  "getrandom 0.4.3",
+ "motet-lexicons",
  "motet-log",
  "motet-net",
  "motet-rules",
+ "motet-tenor",
  "motet-testkit",
  "motet-xrpc",
  "object_store",
@@ -3146,6 +3176,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -3283,7 +3314,6 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "slatedb",
  "thiserror 2.0.21",
  "tokio",

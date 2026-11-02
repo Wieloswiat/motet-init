@@ -12,10 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 atproto-client.workspace = true
+atproto-dasl.workspace = true
 atproto-identity = { workspace = true, features = ["hickory-dns"] }
 atproto-oauth.workspace = true
 atproto-record.workspace = true
+atproto-space.workspace = true
+atproto-space-client.workspace = true
 atproto-tap.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -44,6 +48,9 @@ uuid.workspace = true
 
 [dev-dependencies]
 axum = { workspace = true, features = ["ws"] }
+motet-lexicons.workspace = true
+# Real tenor shards and routers exercise public Space reads in-process.
+motet-tenor.workspace = true
 motet-testkit = { workspace = true, features = ["services"] }
 proptest.workspace = true
 tempfile = "3"
