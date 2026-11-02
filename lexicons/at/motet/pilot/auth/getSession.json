@@ -1,0 +1,21 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.auth.getSession",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get the account bound to the current AppView browser session.",
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["did", "handle"],
+					"properties": {
+						"did": { "type": "string", "format": "did" },
+						"handle": { "type": "string", "format": "handle" }
+					}
+				}
+			}
+		}
+	}
+}
