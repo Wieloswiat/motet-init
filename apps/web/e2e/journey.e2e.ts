@@ -93,6 +93,11 @@ async function signUp(page: Page): Promise<Account> {
 	const password = `Motet-password-${randomBytes(12).toString('hex')}`;
 	await page.goto('/sign-in');
 
+	const start = page.waitForRequest(
+		(request) => request.method() === 'POST' && request.url() === `${app}/oauth/sign-up`,
+		{ timeout: interactionTimeout }
+	);
+
 	// A normal PDS authorization request must lead to its signup page:
 	// the PDS only selects that page for the PAR's prompt=create.
 	const authorization = page.waitForRequest(
@@ -100,8 +105,13 @@ async function signUp(page: Page): Promise<Account> {
 		{ timeout: interactionTimeout }
 	);
 
-	await page.getByRole('link', { name: 'Create an account' }).click();
-	const request = await authorization;
+	const [started, request] = await Promise.all([
+		start,
+		authorization,
+		page.getByRole('button', { name: 'Create an account' }).click()
+	]);
+
+	expect(await started.headerValue('origin')).toBe(app);
 	const authorizationUrl = new URL(request.url());
 	expect(authorizationUrl.searchParams.get('client_id')).toBe(`${app}/oauth/client-metadata.json`);
 	expect(authorizationUrl.searchParams.get('request_uri')).toBeTruthy();
@@ -145,7 +155,18 @@ async function signOutAndIn(page: Page, account: Account): Promise<void> {
 	expect(anonymous.status(), 'sign-out must revoke the AppView session').toBe(401);
 	await page.goto('/sign-in');
 	await page.getByLabel('Your handle').fill(account.handle);
-	await page.getByRole('button', { name: 'Continue', exact: true }).click();
+
+	const start = page.waitForRequest(
+		(request) => request.method() === 'POST' && request.url() === `${app}/oauth/sign-in`,
+		{ timeout: interactionTimeout }
+	);
+
+	const [started] = await Promise.all([
+		start,
+		page.getByRole('button', { name: 'Continue', exact: true }).click()
+	]);
+
+	expect(await started.headerValue('origin')).toBe(app);
 	await expect(page).toHaveURL(/^https:\/\/pds\.motet\.test\/oauth\/authorize\?/, {
 		timeout: interactionTimeout
 	});
