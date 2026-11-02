@@ -12,6 +12,7 @@
 //! | `n/`        | handles (the identity module)                          |
 //! | `q/`        | reservations, their sealed keys and creation receipts   |
 //! | `v/`, `x/`  | reserved handles and reservation expiry order           |
+//! | `o/`        | owner-scoped reservation operations                     |
 //! | `s/`        | Spaces (the spaces module)                             |
 //! | `p/`        | admission publication queue and receipts               |
 //! | `c/`        | typed scene operation receipts                         |
@@ -276,6 +277,11 @@ pub fn reserved_handle(handle: &str) -> Vec<u8> {
 #[must_use]
 pub fn reservation(reservation: &str) -> Vec<u8> {
     join(&[b"q/", reservation.as_bytes(), b"/info"])
+}
+
+#[must_use]
+pub fn reservation_op(owner: &Did, op: &str) -> Vec<u8> {
+    join(&[b"o/", owner.as_str().as_bytes(), b"/", op.as_bytes()])
 }
 
 #[must_use]

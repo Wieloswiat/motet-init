@@ -196,6 +196,27 @@ impl World {
         self.operations.contains_key(op)
     }
 
+    /// Return a recorded admission when its original request matches.
+    /// Reuse for another command or request is an error.
+    #[must_use]
+    pub fn admission_receipt(
+        &self,
+        op: &OperationId,
+        author: &Did,
+        post: &StrongRef,
+        replaces: Option<&Cid>,
+    ) -> Option<Result<&Outcome, CommandError>> {
+        self.operations.get(op).map(|recorded| match &recorded.command {
+            Command::Admit {
+                post: read_back,
+                replaces: recorded_replaces,
+            } if &read_back.author == author && &read_back.post == post && recorded_replaces.as_ref() == replaces => {
+                Ok(&recorded.outcome)
+            }
+            _ => Err(CommandError::OperationReused(op.clone())),
+        })
+    }
+
     /// The open admission for a post, if it has one.
     #[must_use]
     pub fn admission(&self, post: &RecordUri) -> Option<&Admission> {

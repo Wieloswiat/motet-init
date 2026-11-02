@@ -37,6 +37,8 @@ pub enum IdentityError {
     InvalidHandle,
     #[error("handle is already in use or reserved")]
     HandleTaken,
+    #[error("operation ID is invalid or was reused for a different reservation")]
+    InvalidReserveOp,
     #[error("World profile is invalid: {0}")]
     InvalidProfile(String),
     #[error("rotationKey must be a public P-256 or K-256 did:key")]
@@ -188,7 +190,7 @@ fn normalize_handle(handle: &str) -> Result<String, IdentityError> {
 }
 
 /// The initial audience of a World's meta Space.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     Public,
@@ -196,9 +198,10 @@ pub enum Visibility {
     Private,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveRequest {
+    pub op: String,
     pub handle: String,
     pub rotation_key: String,
     pub tenor_rotation_key: bool,
@@ -230,6 +233,8 @@ pub struct CreateRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Reservation {
     pub(crate) owner: Did,
+    #[serde(default)]
+    pub(crate) request: Option<ReserveRequest>,
     pub(crate) handle: String,
     #[serde(default)]
     pub(crate) visibility: Visibility,
@@ -282,6 +287,27 @@ impl Op for ReserveWorld {
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Reserved, IdentityError> {
         let now = unix_seconds(self.now)?;
+        atproto_record::record_key::check_record_key(&self.request.op).map_err(|_| IdentityError::InvalidReserveOp)?;
+        let op_key = keys::reservation_op(&self.owner, &self.request.op);
+        if let Some(id) = txn.get(&op_key).await? {
+            let id = std::str::from_utf8(&id).map_err(|_| IdentityError::Inconsistent)?;
+            let reserved = load(txn, id).await?;
+            if reserved.signed.is_some() || reserved.expires > now {
+                if reserved.request.as_ref() != Some(&self.request) {
+                    return Err(IdentityError::InvalidReserveOp);
+                }
+                let signing_bytes = URL_SAFE_NO_PAD.encode(
+                    atproto_dasl::to_vec(&reserved.operation).map_err(|e| IdentityError::Encoding(e.to_string()))?,
+                );
+                return Ok(Reserved {
+                    reservation: id.to_owned(),
+                    operation: reserved.operation,
+                    signing_bytes,
+                    expires_at: reserved.expires,
+                });
+            }
+            remove_draft(txn, id, &reserved);
+        }
         let handle = self.hosting.handle(&self.request.handle)?;
         let rotation = identify_key(&self.request.rotation_key).map_err(|_| IdentityError::InvalidRotationKey)?;
         if !self.request.rotation_key.starts_with("did:key:")
@@ -306,7 +332,9 @@ impl Op for ReserveWorld {
         if let Some(id) = txn.get(&keys::reserved_handle(&handle)).await? {
             let id = std::str::from_utf8(&id).map_err(|_| IdentityError::Inconsistent)?;
             let reserved = load(txn, id).await?;
-            if reserved.signed.is_some() || reserved.expires > now {
+            // A submitted genesis may already exist at PLC, even after a lost
+            // response. Only unsigned drafts can safely be superseded.
+            if reserved.signed.is_some() || (reserved.expires > now && reserved.owner != self.owner) {
                 return Err(IdentityError::HandleTaken);
             }
             remove_draft(txn, id, &reserved);
@@ -333,13 +361,15 @@ impl Op for ReserveWorld {
             owner: self.owner,
             handle,
             visibility: self.request.visibility,
-            name: self.request.name,
+            name: self.request.name.clone(),
+            request: Some(self.request),
             operation,
             expires,
             signed: None,
             created: false,
         };
         txn.put(keys::reservation(&id), serde_json::to_vec(&reserved)?.into());
+        txn.put(op_key, Bytes::copy_from_slice(id.as_bytes()));
         txn.put(
             keys::reserved_handle(&reserved.handle),
             Bytes::copy_from_slice(id.as_bytes()),
@@ -369,6 +399,9 @@ fn remove_draft(txn: &mut Txn<'_>, id: &str, reservation: &Reservation) {
     txn.delete(keys::reservation(id));
     txn.delete(keys::reserved_handle(&reservation.handle));
     txn.delete(keys::reservation_expiry(id, reservation.expires));
+    if let Some(request) = &reservation.request {
+        txn.delete(keys::reservation_op(&reservation.owner, &request.op));
+    }
     for purpose in [Purpose::Signing, Purpose::Kem, Purpose::Rotation] {
         txn.delete(keys::reserved_key(id, purpose));
     }

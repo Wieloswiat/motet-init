@@ -330,8 +330,13 @@ fn identity_error(error: IdentityError) -> XrpcError {
             }
         }
         IdentityError::HandleNotFound | IdentityError::ReservationNotFound => XrpcError::NotFound,
+        IdentityError::HandleTaken => XrpcError::Protocol {
+            status: StatusCode::BAD_REQUEST,
+            name: "HandleTaken",
+            message: error.to_string(),
+        },
         IdentityError::InvalidHandle
-        | IdentityError::HandleTaken
+        | IdentityError::InvalidReserveOp
         | IdentityError::InvalidRotationKey
         | IdentityError::ReservationExpired
         | IdentityError::InvalidProfile(_)

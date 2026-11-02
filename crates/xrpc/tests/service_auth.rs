@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use atproto_identity::key::{KeyData, KeyType, generate_key, to_public};
@@ -35,6 +35,21 @@ struct CountingDirectory {
 impl IdentityResolver for CountingDirectory {
     async fn resolve(&self, subject: &str) -> anyhow::Result<Document> {
         self.resolutions.fetch_add(1, Ordering::SeqCst);
+        self.directory.resolve(subject).await
+    }
+}
+
+struct InterruptibleDirectory {
+    directory: Directory,
+    unavailable: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl IdentityResolver for InterruptibleDirectory {
+    async fn resolve(&self, subject: &str) -> anyhow::Result<Document> {
+        if self.unavailable.load(Ordering::SeqCst) {
+            anyhow::bail!("directory unavailable");
+        }
         self.directory.resolve(subject).await
     }
 }
@@ -296,6 +311,66 @@ async fn invalid_audience_method_and_lifetime_never_resolve_through_the_router()
     let response = router.oneshot(request).await.expect("router");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(directory.resolutions.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// An outage must not consume a token, and a forged token must not consume
+/// another token's identifier. Mapping every resolver error to 401, or
+/// admitting unverified claims to the handler, breaks this retry.
+#[tokio::test]
+async fn resolver_outage_and_forgery_cannot_consume_a_valid_token() {
+    let f = Fixture::new();
+    let directory = Arc::new(InterruptibleDirectory {
+        directory: f.directory.clone(),
+        unavailable: AtomicBool::new(true),
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let authenticate = motet_xrpc::service_auth::authenticate(
+        Arc::<InterruptibleDirectory>::clone(&directory),
+        Arc::new(|aud| aud == APPVIEW),
+    );
+    let router = Service::new(authenticate)
+        .method(
+            Method {
+                nsid: METHOD,
+                kind: Kind::Procedure,
+                access: Access::Service,
+                max_body: 0,
+            },
+            |calls: Arc<AtomicUsize>, caller: Caller, _| async move {
+                assert!(matches!(&caller, Caller::Service { jti: Some(jti), .. } if jti == "single-use"));
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(StatusCode::NO_CONTENT.into_response())
+            },
+        )
+        .into_router(Arc::clone(&calls))
+        .expect("registered method");
+    let token = f.token(|claims| claims.jose.json_web_token_id = Some("single-use".into()));
+    let request = |token: &str| {
+        Request::post(format!("/xrpc/{METHOD}"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request")
+    };
+
+    let response = router.clone().oneshot(request(&token)).await.expect("router");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("error body");
+    let error: serde_json::Value = serde_json::from_slice(&body).expect("XRPC error");
+    assert_eq!(error["error"], "UpstreamFailure");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    directory.unavailable.store(false, Ordering::SeqCst);
+    let mallory = Fixture::new();
+    let forged = mallory.token(|claims| claims.jose.json_web_token_id = Some("single-use".into()));
+    let response = router.clone().oneshot(request(&forged)).await.expect("router");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let response = router.oneshot(request(&token)).await.expect("router");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 

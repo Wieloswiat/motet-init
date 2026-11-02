@@ -465,6 +465,11 @@ async fn admission_replay_and_rejected_operation_ids_do_not_change_other_posts()
     assert_eq!(status, StatusCode::OK, "{receipt}");
     assert_eq!(receipt, first);
     assert_eq!(fixture.audits().await.len(), 1);
+    // World is part of the request, not the author's operation-ID namespace.
+    let mut other_world = body(ALICE, "one", "one-use");
+    other_world["world"] = json!(OTHER_WORLD);
+    let (status, collision) = send(&alice, other_world, &token(&alice, OTHER_WORLD, METHOD)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{collision}");
 
     let fresh = token(&alice, WORLD, METHOD);
     let (status, collision) = send(&alice, body(ALICE, "revoked", "one-use"), &fresh).await;
@@ -570,8 +575,8 @@ async fn pending_readback_rechecks_membership_and_token_spend_after_network_race
     }
 }
 
-/// A player in the cast can publish without an RPC grant. A retry must not
-/// append a second audit or a second public admission.
+/// A retry returns its durable receipt even after membership and cast removal.
+/// Rechecking authorization or reading the PDS first would lose that receipt.
 #[tokio::test]
 async fn signed_player_admission_is_attributed_and_retries_publish_once() {
     let fixture = Fixture::new(None).await;
@@ -589,7 +594,7 @@ async fn signed_player_admission_is_attributed_and_retries_publish_once() {
     assert_eq!(send(&alice, request.clone(), &token).await.0, StatusCode::FORBIDDEN);
     assert_eq!(
         send(&alice, request.clone(), &self::token(&alice, WORLD, METHOD)).await,
-        (status, first)
+        (status, first.clone())
     );
     assert_eq!(fixture.audits().await, audits);
     fixture
@@ -601,9 +606,35 @@ async fn signed_player_admission_is_attributed_and_retries_publish_once() {
             swap: None,
         }])
         .await;
-    let (status, denied) = send(&alice, request, &self::token(&alice, WORLD, METHOD)).await;
+    fixture.cast("remove-alice", &[OWNER]).await;
+    let reads = fixture.records.fetches.load(Ordering::SeqCst);
+    let retry_token = self::token(&alice, WORLD, METHOD);
+    let (status, receipt) = send(&alice, request.clone(), &retry_token).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(receipt, first);
+    assert_eq!(
+        send(&alice, request.clone(), &retry_token).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, collision) = send(
+        &alice,
+        body(ALICE, "revoked", "first"),
+        &self::token(&alice, WORLD, METHOD),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{collision}");
+    let mut changed_edit = request;
+    changed_edit["replaces"] = json!(atproto_dasl::cid::compute_cid(b"another version").to_string());
+    let (status, collision) = send(&alice, changed_edit, &self::token(&alice, WORLD, METHOD)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{collision}");
+    let (status, denied) = send(
+        &alice,
+        body(ALICE, "one", "new-after-removal"),
+        &self::token(&alice, WORLD, METHOD),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
-    assert_eq!(denied["error"], "Forbidden");
+    assert_eq!(fixture.records.fetches.load(Ordering::SeqCst), reads);
     assert_eq!(fixture.audits().await, audits);
     assert_eq!(fixture.drain().await, (1, 0));
     assert_eq!(fixture.published_admissions().await, 1);

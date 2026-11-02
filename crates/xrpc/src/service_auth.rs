@@ -43,6 +43,8 @@ pub enum ServiceAuthError {
     Malformed,
     #[error("the token names no issuer")]
     NoIssuer,
+    #[error("the issuer's DID resolver failed")]
+    ResolverFailure,
     #[error("the issuer's DID document couldn't be resolved")]
     Unresolvable,
     #[error("the issuer has no #atproto signing key")]
@@ -132,6 +134,8 @@ fn checked_claims<'a>(
 /// Rejects invalid claims and methods before resolving the issuer, then
 /// verifies its `#atproto` signature and checks the signed claims again.
 /// Signed tokens with invalid time claims return [`ServiceAuthError::BadLifetime`].
+/// Resolver errors return [`ServiceAuthError::ResolverFailure`]; they do not
+/// establish whether the token is valid.
 pub async fn verify(
     token: &str,
     resolver: &dyn IdentityResolver,
@@ -148,7 +152,7 @@ pub async fn verify(
     let document = resolver
         .resolve(issuer)
         .await
-        .map_err(|_| ServiceAuthError::Unresolvable)?;
+        .map_err(|_| ServiceAuthError::ResolverFailure)?;
     if document.id != issuer {
         return Err(ServiceAuthError::Unresolvable);
     }
@@ -196,7 +200,14 @@ pub fn authenticate(
                     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
                     verify(token, resolver.as_ref(), |aud| accepts_audience(aud), request.nsid, now)
                         .await
-                        .map_err(|_| XrpcError::AuthRequired)
+                        .map_err(|error| match error {
+                            ServiceAuthError::ResolverFailure => XrpcError::Protocol {
+                                status: axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                                name: "UpstreamFailure",
+                                message: "the issuer's DID resolver failed".into(),
+                            },
+                            _ => XrpcError::AuthRequired,
+                        })
                 }
             }
         })

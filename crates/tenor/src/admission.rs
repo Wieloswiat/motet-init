@@ -96,7 +96,15 @@ pub(crate) async fn admit_as(
     request: Request,
     actor: Actor,
 ) -> Result<Decision, AdmitError> {
-    let actor = shard.run(CheckActor(actor)).await??;
+    if let Some(receipt) = shard
+        .run(CheckRequest {
+            actor: actor.clone(),
+            request: request.clone(),
+        })
+        .await??
+    {
+        return Ok(Decision::Decided(Ok(receipt)));
+    }
     admit_inner(shard, records, request, Some(actor)).await
 }
 
@@ -111,16 +119,16 @@ async fn admit_inner(
     }
     let fetched = match records.fetch(&request.post).await {
         Ok(Some(fetched)) => fetched,
-        Ok(None) => return pending(shard, actor, Decision::NotFound).await,
+        Ok(None) => return pending(shard, actor, request, Decision::NotFound).await,
         Err(FetchError::Unavailable(reason)) => {
             tracing::debug!(post = %request.post.uri, %reason, "read-back failed; request stays pending");
-            return pending(shard, actor, Decision::Unreachable).await;
+            return pending(shard, actor, request, Decision::Unreachable).await;
         }
     };
     if fetched.cid != request.post.cid {
         // The repo holds another version now. That version gets its own
         // request; this one never pins something that isn't there.
-        return pending(shard, actor, Decision::NotFound).await;
+        return pending(shard, actor, request, Decision::NotFound).await;
     }
     if fetched.world != request.world {
         return Ok(Decision::OtherWorld);
@@ -161,23 +169,63 @@ async fn admit_inner(
 }
 
 /// Recheck pending results after network I/O without spending the token.
-async fn pending(shard: &Handle, actor: Option<Actor>, decision: Decision) -> Result<Decision, AdmitError> {
-    if let Some(actor) = actor {
-        shard.run(CheckActor(actor)).await??;
+async fn pending(
+    shard: &Handle,
+    actor: Option<Actor>,
+    request: Request,
+    decision: Decision,
+) -> Result<Decision, AdmitError> {
+    if let Some(actor) = actor
+        && let Some(receipt) = shard.run(CheckRequest { actor, request }).await??
+    {
+        return Ok(Decision::Decided(Ok(receipt)));
     }
     Ok(decision)
 }
 
-struct CheckActor(Actor);
+struct CheckRequest {
+    actor: Actor,
+    request: Request,
+}
 
-impl Op for CheckActor {
-    type Output = Actor;
+fn receipt(
+    txn: &Txn<'_>,
+    actor: &Actor,
+    op: &OperationId,
+    post: &StrongRef,
+    replaces: Option<&Cid>,
+) -> Result<Option<Outcome>, AdmitError> {
+    if txn.operation_in_other_world(&actor.world, op) {
+        return Err(AdmitError::Rejected(Rejected::OperationReused(op.clone())));
+    }
+    txn.world(&actor.world)
+        .and_then(|world| world.admission_receipt(op, &actor.member, post, replaces))
+        .map(|result| {
+            result
+                .cloned()
+                .map_err(|_| AdmitError::Rejected(Rejected::OperationReused(op.clone())))
+        })
+        .transpose()
+}
+
+impl Op for CheckRequest {
+    type Output = Option<Outcome>;
     type Error = AdmitError;
 
-    async fn run(self, txn: &mut Txn<'_>) -> Result<Actor, AdmitError> {
-        self.0.policy(txn).await?;
-        self.0.check_unused(txn).await?;
-        Ok(self.0)
+    async fn run(self, txn: &mut Txn<'_>) -> Result<Self::Output, AdmitError> {
+        self.actor.check_unused(txn).await?;
+        if let Some(outcome) = receipt(
+            txn,
+            &self.actor,
+            &self.request.op,
+            &self.request.post,
+            self.request.replaces.as_ref(),
+        )? {
+            self.actor.consume(txn).await?;
+            return Ok(Some(outcome));
+        }
+        self.actor.policy(txn).await?;
+        Ok(None)
     }
 }
 
@@ -193,6 +241,11 @@ impl Op for AdmitAs {
     type Error = AdmitError;
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Applied, AdmitError> {
+        self.actor.check_unused(txn).await?;
+        if let Some(outcome) = receipt(txn, &self.actor, &self.op, &self.post.post, self.replaces.as_ref())? {
+            self.actor.consume(txn).await?;
+            return Ok(Ok(outcome));
+        }
         self.actor.policy(txn).await?;
         self.actor.consume(txn).await?;
         let seen = txn

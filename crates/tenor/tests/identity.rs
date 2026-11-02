@@ -181,6 +181,7 @@ impl Fixture {
         name: Option<&str>,
     ) -> ReserveWorldOutput {
         let mut body = json!({
+            "op": atproto_record::tid::Tid::new().to_string(),
             "handle": handle,
             "rotationKey": to_public(&self.rotation).expect("public rotation key").to_string(),
             "tenorRotationKey": tenor_rotation,
@@ -341,6 +342,77 @@ async fn read_public_profile(
     .expect("profile MAC verifies against the reserved KEM key");
     profile
 }
+/// A lost response must not create new keys or strand the reserved handle.
+/// Catches generating a second reservation before checking the owner's op.
+#[tokio::test]
+async fn reservation_retries_recover_the_original_and_other_owners_cannot_take_its_handle() {
+    let f = Fixture::new().await;
+    let method = api::RESERVE_WORLD.nsid;
+    let audience = f.hosting.service_did();
+    let request = json!({
+        "op": "world-attempt",
+        "handle": "retry.motet.test",
+        "rotationKey": to_public(&f.rotation).expect("public rotation key").to_string(),
+        "tenorRotationKey": false,
+    });
+    let (status, first) = f.post(method, request.clone(), OWNER, audience).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, retried) = f.post(method, request.clone(), OWNER, audience).await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert_eq!(retried, first);
+
+    let mut changed = request.clone();
+    changed["handle"] = json!("different.motet.test");
+    let (status, body) = f.post(method, changed, OWNER, audience).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "InvalidRequest");
+
+    let mut other_op = request;
+    other_op["op"] = json!("another-attempt");
+    let (status, body) = f.post(method, other_op, OTHER, audience).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "HandleTaken");
+}
+
+/// Reloading with a new owner key replaces only the owner's unsigned draft.
+/// Catches leaving two live reservations or sealed keys for one handle.
+#[tokio::test]
+async fn owner_can_replace_an_unsigned_reservation_without_leaving_a_creatable_old_draft() {
+    let f = Fixture::new().await;
+    let method = api::RESERVE_WORLD.nsid;
+    let audience = f.hosting.service_did();
+    let old = f.reserve("reload.motet.test", true).await;
+    let signed = Fixture::signed(&old, &f.rotation);
+    let new_key = generate_key(KeyType::K256Private).expect("new owner key");
+    let request = json!({
+        "op": "after-reload",
+        "handle": "reload.motet.test",
+        "rotationKey": to_public(&new_key).expect("new public key").to_string(),
+        "tenorRotationKey": false,
+    });
+    let (status, replacement) = f.post(method, request, OWNER, audience).await;
+    assert_eq!(status, StatusCode::OK, "{replacement}");
+    assert_ne!(replacement["reservation"], old.reservation);
+    let (status, body) = f
+        .post(
+            api::CREATE_WORLD.nsid,
+            json!({"reservation": old.reservation, "signedOperation": signed}),
+            OWNER,
+            audience,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    for purpose in [Purpose::Signing, Purpose::Kem, Purpose::Rotation] {
+        assert!(
+            f.shard
+                .reader()
+                .get(&keys::reserved_key(&old.reservation, purpose))
+                .await
+                .expect("key slot")
+                .is_none()
+        );
+    }
+}
 
 /// Tenor-scoped reservation and creation intents spend signed tokens in the
 /// shard. Catches changed-body replay before a World exists, cross-method jti
@@ -352,7 +424,8 @@ async fn world_creation_intents_require_fresh_tokens_and_roll_back_failed_attemp
     let reserve = api::RESERVE_WORLD.nsid;
     let create = api::CREATE_WORLD.nsid;
     let rotation = to_public(&f.rotation).expect("public rotation key").to_string();
-    let reserve_body = |handle: &str| json!({"handle":handle,"rotationKey":rotation,"tenorRotationKey":false});
+    let reserve_body =
+        |handle: &str| json!({"op":handle,"handle":handle,"rotationKey":rotation,"tenorRotationKey":false});
     let without_jti = f.token_with_jti(OWNER, audience, reserve, None);
     assert_eq!(
         f.post_token(reserve, reserve_body("first.motet.test"), &without_jti)
@@ -467,6 +540,7 @@ async fn tenor_did_document_discovers_a_usable_world_creation_service() {
             .post(
                 api::RESERVE_WORLD.nsid,
                 json!({
+                    "op": format!("discovery-{index}"),
                     "handle": format!("discovery-{index}.motet.test"),
                     "rotationKey": to_public(&f.rotation).expect("public rotation key").to_string(),
                     "tenorRotationKey": false,
@@ -758,6 +832,7 @@ async fn private_worlds_never_publish_a_declaration_or_anonymous_meta_access() {
 async fn invalid_profile_cannot_reserve_a_world_or_strand_its_handle() {
     let f = Fixture::new().await;
     let request = json!({
+        "op": "invalid-profile",
         "handle": "reusable.motet.test",
         "rotationKey": to_public(&f.rotation).expect("public key").to_string(),
         "tenorRotationKey": false,
@@ -769,6 +844,7 @@ async fn invalid_profile_cannot_reserve_a_world_or_strand_its_handle() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let invalid_visibility = json!({
+        "op": "invalid-visibility",
         "handle": "reusable.motet.test",
         "rotationKey": to_public(&f.rotation).expect("public key").to_string(),
         "tenorRotationKey": false,
@@ -861,6 +937,7 @@ async fn expired_reservations_cannot_be_created_and_release_their_keys() {
         .run(ReserveWorld {
             owner: Did::new(OWNER),
             request: ReserveRequest {
+                op: "expired".into(),
                 handle: "expired.motet.test".into(),
                 rotation_key: to_public(&f.rotation).expect("public key").to_string(),
                 tenor_rotation_key: true,
@@ -966,7 +1043,8 @@ async fn world_creation_requires_the_bare_tenor_service_audience() {
 async fn service_audiences_and_handle_domains_do_not_cross_scopes() {
     let f = Fixture::new().await;
     let public_key = to_public(&f.rotation).expect("public key").to_string();
-    let request = json!({ "handle": "alice.motet.test", "rotationKey": public_key, "tenorRotationKey": false });
+    let request =
+        json!({ "op": "audience", "handle": "alice.motet.test", "rotationKey": public_key, "tenorRotationKey": false });
     for audience in [
         f.hosting.audience(),
         "did:web:other.motet.test",
@@ -989,7 +1067,8 @@ async fn service_audiences_and_handle_domains_do_not_cross_scopes() {
         "at://alice.motet.test",
         "motet.test",
     ] {
-        let request = json!({ "handle": handle, "rotationKey": public_key, "tenorRotationKey": false });
+        let request =
+            json!({ "op": "invalid-handle", "handle": handle, "rotationKey": public_key, "tenorRotationKey": false });
         assert_eq!(
             f.post(api::RESERVE_WORLD.nsid, request, OWNER, f.hosting.service_did())
                 .await

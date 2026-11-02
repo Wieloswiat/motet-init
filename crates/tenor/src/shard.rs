@@ -359,6 +359,16 @@ impl Txn<'_> {
             .or_else(|| self.base.get(world))
     }
 
+    /// Operation IDs used by admission are unique to an author across Worlds.
+    pub(crate) fn operation_in_other_world(&self, world: &Did, op: &OperationId) -> bool {
+        self.scope
+            .worlds
+            .iter()
+            .chain(&self.batch.worlds)
+            .chain(self.base)
+            .any(|(did, state)| did != world && state.has_operation(op))
+    }
+
     fn rules(&mut self, entry: Entry) -> Applied {
         if let Some(world) = entry.world()
             && !self.scope.worlds.contains_key(world)

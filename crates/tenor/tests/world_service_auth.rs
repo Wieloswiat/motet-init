@@ -404,8 +404,8 @@ async fn delegation(client: &Client, space: &SpaceUri) -> (StatusCode, Value) {
     )
 }
 
-/// A verified issuer's token can authorize only one committed body. Missing
-/// IDs and a concurrent replay must not become additional attributed writes.
+/// A forged token cannot spend another member's identifier, and a verified
+/// token authorizes only one committed body even when requests race.
 #[tokio::test]
 async fn signed_token_id_is_required_and_one_body_wins_even_when_requests_race() {
     let fixture = Fixture::new().await;
@@ -422,6 +422,14 @@ async fn signed_token_id_is_required_and_one_body_wins_even_when_requests_race()
         let (status, reply) = request_with_token(&owner, method, body("forbidden"), &missing).await;
         assert!(!status.is_success(), "invalid jti {jti:?}: {reply}");
     }
+    assert_eq!(fixture.visible().await, before);
+    let mut forged_owner = owner.clone();
+    forged_owner.key = fixture.keys.get(EDITOR).unwrap().clone();
+    let forged = token_with_jti(&forged_owner, WORLD, method, Some("one-use"));
+    assert_eq!(
+        request_with_token(&owner, method, body("forged"), &forged).await.0,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(fixture.visible().await, before);
 
     let signed = token_with_jti(&owner, WORLD, method, Some("one-use"));
