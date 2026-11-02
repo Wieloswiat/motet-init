@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Publish a post in the signed-in author's repo and request admission of that exact version. Pending admissions are retried with the same operation ID.
+/// Publish a post in the signed-in author's repo and request admission of that exact version. Retrying the same operation and content returns the original post.
 pub const NSID: &str = "at.motet.pilot.createPost";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +12,8 @@ pub const NSID: &str = "at.motet.pilot.createPost";
 pub struct CreatePostInput {
     /// Typst source.
     pub body: String,
+    /// An author-chosen operation ID, reused for retries of the same post.
+    pub op: String,
     pub register: String,
     pub scene: String,
     pub world: String,
@@ -27,7 +29,7 @@ pub struct CreatePostOutput {
     /// Recovery epoch when admitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<i64>,
-    /// The tenor's reason when admission is refused.
+    /// The reason when admission is refused or has failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// Scene place when admitted.

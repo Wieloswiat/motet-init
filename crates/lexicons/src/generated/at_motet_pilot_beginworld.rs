@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Reserve a World on the configured tenor as the signed-in owner. Sign the returned operation on the owner's device; never send its private key.
+/// Reserve a World on the configured tenor as the signed-in owner. A retry with the same op and fields returns the live original reservation. Sign the returned operation on the owner's device; never send its private key.
 pub const NSID: &str = "at.motet.pilot.beginWorld";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +12,8 @@ pub const NSID: &str = "at.motet.pilot.beginWorld";
 pub struct BeginWorldInput {
     pub handle: String,
     pub name: String,
+    /// Client-chosen operation ID, unique per owner.
+    pub op: String,
     /// The owner's public P-256 or K-256 did:key.
     pub rotation_key: String,
     pub visibility: String,
@@ -32,6 +34,8 @@ pub struct BeginWorldOutput {
     pub signing_bytes: String,
     /// The configured tenor's service DID.
     pub tenor: String,
+    /// The validated configured tenor endpoint.
+    pub tenor_url: String,
     /// Fields this version of Motet doesn't know. Kept and written back unchanged.
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,

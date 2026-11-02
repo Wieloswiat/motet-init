@@ -4,13 +4,18 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Reserve a World on the configured tenor as the signed-in owner. Sign the returned operation on the owner's device; never send its private key.",
+			"description": "Reserve a World on the configured tenor as the signed-in owner. A retry with the same op and fields returns the live original reservation. Sign the returned operation on the owner's device; never send its private key.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
 					"type": "object",
-					"required": ["handle", "name", "visibility", "rotationKey"],
+					"required": ["op", "handle", "name", "visibility", "rotationKey"],
 					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "Client-chosen operation ID, unique per owner."
+						},
 						"handle": { "type": "string", "format": "handle" },
 						"name": { "type": "string", "maxGraphemes": 64, "maxLength": 640 },
 						"visibility": { "type": "string", "enum": ["public", "private"] },
@@ -26,7 +31,14 @@
 				"encoding": "application/json",
 				"schema": {
 					"type": "object",
-					"required": ["reservation", "operation", "signingBytes", "expiresAt", "tenor"],
+					"required": [
+						"reservation",
+						"operation",
+						"signingBytes",
+						"expiresAt",
+						"tenor",
+						"tenorUrl"
+					],
 					"properties": {
 						"reservation": { "type": "string" },
 						"operation": {
@@ -46,6 +58,11 @@
 							"type": "string",
 							"format": "did",
 							"description": "The configured tenor's service DID."
+						},
+						"tenorUrl": {
+							"type": "string",
+							"format": "uri",
+							"description": "The validated configured tenor endpoint."
 						}
 					}
 				}
