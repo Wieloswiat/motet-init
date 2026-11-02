@@ -160,6 +160,8 @@ Earlier drafts of this plan put the World record in the founding GM's PDS and ga
 
 ### Acting as the World
 
+ADR 0018 replaced the tenor-issued World sessions described here with service tokens that each member's own PDS mints for one method at a time; the tenor still takes the actor from the token, checks their current roles and records the audit entry.
+
 GMs never get a password for the World. Each GM signs in to the tenor with their own account and gets their own session to act as the World, so on every change the tenor knows which GM is acting and checks that GM's current roles; an actor named by Motet is informational only. Motet never routes all GMs through one shared World session: shared sessions are only for named automation, and are audited as such. Every action taken as the World is recorded with the GM who took it, as an audit record in the GM Space (or, for a moderation case, in the tenor's case store), which keeps the September decision that GM decisions stay attributable, and the trail moves with the account. That record is the tenor's statement that a GM acted; guarding against a tenor that fabricates decisions would need GM-signed intents, which Motet doesn't plan for now.
 
 The World's own records have one writer, its tenor, so they are ordered among themselves. Two GMs changing the same thing at once is caught by compare-and-swap and shown to the second GM: the explicit resolution chosen in September.
