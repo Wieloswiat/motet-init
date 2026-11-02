@@ -54,7 +54,7 @@ const SCENE_COLLECTION: &str = "at.motet.pilot.scene";
 const POST_COLLECTION: &str = "at.motet.pilot.post";
 const SUBMIT: &str = "at.motet.pilot.play.submitAdmission";
 
-fn document(did: &str, key: &KeyData, services: Value) -> Document {
+fn document(did: &str, key: &KeyData, services: &Value) -> Document {
     let public = to_public(key).expect("fixture key has a public component").to_string();
     serde_json::from_value(json!({
         "id": did,
@@ -199,7 +199,7 @@ impl Op for Initialize {
         let document = document(
             WORLD,
             &signing,
-            json!([
+            &json!([
                 {"id":"#motet_tenor", "type":"MotetTenor", "serviceEndpoint":self.tenor_endpoint}
             ]),
         );
@@ -282,6 +282,10 @@ async fn json_response(response: Response) -> (StatusCode, Value) {
 /// Catches bypassing cast checks or displaying public posts without admissions.
 #[tokio::test]
 #[ignore = "integration: needs PostgreSQL (devenv up)"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "The test follows one post across the real authorization and read boundaries."
+)]
 async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene() {
     let author_key = generate_key(KeyType::K256Private).expect("author signing key");
     let pds = Arc::new(AuthorPds {
@@ -323,7 +327,7 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
     let author_document = document(
         AUTHOR,
         &author_key,
-        json!([
+        &json!([
             {"id":"#atproto_pds", "type":"AtprotoPersonalDataServer", "serviceEndpoint":pds_url}
         ]),
     );
@@ -450,7 +454,7 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
         (0, 0),
         "a refusal has no admission to publish"
     );
-    assert!(
+    assert_eq!(
         handle
             .reader()
             .scan(
@@ -459,8 +463,8 @@ async fn non_cast_member_post_is_refused_and_never_appears_in_the_public_scene()
                 100
             )
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [(bytes::Bytes, bytes::Bytes); 0]
     );
 
     // Simulate Tap delivering the real PDS record: its existence alone must
