@@ -239,7 +239,10 @@ async fn create_record(State(network): State<Arc<Network>>, Json(input): Json<Va
         atproto_dasl::cid::compute_cid(&atproto_dasl::to_vec_from_json(record).expect("record DRISL")).to_string();
     if network.conflict_pds.swap(false, Ordering::SeqCst) {
         let mut existing = record.clone();
-        existing["body"] = json!("Already here");
+        existing
+            .as_object_mut()
+            .expect("record object")
+            .insert("body".into(), json!("Already here"));
         let cid = atproto_dasl::cid::compute_cid(&atproto_dasl::to_vec_from_json(&existing).expect("record DRISL"))
             .to_string();
         network.records.lock().expect("records").insert(
@@ -267,6 +270,7 @@ async fn create_record(State(network): State<Arc<Network>>, Json(input): Json<Va
             scene: SceneId::new(SCENE),
         },
     );
+    drop(records);
     network
         .values
         .lock()
@@ -359,7 +363,8 @@ async fn forward(State(proxy): State<TenorProxy>, request: Request) -> Response 
         .lock()
         .expect("submissions")
         .push(value.clone());
-    if let Some(status) = proxy.network.tenor_faults.lock().expect("tenor faults").pop_front() {
+    let fault = proxy.network.tenor_faults.lock().expect("tenor faults").pop_front();
+    if let Some(status) = fault {
         return (status, Json(json!({"error":"Unavailable"}))).into_response();
     }
     if let Some(op) = proxy.network.failing_op.lock().expect("failing op").as_deref()
@@ -560,7 +565,7 @@ impl Fixture {
         }
     }
 
-    fn post_request_as(&self, cookie: &str, op: &str, body: &str) -> Request {
+    fn post_request_as(cookie: &str, op: &str, body: &str) -> Request {
         Request::builder()
             .method("POST")
             .uri("/xrpc/at.motet.pilot.createPost")
@@ -574,7 +579,7 @@ impl Fixture {
     }
 
     fn post_request_with(&self, op: &str, body: &str) -> Request {
-        self.post_request_as(&self.cookie, op, body)
+        Self::post_request_as(&self.cookie, op, body)
     }
 
     fn post_request(&self) -> Request {
@@ -765,7 +770,7 @@ async fn same_client_operation_is_isolated_by_author_through_admission() {
     let response = fixture
         .router
         .clone()
-        .oneshot(fixture.post_request_as(&other_cookie, &op, "Bob's post"))
+        .oneshot(Fixture::post_request_as(&other_cookie, &op, "Bob's post"))
         .await
         .expect("other author's response");
     let status = response.status();
@@ -800,9 +805,10 @@ async fn fault_existing_pds_key_with_different_content_is_never_admitted() {
     assert_eq!(fixture.network.writes.load(Ordering::SeqCst), 1);
     assert!(fixture.network.reads.load(Ordering::SeqCst) >= 1);
     assert_eq!(fixture.network.records.lock().expect("records").len(), 1);
-    let values = fixture.network.values.lock().expect("record values");
-    assert_eq!(values.values().next().expect("existing value")["body"], "Already here");
-    drop(values);
+    {
+        let values = fixture.network.values.lock().expect("record values");
+        assert_eq!(values.values().next().expect("existing value")["body"], "Already here");
+    }
     assert!(fixture.network.submissions.lock().expect("submissions").is_empty());
     assert_eq!(
         publication::drain(&fixture.tenor).await.expect("publication").published,
@@ -867,10 +873,12 @@ async fn fault_tenor_503_then_401_retries_with_fresh_tokens_without_pausing() {
     assert_eq!(outcome["status"], "admitted");
     assert_eq!(outcome["cid"], initial["cid"]);
     assert_distinct_tokens(&fixture.network);
-    let calls = fixture.network.submissions.lock().expect("submissions");
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|call| call == &calls[0]));
-    drop(calls);
+    {
+        let calls = fixture.network.submissions.lock().expect("submissions");
+        assert_eq!(calls.len(), 3);
+        assert!(calls.iter().all(|call| call == &calls[0]));
+        drop(calls);
+    }
     assert_eq!(
         publication::drain(&fixture.tenor).await.expect("publication").published,
         1
@@ -918,12 +926,12 @@ async fn fault_exhausted_admission_exposes_reason_and_unblocks_next_post() {
     assert_eq!(admitted["status"], "admitted");
     assert_eq!(admitted["cid"], second["cid"]);
     assert_distinct_tokens(&fixture.network);
-    {
+    let failed_calls: Vec<_> = {
         let calls = fixture.network.submissions.lock().expect("submissions");
-        let failed_calls: Vec<_> = calls.iter().filter(|call| call["op"] == op).collect();
-        assert_eq!(failed_calls.len(), 6, "the retry budget must be finite");
-        assert!(failed_calls.iter().all(|call| *call == failed_calls[0]));
-    }
+        calls.iter().filter(|call| call["op"] == op).cloned().collect()
+    };
+    assert_eq!(failed_calls.len(), 6, "the retry budget must be finite");
+    assert!(failed_calls.iter().all(|call| call == &failed_calls[0]));
     assert_eq!(
         publication::drain(&fixture.tenor).await.expect("publication").published,
         1
