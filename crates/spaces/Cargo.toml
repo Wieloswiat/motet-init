@@ -4,6 +4,7 @@ description = "Motet's one seam over atproto Spaces: which Space holds which aud
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 # The adapter over atproto-space and atproto-space-client (unreleased; git

@@ -2,6 +2,7 @@
 	"name": "@motet/web",
 	"description": "Motet's web client: SvelteKit, server-rendered against the AppView.",
 	"private": true,
+	"license": "MIT",
 	"version": "0.0.0",
 	"type": "module",
 	"scripts": {

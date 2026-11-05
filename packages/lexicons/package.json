@@ -2,6 +2,7 @@
 	"name": "@motet/lexicons",
 	"description": "TypeScript types generated from lexicons/ (run `lexgen` in the dev shell). Do not edit src/generated.",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"exports": {
 		".": "./src/generated/index.ts"

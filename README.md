@@ -111,4 +111,4 @@ reaches a handler. A test must name the bug it would catch. See
 
 ## Licence
 
-Not chosen yet ([ADR 0001](docs/adr/0001-licence.md)).
+MIT. See [LICENSE](LICENSE) and [ADR 0001](docs/adr/0001-licence.md).

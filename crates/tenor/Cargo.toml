@@ -4,6 +4,7 @@ description = "Motet's group host: hosts each World as a group account, admits p
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [[bin]]

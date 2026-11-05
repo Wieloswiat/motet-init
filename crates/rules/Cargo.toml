@@ -4,6 +4,7 @@ description = "The World's authority model: admission, permissions and the view 
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 # No I/O, clock, randomness or atproto SDK types may enter this crate: the

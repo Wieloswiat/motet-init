@@ -5,6 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.99"
+license = "MIT"
 publish = false
 repository = "https://github.com/Wieloswiat/motet-init"
 
