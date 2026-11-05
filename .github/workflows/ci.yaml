@@ -88,6 +88,7 @@ jobs:
       - name: Install native devenv
         # devenv 2.4.0, aligned with the module revision in devenv.lock.
         run: nix profile add github:cachix/devenv/9655d320b8f9df74dbecf681f52a7334574606c3
+      # Host-trusted TLS stays in .devenv/state/tls, including in test mode.
       - name: Set up local TLS
         run: devenv shell -- tls-setup
       # Watch the first run: readiness probes can hang devenv test (cachix/devenv#3215).

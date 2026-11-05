@@ -5,7 +5,7 @@ if [[ $(uname -s) != Linux ]]; then
   echo 'tls-setup currently supports Linux hosts only.' >&2
   exit 1
 fi
-: "${DEVENV_STATE:?Enter the devenv shell first}"
+: "${MOTET_TLS_DIR:?Enter the devenv shell first}"
 : "${MOTET_SYSTEM_CA_BUNDLE:?The tls-setup command must supply the system CA bundle}"
 : "${HOME:?HOME is required for Chromium certificate trust}"
 
@@ -33,7 +33,7 @@ ip_cmd=$(command -v ip)
 resolvectl_cmd=$(command -v resolvectl)
 
 umask 077
-tls_dir="$DEVENV_STATE/tls"
+tls_dir="$MOTET_TLS_DIR"
 mkdir -p "$tls_dir"
 chmod 700 "$tls_dir"
 exec 9>"$tls_dir/.setup.lock"

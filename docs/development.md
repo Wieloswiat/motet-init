@@ -150,6 +150,10 @@ of the same name, including when direnv loads it.
 | `coverage`                  | Write default-suite line coverage to `lcov.info`                                            |
 | `audit`                     | Rust advisories and production npm dependency advisories                                    |
 
+Run `tls-setup` before the first `devenv test`, and stop any running local
+stack and web upstream. Test mode isolates service data, but shares the
+checkout's host-trusted TLS files at `.devenv/state/tls`; no second setup is needed.
+
 CI runs the service-backed gate and hermetic `nix flake check`. Only after
 both succeed can a push to `main` publish images. Pull requests do not receive
 package-write permissions. Scheduled jobs run audits and mutation analysis,

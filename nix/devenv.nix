@@ -23,6 +23,8 @@ let
   s3Port = 9010;
   s3Key = "motet";
   s3Secret = "motet-dev-secret";
+  # Host trust outlives test runs; never create a second CA in test-state.
+  tlsDir = "${config.devenv.root}/.devenv/state/tls";
   networkState = "${config.devenv.state}/network";
   networkPassword = "motet-network-dev";
   # Leave readiness to the process manager; ready.timeout makes wrappers supervise dependencies.
@@ -388,12 +390,13 @@ in
     MOTET_ALLOW_PRIVATE_NETWORK = "true";
     MOTET_RELAY_ADMIN_PASSWORD = networkPassword;
     MOTET_TAP_ADMIN_PASSWORD = networkPassword;
-    MOTET_TLS_CERT = "${config.devenv.state}/tls/server.crt";
-    MOTET_TLS_KEY = "${config.devenv.state}/tls/server.key";
-    SSL_CERT_FILE = "${config.devenv.state}/tls/ca-bundle.crt";
-    CURL_CA_BUNDLE = "${config.devenv.state}/tls/ca-bundle.crt";
-    REQUESTS_CA_BUNDLE = "${config.devenv.state}/tls/ca-bundle.crt";
-    NODE_EXTRA_CA_CERTS = "${config.devenv.state}/tls/rootCA.crt";
+    MOTET_TLS_DIR = tlsDir;
+    MOTET_TLS_CERT = "${tlsDir}/server.crt";
+    MOTET_TLS_KEY = "${tlsDir}/server.key";
+    SSL_CERT_FILE = "${tlsDir}/ca-bundle.crt";
+    CURL_CA_BUNDLE = "${tlsDir}/ca-bundle.crt";
+    REQUESTS_CA_BUNDLE = "${tlsDir}/ca-bundle.crt";
+    NODE_EXTRA_CA_CERTS = "${tlsDir}/rootCA.crt";
     NO_PROXY = "localhost,127.0.0.1,::1,motet.test,.motet.test";
     no_proxy = "localhost,127.0.0.1,::1,motet.test,.motet.test";
   }

@@ -116,11 +116,16 @@ resolver separately.
 The CI gate runs the same setup and fails on an error. Its runner-specific
 resolver configuration has not been verified here.
 
-`tls-setup` creates `$DEVENV_STATE/tls/rootCA.crt`, `rootCA.key`, `server.crt`,
+`tls-setup` creates `$MOTET_TLS_DIR/rootCA.crt`, `rootCA.key`, `server.crt`,
 `server.key` and `ca-bundle.crt`. The CA signs the local service certificate;
 the bundle includes both the development CA and public roots. The CA and
 server private keys are local secrets: do not commit, share or deploy them.
 Trusting this CA allows it to issue certificates for other names too.
+
+`MOTET_TLS_DIR` always names `.devenv/state/tls` under the checkout root,
+including during `devenv test`. Host trust, native services and compose use
+the same certificates. Run `tls-setup` once before either service command;
+test mode needs no second CA or separate host setup.
 
 Setup makes these host changes:
 
@@ -227,7 +232,7 @@ sudo sysctl -w "net.ipv4.ip_unprivileged_port_start=$motet_prior_port"
 
 If that shell is gone, use the value recorded before setup or the host's
 configured value; reboot also resets this runtime-only change. Delete the
-local `$DEVENV_STATE/tls` directory only when no services need its certificates.
+local `$MOTET_TLS_DIR` directory only when no services need its certificates.
 
 ## Smoke check
 
@@ -307,6 +312,13 @@ local TLS setup, but the complete stack and OAuth flow have not been
 end-to-end verified.
 
 ## State and restart
+
+`devenv test` isolates service data under `.devenv/test-state` instead of
+`.devenv/state`. This includes PostgreSQL, SeaweedFS, network state, Caddy
+runtime files, AppView keys and the tenor master key. TLS material is the
+exception: it stays in `$MOTET_TLS_DIR` because the host already trusts that CA.
+Stop `devenv up` and any web upstream before running `devenv test`; both modes
+use the same ports.
 
 Native state lives under `$DEVENV_STATE/network`: `relay`, `tap` and `pds-rs`.
 The Rust PDS stores blob bytes with each actor's SQLite repository. Its local
