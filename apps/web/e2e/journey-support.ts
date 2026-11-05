@@ -6,7 +6,7 @@ import {
 	randomBytes
 } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { expect, type Page } from '@playwright/test';
+import { expect, type Page, type Route } from '@playwright/test';
 import {
 	at_motet_pilot_auth_getsession as getSession,
 	at_motet_pilot_beginworld as beginWorld,
@@ -22,24 +22,35 @@ export const pds = 'https://pds.motet.test';
 export const projectionTimeout = 120_000;
 export const interactionTimeout = 60_000;
 
+export type ProvisioningResource =
+	{ method: 'getWorld'; actor: string } | { method: 'getScene'; actor: string; scene: string };
+
 export type BrowserErrors = {
 	errors: string[];
 	worldProvisioning: (actor: string) => void;
+	sceneProvisioning: (actor: string, scene: string) => void;
+	provisioningComplete: () => void;
 };
 
-function worldProjectionSource(source: URL, actor: string): boolean {
+function provisioningSource(source: URL, resource: ProvisioningResource): boolean {
+	if (source.origin !== app || source.searchParams.get('actor') !== resource.actor) return false;
+
+	if (resource.method === 'getWorld') {
+		return source.pathname === `/xrpc/${getWorld.GetWorldNsid}` && source.searchParams.size === 1;
+	}
+
 	return (
-		source.origin === app &&
-		source.pathname === `/xrpc/${getWorld.GetWorldNsid}` &&
-		source.searchParams.size === 1 &&
-		source.searchParams.get('actor') === actor
+		source.pathname === `/xrpc/${getScene.GetSceneNsid}` &&
+		source.searchParams.size === 3 &&
+		source.searchParams.get('scene') === resource.scene &&
+		source.searchParams.get('limit') === '100'
 	);
 }
 
 export function expectedSetupResourceError(
 	sourceUrl: string,
 	status: number,
-	provisioningActor: string | null
+	provisioning: ProvisioningResource | null
 ): boolean {
 	if (status !== 404) return false;
 
@@ -53,22 +64,22 @@ export function expectedSetupResourceError(
 
 	if (source.href === `${pds}/favicon.ico`) return true;
 
-	return provisioningActor !== null && worldProjectionSource(source, provisioningActor);
+	return provisioning !== null && provisioningSource(source, provisioning);
 }
 
-// Chromium logs handled HTTP failures as console errors. StartWorld treats a getWorld 404 as
-// not yet indexed (ADR 0020); the local OAuth PDS's missing favicon is outside Motet.
+// Chromium logs handled HTTP failures as console errors. World and scene creation poll for
+// archive-derived projections (ADR 0020); the local OAuth PDS favicon is outside Motet.
 export function collectBrowserErrors(page: Page): BrowserErrors {
 	const errors: string[] = [];
-	let provisioningActor: string | null = null;
+	let provisioning: ProvisioningResource | null = null;
 
 	page.on('response', (response) => {
 		if (
 			response.status() === 200 &&
-			provisioningActor !== null &&
-			worldProjectionSource(new URL(response.url()), provisioningActor)
+			provisioning !== null &&
+			provisioningSource(new URL(response.url()), provisioning)
 		) {
-			provisioningActor = null;
+			provisioning = null;
 		}
 	});
 	page.on('console', (message) => {
@@ -83,7 +94,7 @@ export function collectBrowserErrors(page: Page): BrowserErrors {
 
 		if (
 			resourceStatus &&
-			expectedSetupResourceError(source, Number(resourceStatus[1]), provisioningActor)
+			expectedSetupResourceError(source, Number(resourceStatus[1]), provisioning)
 		)
 			return;
 
@@ -94,7 +105,13 @@ export function collectBrowserErrors(page: Page): BrowserErrors {
 	return {
 		errors,
 		worldProvisioning: (actor) => {
-			provisioningActor = actor;
+			provisioning = { method: 'getWorld', actor };
+		},
+		sceneProvisioning: (actor, scene) => {
+			provisioning = { method: 'getScene', actor, scene };
+		},
+		provisioningComplete: () => {
+			provisioning = null;
 		}
 	};
 }
@@ -495,6 +512,7 @@ export async function createWorld(
 	});
 	const world = { did: created.did, handle, name, tenor: reserved.tenor, secrets };
 	await waitForWorld(page, world);
+	browserErrors?.provisioningComplete();
 	await page.getByRole('link', { name: 'Go to World' }).click();
 	await expect(page.getByRole('heading', { name })).toBeVisible({ timeout: interactionTimeout });
 
@@ -513,11 +531,32 @@ export async function sceneProjection(
 	return response.json();
 }
 
-export async function openPublicScene(page: Page, world: World, owner: Account): Promise<string> {
+export async function openPublicScene(
+	page: Page,
+	world: World,
+	owner: Account,
+	browserErrors?: BrowserErrors
+): Promise<string> {
 	await page.getByRole('link', { name: 'Open scene', exact: true }).click();
 	await expect(
 		page.getByRole('region', { name: 'Cast' }).getByText(owner.did, { exact: true })
 	).toBeVisible();
+	// Arm the exact scene before releasing its creation response: hydration can poll immediately.
+	const creationUrl = `${app}/xrpc/${openScene.OpenSceneNsid}`;
+
+	const provisionScene = async (route: Route): Promise<void> => {
+		const response = await route.fetch();
+
+		if (response.status() === 200) {
+			const opened: openScene.OpenSceneOutput = await response.json();
+			browserErrors?.sceneProvisioning(world.did, opened.scene);
+		}
+
+		await route.fulfill({ response });
+	};
+
+	if (browserErrors) await page.route(creationUrl, provisionScene);
+
 	const title = `Scene ${uniqueLabel('s')}`;
 	await page.getByLabel('Scene title').fill(title);
 
@@ -532,6 +571,9 @@ export async function openPublicScene(page: Page, world: World, owner: Account):
 	const response = await responseEvent;
 	expect(response.status(), 'opening the scene as the owner must succeed').toBe(200);
 	const opened: openScene.OpenSceneOutput = await response.json();
+
+	if (browserErrors) await page.unroute(creationUrl, provisionScene);
+
 	await page.waitForURL(
 		(url) => url.pathname.endsWith(`/play/${encodeURIComponent(opened.scene)}`),
 		{
@@ -546,6 +588,7 @@ export async function openPublicScene(page: Page, world: World, owner: Account):
 
 				if (projected.status() === 404) return '';
 				expect(projected.status(), 'getScene must return 200 or 404 while indexing').toBe(200);
+				browserErrors?.provisioningComplete();
 				const body: getScene.GetSceneOutput = await projected.json();
 
 				return body.scene.uri;

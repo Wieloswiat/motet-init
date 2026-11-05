@@ -9,6 +9,7 @@ import {
 	collectBrowserErrors,
 	expectedSetupResourceError,
 	type BrowserErrors,
+	type ProvisioningResource,
 	projectionTimeout,
 	interactionTimeout,
 	uniqueLabel,
@@ -26,56 +27,91 @@ import {
 
 test.setTimeout(420_000);
 
-// A broad URL-only allowance would hide outages, other Worlds, or reads after indexing succeeded.
-test('setup diagnostics allow only its pending World 404 and the external PDS favicon, never outages', () => {
+// A broad allowance would hide outages, other resources, cursor reads, or reads after indexing.
+test('setup diagnostics allow only exact pending World or scene 404s, never outages or pagination', () => {
 	const actor = 'created-world.motet.test';
+	const world: ProvisioningResource = { method: 'getWorld', actor };
 	const source = `${app}/xrpc/at.motet.pilot.getWorld?actor=${actor}`;
-	expect(expectedSetupResourceError(source, 404, actor)).toBe(true);
-	expect(expectedSetupResourceError(source, 500, actor)).toBe(false);
-	expect(expectedSetupResourceError(source, 502, actor)).toBe(false);
-	expect(expectedSetupResourceError(source, 404, 'another-world.motet.test')).toBe(false);
+	expect(expectedSetupResourceError(source, 404, world)).toBe(true);
+	expect(expectedSetupResourceError(source, 500, world)).toBe(false);
+	expect(expectedSetupResourceError(source, 502, world)).toBe(false);
+	expect(
+		expectedSetupResourceError(source, 404, { ...world, actor: 'another-world.motet.test' })
+	).toBe(false);
 	expect(expectedSetupResourceError(source, 404, null)).toBe(false);
-	expect(expectedSetupResourceError(`${app}/favicon.ico`, 404, actor)).toBe(false);
+	expect(expectedSetupResourceError(`${app}/favicon.ico`, 404, world)).toBe(false);
 	expect(expectedSetupResourceError(`${pds}/favicon.ico`, 404, null)).toBe(true);
 	expect(expectedSetupResourceError(`${pds}/favicon.ico`, 500, null)).toBe(false);
-});
 
-// Reusing the allowance after the first success would hide a regression in a previously visible World.
-test('setup console allowance expires at the first indexed response and still reports a same-World outage', async ({
-	page
-}) => {
-	const actor = 'diagnostic-world.motet.test';
-	const source = `${app}/xrpc/at.motet.pilot.getWorld?actor=${actor}`;
-	const observed = collectBrowserErrors(page);
-	let status = 404;
+	const scene: ProvisioningResource = {
+		method: 'getScene',
+		actor: 'did:plc:world',
+		scene: 'new-scene'
+	};
 
-	await page.route(source, (route) =>
-		route.fulfill({ status, contentType: 'application/json', body: '{}' })
+	const params = new URLSearchParams({ actor: scene.actor, scene: scene.scene, limit: '100' });
+	const sceneUrl = `${app}/xrpc/at.motet.pilot.getScene?${params}`;
+	expect(expectedSetupResourceError(sceneUrl, 404, scene)).toBe(true);
+	expect(expectedSetupResourceError(sceneUrl, 500, scene)).toBe(false);
+	expect(expectedSetupResourceError(sceneUrl, 404, { ...scene, scene: 'another-scene' })).toBe(
+		false
 	);
-	await page.goto('/');
-	observed.worldProvisioning(actor);
-
-	async function readWorld(): Promise<void> {
-		await page.evaluate(async (url) => {
-			await fetch(url);
-		}, source);
-		// A renderer round-trip drains browser console events produced by the completed fetch.
-		await page.evaluate(() => undefined);
-	}
-
-	await readWorld();
-	expect(observed.errors).toEqual([]);
-	status = 500;
-	await readWorld();
-	expect(observed.errors).toHaveLength(1);
-	expect(observed.errors[0]).toContain(source);
-	status = 200;
-	await readWorld();
-	status = 404;
-	await readWorld();
-	expect(observed.errors).toHaveLength(2);
-	expect(observed.errors[1]).toContain(source);
+	expect(
+		expectedSetupResourceError(sceneUrl, 404, { ...scene, actor: 'did:plc:another-world' })
+	).toBe(false);
+	expect(expectedSetupResourceError(sceneUrl, 404, null)).toBe(false);
+	expect(expectedSetupResourceError(`${sceneUrl}&cursor=0%3A1`, 404, scene)).toBe(false);
+	expect(expectedSetupResourceError(sceneUrl.replace('limit=100', 'limit=50'), 404, scene)).toBe(
+		false
+	);
+	expect(expectedSetupResourceError(`${sceneUrl}&scene=new-scene`, 404, scene)).toBe(false);
 });
+
+// Controlled responses exercise the CI race even when local indexing wins every real creation.
+for (const method of ['getWorld', 'getScene'] as const) {
+	test(`${method} setup allowance handles initial 404, rejects outages, and expires at first success`, async ({
+		page
+	}) => {
+		const actor = 'did:plc:diagnostic-world';
+
+		const params = new URLSearchParams(
+			method === 'getWorld' ? { actor } : { actor, scene: 'new-scene', limit: '100' }
+		);
+
+		const source = `${app}/xrpc/at.motet.pilot.${method}?${params}`;
+		const observed = collectBrowserErrors(page);
+		let status = 404;
+
+		await page.route(source, (route) =>
+			route.fulfill({ status, contentType: 'application/json', body: '{}' })
+		);
+		await page.goto('/');
+
+		if (method === 'getWorld') observed.worldProvisioning(actor);
+		else observed.sceneProvisioning(actor, 'new-scene');
+
+		async function readResource(): Promise<void> {
+			await page.evaluate(async (url) => {
+				await fetch(url);
+			}, source);
+			// A renderer round-trip drains console events from the completed fetch.
+			await page.evaluate(() => undefined);
+		}
+
+		await readResource();
+		expect(observed.errors).toEqual([]);
+		status = 500;
+		await readResource();
+		expect(observed.errors).toHaveLength(1);
+		expect(observed.errors[0]).toContain(source);
+		status = 200;
+		await readResource();
+		status = 404;
+		await readResource();
+		expect(observed.errors).toHaveLength(2);
+		expect(observed.errors[1]).toContain(source);
+	});
+}
 
 type ExpectedPost = {
 	uri: string;
@@ -113,7 +149,7 @@ async function revokeSession(page: Page): Promise<void> {
 async function publicSceneFixture(page: Page, browserErrors: BrowserErrors): Promise<PublicScene> {
 	const owner = await signUp(page);
 	const world = await createWorld(page, undefined, browserErrors);
-	const scene = await openPublicScene(page, world, owner);
+	const scene = await openPublicScene(page, world, owner, browserErrors);
 	const admitted = await admitFirstPost(page, world, scene, owner);
 	const title = await page.getByRole('heading', { level: 1 }).innerText();
 
