@@ -32,6 +32,7 @@ getrandom.workspace = true
 motet-log.workspace = true
 motet-net.workspace = true
 motet-rules.workspace = true
+motet-spaces.workspace = true
 motet-xrpc.workspace = true
 object_store.workspace = true
 reqwest.workspace = true

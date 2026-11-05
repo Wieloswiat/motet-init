@@ -3166,6 +3166,7 @@ dependencies = [
  "motet-log",
  "motet-net",
  "motet-rules",
+ "motet-spaces",
  "motet-tenor",
  "motet-testkit",
  "motet-xrpc",
