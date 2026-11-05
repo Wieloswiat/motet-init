@@ -1,15 +1,42 @@
 import { query } from '#lib/api.js';
 
-/** Query the configured public AppView origin, forwarding the browser session cookie. */
+/**
+ * The web server cannot address the AppView: the origin is missing or is not
+ * an HTTPS origin. This is a deployment fault, not an AppView outage, so
+ * callers must not degrade to a signed-out page and hide it.
+ */
+export class AppViewConfigError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'AppViewConfigError';
+	}
+}
+
+/**
+ * Query the configured public AppView origin, forwarding the browser session cookie.
+ *
+ * `timeoutMs` bounds the whole exchange, response body included. An expired
+ * timeout reaches the caller as a rejected fetch, the same as a network fault.
+ */
 export async function serverQuery<Output>(
 	request: Request,
 	method: string,
-	params: Record<string, string | number | undefined> = {}
+	params: Record<string, string | number | undefined> = {},
+	{ timeoutMs }: { timeoutMs?: number } = {}
 ): Promise<Output> {
 	const configured = process.env.MOTET_APPVIEW_PUBLIC_ORIGIN;
 
-	if (!configured) throw new Error('MOTET_APPVIEW_PUBLIC_ORIGIN is required by the web server');
-	const origin = new URL(configured);
+	if (!configured) {
+		throw new AppViewConfigError('MOTET_APPVIEW_PUBLIC_ORIGIN is required by the web server');
+	}
+
+	let origin: URL;
+
+	try {
+		origin = new URL(configured);
+	} catch {
+		throw new AppViewConfigError('MOTET_APPVIEW_PUBLIC_ORIGIN must be an HTTPS origin');
+	}
 
 	if (
 		origin.protocol !== 'https:' ||
@@ -19,7 +46,7 @@ export async function serverQuery<Output>(
 		origin.search ||
 		origin.hash
 	) {
-		throw new Error('MOTET_APPVIEW_PUBLIC_ORIGIN must be an HTTPS origin');
+		throw new AppViewConfigError('MOTET_APPVIEW_PUBLIC_ORIGIN must be an HTTPS origin');
 	}
 
 	// Do not derive this destination from the request Host header: it carries
@@ -33,7 +60,8 @@ export async function serverQuery<Output>(
 		return globalThis.fetch(new URL(String(input), origin), {
 			...init,
 			headers,
-			cache: 'no-store'
+			cache: 'no-store',
+			signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
 		});
 	};
 
