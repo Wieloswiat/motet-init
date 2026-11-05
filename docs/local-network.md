@@ -50,7 +50,10 @@ from the local PDS. Signup uses the PDS authorization flow with
 The tenor's `MOTET_TENOR_HANDLE_DOMAINS=.motet.test` serves World handles;
 `PDS_SERVICE_HANDLE_DOMAINS=.pds.motet.test` serves PDS account handles.
 The PDS requires the account-name label to have 3–18 characters and refuses
-reserved names.
+reserved names. The local PDS disables only its auth/account-creation rate
+limit (`PDS_RATE_LIMIT_AUTH=0`): the full development gate creates dozens of
+accounts and sessions from one loopback address within a single limit window.
+The global request limit remains enabled, and production defaults are unchanged.
 These names need local DNS as well as proxy routes and certificate coverage;
 see [Host setup](#host-setup).
 
@@ -103,7 +106,7 @@ record the current unprivileged-port setting before setup, so you can restore
 it later:
 
 ```sh
-direnv allow  # or: nix develop --no-pure-eval
+direnv allow  # or: devenv shell
 motet_prior_port=$(sysctl -n net.ipv4.ip_unprivileged_port_start)
 printf 'Previous unprivileged port start: %s\n' "$motet_prior_port"
 tls-setup
@@ -116,11 +119,16 @@ resolver separately.
 The CI gate runs the same setup and fails on an error. Its runner-specific
 resolver configuration has not been verified here.
 
-`tls-setup` creates `$DEVENV_STATE/tls/rootCA.crt`, `rootCA.key`, `server.crt`,
+`tls-setup` creates `$MOTET_TLS_DIR/rootCA.crt`, `rootCA.key`, `server.crt`,
 `server.key` and `ca-bundle.crt`. The CA signs the local service certificate;
 the bundle includes both the development CA and public roots. The CA and
 server private keys are local secrets: do not commit, share or deploy them.
 Trusting this CA allows it to issue certificates for other names too.
+
+`MOTET_TLS_DIR` always names `.devenv/state/tls` under the checkout root,
+including during `devenv test`. Host trust, native services and compose use
+the same certificates. Run `tls-setup` once before either service command;
+test mode needs no second CA or separate host setup.
 
 Setup makes these host changes:
 
@@ -227,7 +235,7 @@ sudo sysctl -w "net.ipv4.ip_unprivileged_port_start=$motet_prior_port"
 
 If that shell is gone, use the value recorded before setup or the host's
 configured value; reboot also resets this runtime-only change. Delete the
-local `$DEVENV_STATE/tls` directory only when no services need its certificates.
+local `$MOTET_TLS_DIR` directory only when no services need its certificates.
 
 ## Smoke check
 
@@ -251,7 +259,20 @@ the channel itself. It does not test a second PDS implementation, OAuth
 sign-in or private Space access.
 
 The local stack registers the Rust PDS and tenor through the relay's
-authenticated admin endpoint. `network-smoke` also requests the PDS crawl.
+authenticated admin endpoint. Both native and compose relay configurations set
+`RELAY_DEFAULT_ACCOUNT_LIMIT=1000000`. Persistent development state accumulates
+accounts across runs; Indigo's default of 100 eventually marks new accounts
+`host-throttled` and drops their commits even when the tenor admits posts. Zero is
+not an unlimited setting in the pinned relay.
+
+Registration also calls `/admin/pds/changeLimits` with the same limit for each
+host. The default affects only newly registered hosts; this authenticated call
+updates existing rows and reactivates previously throttled accounts through the
+relay's own account lifecycle. A failed limit update fails registration. Restart
+the local stack after upgrading; do not erase accumulated state to bypass this
+limit. These settings apply only to the isolated development network.
+
+`network-smoke` also requests the PDS crawl.
 For another local PDS, use its full HTTPS URL in the same call:
 
 ```sh
@@ -308,6 +329,13 @@ end-to-end verified.
 
 ## State and restart
 
+`devenv test` isolates service data under `.devenv/test-state` instead of
+`.devenv/state`. This includes PostgreSQL, SeaweedFS, network state, Caddy
+runtime files, AppView keys and the tenor master key. TLS material is the
+exception: it stays in `$MOTET_TLS_DIR` because the host already trusts that CA.
+Stop `devenv up` and any web upstream before running `devenv test`; both modes
+use the same ports.
+
 Native state lives under `$DEVENV_STATE/network`: `relay`, `tap` and `pds-rs`.
 The Rust PDS stores blob bytes with each actor's SQLite repository. Its local
 lexicon catalogue comes from `lexicons/`, avoiding remote schema discovery for
@@ -332,6 +360,13 @@ Re-running `network-smoke` without restarting PLC needs no reset. The AppView's
 OAuth and session keys under `$DEVENV_STATE/appview` are separate from this
 reset, as are TLS certificates and the tenor master key.
 
+Older retained relay databases can contain a `localhost:4800` crawler from the
+pre-HTTPS setup. Current registration and PDS announcements use
+`pds.motet.test`; the old row can log "new account from a different host" for
+the same upstream events. It does not replace the canonical crawler and is not
+created by current configuration. Leave retained history intact when diagnosing
+this alias; it is not a reason to wipe state or disable ingestion checks.
+
 The compose atproto services, AppView, tenor and proxy share PLC's network
 namespace; PostgreSQL and S3 stay on the compose bridge. After stopping
 compose, remove its three network volumes before starting a new PLC instance:
@@ -354,7 +389,7 @@ remove PostgreSQL or S3 volumes unless their data should also be discarded.
 | `indigo` | [Indigo `4f47add43060c27e8a37d9d76482ecddf001fcd8`](https://github.com/bluesky-social/indigo/commit/4f47add43060c27e8a37d9d76482ecddf001fcd8), `cmd/relay` and `cmd/tap` (`tap-v0.1.10`)   |
 | `pds-rs` | [atproto-crates `09a868cdde938c789326f1db16ffc30bbf38c15e`](https://tangled.org/ngerakines.me/atproto-crates/commit/09a868cdde938c789326f1db16ffc30bbf38c15e), `atproto-pds`, binary `pds` |
 
-PLC uses the flake's `pnpm_11` and a fixed dependency closure.
+PLC uses the pinned nixpkgs `pnpm_11` and a fixed dependency closure.
 `pnpm_config_pm_on_fail=ignore` prevents the upstream package-manager pin from
 self-downloading in the sandbox. Containers reuse the native builds without a
 separate dependency graph or external image fallback.
@@ -379,7 +414,7 @@ establish that either works.
 Build just the network packages without the workspace gates:
 
 ```sh
-nix build --no-pure-eval .#plc .#indigo .#pds-rs
+nix build .#plc .#indigo .#pds-rs
 ```
 
 `nix flake check` does not build these packages. The service-backed CI gate

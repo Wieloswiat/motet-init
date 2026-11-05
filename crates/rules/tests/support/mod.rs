@@ -127,6 +127,277 @@ pub fn history() -> impl Strategy<Value = Vec<Action>> {
     proptest::collection::vec(action(), 0..60)
 }
 
+/// The positions one targeted history is built around: an author, one of their
+/// posts in a scene, and a neighbouring post in another scene so the history can
+/// exercise two of each.
+#[derive(Clone, Copy)]
+struct Target {
+    author: usize,
+    post: usize,
+    other_post: usize,
+    scene: usize,
+    other_scene: usize,
+    body: u8,
+    everyone: u8,
+}
+
+/// Generated histories with admissions on both scenes, authority refusals,
+/// edits, and deletion followed by reuse. The random prefix and suffix also
+/// exercise these transitions in less orderly histories.
+pub fn admission_history() -> impl Strategy<Value = Vec<Action>> {
+    (
+        history(),
+        0..AUTHORS,
+        0..POSTS_PER_AUTHOR,
+        0..SCENES,
+        any::<u8>(),
+        history(),
+    )
+        .prop_map(|(mut prefix, author, post, scene, body, suffix)| {
+            let target = Target {
+                author,
+                post,
+                other_post: (post + 1) % POSTS_PER_AUTHOR,
+                scene,
+                other_scene: (scene + 1) % SCENES,
+                body,
+                everyone: (1 << AUTHORS) - 1,
+            };
+            prefix.extend(open_both_scenes(target));
+            prefix.extend(delete_and_rewrite_both_posts(target));
+            prefix.extend(authority_refusals(target));
+            prefix.extend(edits_and_stale_claims(target));
+            prefix.extend(delete_and_rewrite_with_stale_claims(target));
+            prefix.extend(suffix);
+            prefix
+        })
+}
+
+/// Both scenes open with everyone cast, so the steps after this fail for the
+/// reasons they are meant to exercise rather than because a scene is shut.
+fn open_both_scenes(t: Target) -> impl IntoIterator<Item = Action> {
+    let Target {
+        author,
+        scene,
+        other_scene,
+        everyone,
+        ..
+    } = t;
+    [
+        Action::Reinstate { author },
+        Action::SetCast { scene, mask: everyone },
+        Action::ReopenScene { scene },
+        Action::SetCast {
+            scene: other_scene,
+            mask: everyone,
+        },
+        Action::ReopenScene { scene: other_scene },
+    ]
+}
+
+/// Delete both posts and write them again, so a client that claims nothing
+/// edits a post the tenor has already seen deleted.
+fn delete_and_rewrite_both_posts(t: Target) -> impl IntoIterator<Item = Action> {
+    let Target {
+        author,
+        post,
+        other_post,
+        scene,
+        other_scene,
+        body,
+        ..
+    } = t;
+    [
+        Action::Delete { author, post },
+        Action::ObserveDeletion { author, post },
+        Action::Delete {
+            author,
+            post: other_post,
+        },
+        Action::ObserveDeletion {
+            author,
+            post: other_post,
+        },
+        Action::Write {
+            author,
+            post,
+            scene,
+            body,
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Nothing,
+        },
+        Action::Write {
+            author,
+            post: other_post,
+            scene: other_scene,
+            body,
+        },
+        Action::Admit {
+            author,
+            post: other_post,
+            claim: Claim::Nothing,
+        },
+    ]
+}
+
+/// Leaving the cast, being suspended and a closed scene each refuse an
+/// admission; joining, being reinstated and reopening let the same edit through.
+fn authority_refusals(t: Target) -> impl IntoIterator<Item = Action> {
+    let Target {
+        author,
+        post,
+        scene,
+        body,
+        ..
+    } = t;
+    [
+        Action::LeaveCast { author, scene },
+        Action::Write {
+            author,
+            post,
+            scene,
+            body: body.wrapping_add(1),
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::JoinCast { author, scene },
+        Action::Suspend { author },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::Reinstate { author },
+        Action::CloseScene { scene },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::ReopenScene { scene },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+    ]
+}
+
+/// Edits that claim the wrong version, an emptied cast, and a claim of a
+/// version that was never admitted.
+fn edits_and_stale_claims(t: Target) -> impl IntoIterator<Item = Action> {
+    let Target {
+        author,
+        post,
+        scene,
+        body,
+        everyone,
+        ..
+    } = t;
+    [
+        Action::Write {
+            author,
+            post,
+            scene,
+            body: body.wrapping_add(2),
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Bogus,
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::SetCast { scene, mask: 0 },
+        Action::Write {
+            author,
+            post,
+            scene,
+            body: body.wrapping_add(3),
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::SetCast { scene, mask: everyone },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+    ]
+}
+
+/// Deletion followed by reuse again, this time with a scene that closes and
+/// reopens in between and clients that keep claiming nothing.
+fn delete_and_rewrite_with_stale_claims(t: Target) -> impl IntoIterator<Item = Action> {
+    let Target {
+        author,
+        post,
+        scene,
+        other_scene,
+        body,
+        ..
+    } = t;
+    [
+        Action::Delete { author, post },
+        Action::Write {
+            author,
+            post,
+            scene: other_scene,
+            body,
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Current,
+        },
+        Action::Delete { author, post },
+        Action::ObserveDeletion { author, post },
+        Action::CloseScene { scene },
+        Action::ReopenScene { scene },
+        Action::Write {
+            author,
+            post,
+            scene,
+            body,
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Nothing,
+        },
+        Action::Delete { author, post },
+        Action::ObserveDeletion { author, post },
+        Action::Write {
+            author,
+            post,
+            scene: other_scene,
+            body,
+        },
+        Action::Admit {
+            author,
+            post,
+            claim: Claim::Nothing,
+        },
+    ]
+}
+
 /// What a history produced.
 #[derive(Debug, Default)]
 pub struct Run {

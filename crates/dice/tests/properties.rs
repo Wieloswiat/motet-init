@@ -80,6 +80,369 @@ fn expr() -> impl Strategy<Value = Expr> {
     })
 }
 
+fn comparison() -> impl Strategy<Value = Comparison> {
+    (
+        prop_oneof![
+            Just(CmpOp::Ge),
+            Just(CmpOp::Le),
+            Just(CmpOp::Gt),
+            Just(CmpOp::Lt),
+            Just(CmpOp::Eq),
+        ],
+        prop_oneof![Just(i64::MIN), -2..=4i64, Just(i64::MAX)],
+    )
+        .prop_map(|(op, target)| Comparison { op, target })
+}
+
+fn finite_dice() -> impl Strategy<Value = Dice> {
+    (
+        1..=2u32,
+        prop_oneof![(1..=3u32).prop_map(Die::Sides), Just(Die::Fudge)],
+        proptest::option::of(prop_oneof![
+            (0..=3u32).prop_map(Keep::Highest),
+            (0..=3u32).prop_map(Keep::Lowest),
+            (0..=3u32).prop_map(Keep::DropHighest),
+            (0..=3u32).prop_map(Keep::DropLowest),
+        ]),
+        proptest::option::of(comparison()),
+    )
+        .prop_map(|(count, die, keep, success)| Dice {
+            count,
+            die,
+            explode: false,
+            keep,
+            success,
+        })
+}
+
+fn finite_expr() -> impl Strategy<Value = Expr> {
+    let term = || {
+        (finite_dice(), 0..=4u32, any::<bool>()).prop_map(|(d, offset, negative)| {
+            let shifted = Expr::Bin(Box::new(Expr::Dice(d)), BinOp::Sub, Box::new(Expr::Const(offset)));
+            if negative {
+                Expr::Neg(Box::new(shifted))
+            } else {
+                shifted
+            }
+        })
+    };
+    let binary = (
+        term(),
+        prop_oneof![Just(BinOp::Add), Just(BinOp::Sub), Just(BinOp::Mul)],
+        term(),
+    )
+        .prop_map(|(left, op, right)| Expr::Bin(Box::new(left), op, Box::new(right)));
+    prop_oneof![
+        binary,
+        finite_dice().prop_map(|dice| Expr::Dice(Dice {
+            count: 1,
+            die: Die::Percent,
+            ..dice
+        })),
+    ]
+}
+
+/// Remove one extreme at a time, independently of the roller's sorted ranks.
+fn finite_dice_total(dice: &Dice, raw: &[u32]) -> i64 {
+    let mut faces: Vec<i64> = raw
+        .iter()
+        .map(|&face| match dice.die {
+            Die::Fudge => i64::from(face) - 2,
+            Die::Sides(_) | Die::Percent => i64::from(face),
+        })
+        .collect();
+    let (remove, highest) = match dice.keep {
+        None => (0, false),
+        Some(Keep::Highest(n)) => (dice.count.saturating_sub(n), false),
+        Some(Keep::Lowest(n)) => (dice.count.saturating_sub(n), true),
+        Some(Keep::DropHighest(n)) => (n.min(dice.count), true),
+        Some(Keep::DropLowest(n)) => (n.min(dice.count), false),
+    };
+    for _ in 0..remove {
+        let extreme = if highest {
+            faces.iter().max()
+        } else {
+            faces.iter().min()
+        };
+        let extreme = *extreme.expect("cannot remove more faces than the dice count");
+        let index = faces
+            .iter()
+            .position(|&face| face == extreme)
+            .expect("the extreme is a face");
+        faces.remove(index);
+    }
+    faces
+        .into_iter()
+        .map(|face| {
+            dice.success.map_or(face, |comparison| {
+                let ordering = face.cmp(&comparison.target);
+                let succeeds = match comparison.op {
+                    CmpOp::Ge => !ordering.is_lt(),
+                    CmpOp::Le => !ordering.is_gt(),
+                    CmpOp::Gt => ordering.is_gt(),
+                    CmpOp::Lt => ordering.is_lt(),
+                    CmpOp::Eq => ordering.is_eq(),
+                };
+                i64::from(succeeds)
+            })
+        })
+        .sum()
+}
+
+/// Enumerate face assignments, not intervals. Four ternary dice give at most
+/// 81 assignments; the separate single percentile die gives 100.
+fn finite_outcomes(expr: &Expr) -> Vec<(Vec<u32>, i64)> {
+    match expr {
+        Expr::Const(value) => vec![(Vec::new(), i64::from(*value))],
+        Expr::Dice(dice) => {
+            let sides = match dice.die {
+                Die::Sides(sides) => sides,
+                Die::Fudge => 3,
+                Die::Percent => 100,
+            };
+            let mut scripts = vec![Vec::new()];
+            for _ in 0..dice.count {
+                scripts = scripts
+                    .into_iter()
+                    .flat_map(|script| {
+                        (1..=sides).map(move |face| {
+                            let mut next = script.clone();
+                            next.push(face);
+                            next
+                        })
+                    })
+                    .collect();
+            }
+            scripts
+                .into_iter()
+                .map(|script| {
+                    let total = finite_dice_total(dice, &script);
+                    (script, total)
+                })
+                .collect()
+        }
+        Expr::Neg(inner) => finite_outcomes(inner)
+            .into_iter()
+            .map(|(script, total)| (script, -total))
+            .collect(),
+        Expr::Bin(left, op, right) => {
+            let right = finite_outcomes(right);
+            finite_outcomes(left)
+                .into_iter()
+                .flat_map(|(left_script, left_total)| {
+                    right.iter().map(move |(right_script, right_total)| {
+                        let mut script = left_script.clone();
+                        script.extend_from_slice(right_script);
+                        let total = match op {
+                            BinOp::Add => left_total + right_total,
+                            BinOp::Sub => left_total - right_total,
+                            BinOp::Mul => left_total * right_total,
+                        };
+                        (script, total)
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+fn boundary_integer() -> impl Strategy<Value = i64> {
+    prop_oneof![
+        Just(i64::MIN),
+        Just(i64::MIN + 1),
+        Just(-i64::from(u32::MAX)),
+        Just(-1),
+        Just(0),
+        Just(1),
+        Just(i64::from(u32::MAX)),
+        Just(i64::MAX - 1),
+        Just(i64::MAX),
+        any::<i64>(),
+    ]
+}
+
+/// Build any signed operand from public u32 constants without overflowing an
+/// intermediate. Negative high words let this also represent `i64::MIN`.
+fn integer_expr(value: i64) -> Expr {
+    let magnitude = value.unsigned_abs();
+    let high = u32::try_from(magnitude >> 32).expect("an i64 magnitude has a u32 high word");
+    let low = u32::try_from(magnitude & u64::from(u32::MAX)).expect("masked to a u32");
+    let high = if value < 0 {
+        Expr::Neg(Box::new(Expr::Const(high)))
+    } else {
+        Expr::Const(high)
+    };
+    let base = Expr::Bin(Box::new(Expr::Const(u32::MAX)), BinOp::Add, Box::new(Expr::Const(1)));
+    Expr::Bin(
+        Box::new(Expr::Bin(Box::new(high), BinOp::Mul, Box::new(base))),
+        if value < 0 { BinOp::Sub } else { BinOp::Add },
+        Box::new(Expr::Const(low)),
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Every finite face assignment has the mathematical total and its extrema
+    /// are attainable. Catches loose bounds, sign errors, and counting dropped successes.
+    #[test]
+    fn finite_rolls_and_extrema_match_exhaustive_outcomes(expr in finite_expr()) {
+        let outcomes = finite_outcomes(&expr);
+        let minimum = outcomes.iter().map(|(_, total)| i128::from(*total)).min();
+        let maximum = outcomes.iter().map(|(_, total)| i128::from(*total)).max();
+        let bounds = expr.bounds();
+        prop_assert_eq!((bounds.min, bounds.max), (minimum, maximum), "{}", expr);
+        for (script, expected) in outcomes {
+            let mut source = Faces::new(&script);
+            let roll = expr.roll(&mut source, Limits::default()).expect("small finite expressions fit the roll limits");
+            prop_assert_eq!(roll.total, expected, "{}, faces {:?}", expr, script);
+            prop_assert!(source.0.is_empty(), "roll did not consume its face assignment");
+        }
+    }
+
+    /// Direct AST counts respect caller budgets before reading a face.
+    /// Catches zero becoming an empty success and u32::MAX wrapping a count check.
+    #[test]
+    fn public_dice_count_boundaries_refuse_unrollable_requests(
+        (count, max_values) in prop_oneof![
+            Just((0, 0)),
+            Just((0, u32::MAX)),
+            Just((1, 0)),
+            Just((1, 1)),
+            Just((1, u32::MAX)),
+            Just((u32::MAX, 0)),
+            Just((u32::MAX, u32::MAX - 1)),
+            (1..=8u32, 0..=8u32),
+        ],
+    ) {
+        let expr = Expr::Dice(Dice { count, die: Die::Sides(1), explode: false, keep: None, success: None });
+        let expected = if count == 0 {
+            Err(RollError::Empty)
+        } else if count > max_values {
+            Err(RollError::TooManyValues(max_values))
+        } else {
+            Ok(i64::from(count))
+        };
+        let script = if expected.is_ok() { vec![1; usize::try_from(count).unwrap()] } else { Vec::new() };
+        let actual = expr.roll(&mut Faces::new(&script), Limits { max_values, max_sides: 1 });
+        prop_assert_eq!(actual.map(|roll| roll.total), expected);
+    }
+
+    /// Legal maximum-width dice still return their full face; zero and sides
+    /// beyond a caller's limit fail. Catches truncation and an exclusive side cap.
+    #[test]
+    fn public_dice_side_boundaries_preserve_faces_and_refuse_invalid_sides(
+        sides in prop_oneof![Just(0), Just(1), Just(u32::MAX - 1), Just(u32::MAX), any::<u32>()],
+        max_sides in prop_oneof![Just(0), Just(1), Just(u32::MAX - 1), Just(u32::MAX)],
+        maximum_face in any::<bool>(),
+    ) {
+        let expr = Expr::Dice(Dice { count: 1, die: Die::Sides(sides), explode: false, keep: None, success: None });
+        let face = if maximum_face { sides } else { 1 };
+        let expected = if sides == 0 {
+            Err(RollError::Empty)
+        } else if sides > max_sides {
+            Err(RollError::TooManySides(max_sides))
+        } else {
+            Ok(i64::from(face))
+        };
+        let script = if expected.is_ok() { vec![face] } else { Vec::new() };
+        let actual = expr.roll(&mut Faces::new(&script), Limits { max_values: 1, max_sides });
+        prop_assert_eq!(actual.map(|roll| roll.total), expected);
+    }
+
+    /// Zero and maximum keep/drop operands saturate over the actual dice.
+    /// Catches unsigned subtraction underflow and treating keep-zero as no modifier.
+    #[test]
+    fn public_keep_boundaries_match_extreme_removal(
+        raw in proptest::collection::vec(prop_oneof![Just(1), Just(u32::MAX)], 1..=8),
+        boundary in 0..6u8,
+        kind in 0..4u8,
+    ) {
+        let count = u32::try_from(raw.len()).unwrap();
+        let amount = match boundary {
+            0 => 0,
+            1 => 1,
+            2 => count - 1,
+            3 => count,
+            4 => count + 1,
+            _ => u32::MAX,
+        };
+        let keep = match kind {
+            0 => Keep::Highest(amount),
+            1 => Keep::Lowest(amount),
+            2 => Keep::DropHighest(amount),
+            _ => Keep::DropLowest(amount),
+        };
+        let dice = Dice {
+            count,
+            die: Die::Sides(u32::MAX),
+            explode: false,
+            keep: Some(keep),
+            success: None,
+        };
+        let expected = finite_dice_total(&dice, &raw);
+        let expr = Expr::Dice(dice);
+        let actual = expr
+            .roll(&mut Faces::new(&raw), Limits { max_values: 8, max_sides: u32::MAX })
+            .expect("eight finite dice fit the explicit limits");
+        prop_assert_eq!(actual.total, expected);
+    }
+
+    /// Public arithmetic returns the exact mathematical integer or refuses
+    /// overflow. Catches wrapping, saturating arithmetic and wrong signed endpoints.
+    #[test]
+    fn public_arithmetic_boundaries_match_wide_integer_results(
+        left in boundary_integer(),
+        right in boundary_integer(),
+        op in prop_oneof![Just(BinOp::Add), Just(BinOp::Sub), Just(BinOp::Mul)],
+    ) {
+        let expected = match op {
+            BinOp::Add => i128::from(left) + i128::from(right),
+            BinOp::Sub => i128::from(left) - i128::from(right),
+            BinOp::Mul => i128::from(left) * i128::from(right),
+        };
+        let expr = Expr::Bin(Box::new(integer_expr(left)), op, Box::new(integer_expr(right)));
+        let actual = expr.roll(&mut Faces::new(&[]), Limits { max_values: 0, max_sides: 0 });
+        prop_assert_eq!(
+            actual.map(|roll| roll.total),
+            i64::try_from(expected).map_err(|_| RollError::Overflow),
+        );
+        let bounds = expr.bounds();
+        prop_assert_eq!((bounds.min, bounds.max), (Some(expected), Some(expected)));
+    }
+
+    /// Negation refuses only the unrepresentable positive counterpart of MIN.
+    /// Catches unchecked negation panics and saturation at the signed boundary.
+    #[test]
+    fn public_negation_boundaries_match_wide_integer_results(value in boundary_integer()) {
+        let expr = Expr::Neg(Box::new(integer_expr(value)));
+        let expected = -i128::from(value);
+        let actual = expr.roll(&mut Faces::new(&[]), Limits { max_values: 0, max_sides: 0 });
+        prop_assert_eq!(
+            actual.map(|roll| roll.total),
+            i64::try_from(expected).map_err(|_| RollError::Overflow),
+        );
+        let bounds = expr.bounds();
+        prop_assert_eq!((bounds.min, bounds.max), (Some(expected), Some(expected)));
+    }
+
+    /// A later zero factor cannot turn an overflowing subexpression into a
+    /// successful roll. Catches evaluating only the final mathematical result.
+    #[test]
+    fn intermediate_overflow_cannot_be_cancelled(
+        negative in any::<bool>(),
+        excess in 1..=u32::MAX,
+    ) {
+        let (endpoint, op) = if negative { (i64::MIN, BinOp::Sub) } else { (i64::MAX, BinOp::Add) };
+        let overflowing = Expr::Bin(Box::new(integer_expr(endpoint)), op, Box::new(Expr::Const(excess)));
+        let expr = Expr::Bin(Box::new(overflowing), BinOp::Mul, Box::new(Expr::Const(0)));
+        prop_assert_eq!(
+            expr.roll(&mut Faces::new(&[]), Limits::default()).map(|roll| roll.total),
+            Err(RollError::Overflow),
+        );
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(1024))]
 

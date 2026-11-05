@@ -195,6 +195,8 @@ services:
     environment:
       <<: *local-network-env
       RELAY_ALLOW_PRIVATE_HOSTS: 'true'
+      # Persistent dev volumes accumulate accounts; the default drops new commits as host-throttled.
+      RELAY_DEFAULT_ACCOUNT_LIMIT: '1000000'
       RELAY_PLC_HOST: https://plc.motet.test
       RELAY_ADMIN_PASSWORD: motet-network-dev
       RELAY_API_BIND: 0.0.0.0:2470
@@ -257,6 +259,8 @@ services:
       PDS_HOSTNAME: pds.motet.test
       PDS_SERVICE_DID: did:web:pds.motet.test
       PDS_TRUSTED_PROXY_HOPS: '1'
+      # The dev-only gate creates dozens of accounts and sessions from loopback within one window.
+      PDS_RATE_LIMIT_AUTH: '0'
       PDS_DID_PLC_URL: https://plc.motet.test
       PDS_CRAWLERS: https://relay.motet.test
       PDS_INVITE_REQUIRED: 'false'
@@ -295,6 +299,18 @@ services:
       - --data
       - '{"hostname":"https://pds.motet.test"}'
       - https://relay.motet.test/admin/pds/requestCrawl
+      # The default does not update persisted hosts; this reactivates throttled accounts too.
+      - --next
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --user
+      - admin:motet-network-dev
+      - --header
+      - 'Content-Type: application/json'
+      - --data
+      - '{"host":"https://pds.motet.test","repo_limit":1000000}'
+      - https://relay.motet.test/admin/pds/changeLimits
       - --next
       - --fail-with-body
       - --silent
@@ -306,6 +322,18 @@ services:
       - --data
       - '{"hostname":"https://tenor.motet.test"}'
       - https://relay.motet.test/admin/pds/requestCrawl
+      # The default does not update persisted hosts; this reactivates throttled accounts too.
+      - --next
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --user
+      - admin:motet-network-dev
+      - --header
+      - 'Content-Type: application/json'
+      - --data
+      - '{"host":"https://tenor.motet.test","repo_limit":1000000}'
+      - https://relay.motet.test/admin/pds/changeLimits
     restart: on-failure
     depends_on:
       relay: { condition: service_healthy }

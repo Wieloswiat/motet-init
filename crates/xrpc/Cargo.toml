@@ -4,6 +4,7 @@ description = "XRPC serving: a typed, fail-closed registry of who may call what,
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]
@@ -16,6 +17,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde_urlencoded.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

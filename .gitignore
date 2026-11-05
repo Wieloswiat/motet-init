@@ -13,7 +13,8 @@ result-*
 .devenv/
 .devenv.flake.nix
 .direnv/
-devenv.lock
+devenv.local.nix
+devenv.local.yaml
 .pre-commit-config.yaml
 
 # Test output
@@ -28,8 +29,9 @@ mutants.out*/
 .stryker-tmp/
 # Vitest browser mode's screenshots of failed tests.
 __screenshots__/
-# CI's `devenv up` log: it holds compiler output, which typos would scan.
+# CI gate logs hold compiler output, which typos would scan.
 /services.log
+/processes.log
 
 # Local
 .env

@@ -45,6 +45,10 @@ pub enum ClientError {
     Forbidden,
     #[error("{0}")]
     InvalidRequest(String),
+    #[error("the scene changed since the supplied swapRecord")]
+    InvalidSwap,
+    #[error("the scene is already closed")]
+    SceneClosed,
     #[error("the tenor rejected the service token")]
     Unauthorized,
     #[error("the identity or tenor service is unavailable")]
@@ -189,7 +193,7 @@ impl Client {
         self.fetcher
             .check_destination(&url)
             .map_err(|_| ClientError::Upstream)?;
-        let mut response = self
+        let response = self
             .fetcher
             .client()
             .post(url)
@@ -198,6 +202,41 @@ impl Client {
             .send()
             .await
             .map_err(|_| ClientError::Upstream)?;
+        self.response(response).await
+    }
+
+    /// Query a checked tenor target with method-bound member service auth.
+    pub async fn query(
+        &self,
+        target: &Target,
+        bearer: &str,
+        method: &str,
+        params: &[(&str, &str)],
+    ) -> Result<Value, ClientError> {
+        if !atproto_record::nsid::is_valid_nsid(method) {
+            return Err(ClientError::InvalidRequest("invalid tenor method".into()));
+        }
+        let mut url = Url::parse(&format!(
+            "{}/xrpc/{method}",
+            target.endpoint.as_str().trim_end_matches('/')
+        ))
+        .map_err(|_| ClientError::Upstream)?;
+        url.query_pairs_mut().extend_pairs(params.iter().copied());
+        self.fetcher
+            .check_destination(&url)
+            .map_err(|_| ClientError::Upstream)?;
+        let response = self
+            .fetcher
+            .client()
+            .get(url)
+            .bearer_auth(bearer)
+            .send()
+            .await
+            .map_err(|_| ClientError::Upstream)?;
+        self.response(response).await
+    }
+
+    async fn response(&self, mut response: reqwest::Response) -> Result<Value, ClientError> {
         let status = response.status();
         let limit = self.fetcher.max_response_bytes();
         if response.content_length().is_some_and(|length| length > limit) {
@@ -258,6 +297,8 @@ fn response_error(status: StatusCode, body: Option<&Value>) -> ClientError {
             match code {
                 Some("Forbidden") => ClientError::Forbidden,
                 Some("NotFound") => ClientError::NotFound,
+                Some("InvalidSwap") => ClientError::InvalidSwap,
+                Some("SceneClosed") => ClientError::SceneClosed,
                 _ => {
                     let message = body
                         .and_then(|value| value.get("message"))

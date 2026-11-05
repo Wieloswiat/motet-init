@@ -23,6 +23,8 @@
 	import { untrack } from 'svelte';
 	import {
 		at_motet_pilot_createpost,
+		at_motet_pilot_setscenecast,
+		at_motet_pilot_closescene,
 		at_motet_pilot_getscene,
 		at_motet_pilot_getpoststatus,
 		type at_motet_pilot_querydefs
@@ -56,6 +58,20 @@
 	let sceneController: AbortController | null = null;
 	let postController: AbortController | null = null;
 	let moreController: AbortController | null = null;
+	let controlController: AbortController | null = null;
+	let editingCast = $state(false);
+	let castInput = $state('');
+	let controlPending = $state(false);
+	let controlError = $state('');
+	let controlStatus = $state('');
+	let closeAcknowledged = $state(false);
+	let closed = $derived(scene?.state === 'closed' || closeAcknowledged);
+
+	let controlOperation = $state<
+		| { kind: 'cast'; input: at_motet_pilot_setscenecast.SetSceneCastInput; cid?: string }
+		| { kind: 'close'; input: at_motet_pilot_closescene.CloseSceneInput; cid?: string }
+		| undefined
+	>();
 
 	const pollBudget = 20_000;
 	const pollInterval = 1_000;
@@ -74,6 +90,13 @@
 		operation = undefined;
 		submitting = false;
 		moreLoading = false;
+		editingCast = false;
+		castInput = '';
+		controlPending = false;
+		controlError = '';
+		controlStatus = '';
+		controlOperation = undefined;
+		closeAcknowledged = false;
 
 		if (!initialPage) startScenePoll(actor, sceneKey);
 
@@ -81,6 +104,7 @@
 			sceneController?.abort();
 			postController?.abort();
 			moreController?.abort();
+			controlController?.abort();
 		};
 	});
 
@@ -292,10 +316,158 @@
 		}
 	}
 
+	function editCast(): void {
+		if (!scene) return;
+		castInput = scene.cast.join('\n');
+		editingCast = true;
+	}
+
+	function saveCast(event: SubmitEvent): void {
+		event.preventDefault();
+
+		if (!scenePage || !data.sceneControls?.setCast || controlOperation || controlPending) return;
+		controlOperation = {
+			kind: 'cast',
+			input: {
+				world: data.world.did,
+				scene: data.sceneKey,
+				op: crypto.randomUUID(),
+				swapRecord: scenePage.scene.cid,
+				cast: castInput.split(/[\s,]+/).filter(Boolean)
+			}
+		};
+		void runControl();
+	}
+
+	function closeScene(): void {
+		if (!scenePage || !data.sceneControls?.close || closed || controlOperation || controlPending)
+			return;
+		controlOperation = {
+			kind: 'close',
+			input: {
+				world: data.world.did,
+				scene: data.sceneKey,
+				op: crypto.randomUUID(),
+				swapRecord: scenePage.scene.cid
+			}
+		};
+		void runControl();
+	}
+
+	async function saveControl(
+		method: string,
+		input:
+			at_motet_pilot_setscenecast.SetSceneCastInput | at_motet_pilot_closescene.CloseSceneInput,
+		signal: AbortSignal
+	): Promise<at_motet_pilot_closescene.CloseSceneOutput> {
+		// A timed-out write may have committed. Only the exact request may be retried.
+		const response = await fetch(`/xrpc/${method}`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', accept: 'application/json' },
+			body: JSON.stringify(input),
+			signal: AbortSignal.any([signal, AbortSignal.timeout(pollBudget)])
+		});
+
+		if (!response.ok) {
+			const failure: { error?: string; message?: string } = await response.json();
+			throw new XrpcError(
+				response.status,
+				failure.error ?? 'RequestFailed',
+				failure.message ?? `Scene update failed (${response.status})`
+			);
+		}
+
+		// Both generated scene mutation outputs carry the same scene, uri and cid contract.
+		const result: at_motet_pilot_closescene.CloseSceneOutput = await response.json();
+
+		return result;
+	}
+
+	async function runControl(): Promise<void> {
+		const operation = controlOperation;
+
+		if (!operation || controlPending) return;
+		controlController?.abort();
+		const controller = new AbortController();
+		controlController = controller;
+		controlPending = true;
+		controlError = '';
+		controlStatus = operation.cid
+			? 'Waiting for the scene update to appear…'
+			: 'Saving scene changes…';
+
+		try {
+			if (!operation.cid) {
+				const result = await saveControl(
+					operation.kind === 'cast'
+						? at_motet_pilot_setscenecast.SetSceneCastNsid
+						: at_motet_pilot_closescene.CloseSceneNsid,
+					operation.input,
+					controller.signal
+				);
+
+				if (controller.signal.aborted) return;
+				operation.cid = result.cid;
+
+				if (operation.kind === 'close') closeAcknowledged = true;
+			}
+
+			controlStatus = 'Saved. Waiting for the scene update to appear…';
+			const deadline = Date.now() + pollBudget;
+
+			while (!controller.signal.aborted && Date.now() < deadline) {
+				const result = await getPage(
+					operation.input.world,
+					operation.input.scene,
+					undefined,
+					controller.signal,
+					deadline
+				);
+
+				if (controller.signal.aborted) return;
+
+				if (result.scene.cid === operation.cid) {
+					scenePage = result;
+					posts = result.posts;
+					cursor = result.cursor;
+					controlOperation = undefined;
+					editingCast = false;
+					controlStatus = operation.kind === 'close' ? 'Scene closed.' : 'Cast updated.';
+
+					return;
+				}
+
+				await pause(Math.min(pollInterval, Math.max(0, deadline - Date.now())), controller.signal);
+			}
+
+			if (!controller.signal.aborted)
+				throw new Error(
+					'Your change was saved, but its version is not visible. Projection may be delayed, or another editor may have superseded it. Reload to see the current scene.'
+				);
+		} catch (cause) {
+			if (!controller.signal.aborted) {
+				controlStatus = '';
+				const detail = cause instanceof Error ? cause.message : 'Could not update this scene.';
+				controlError = `${detail} ${operation.cid ? 'Retry checking the saved update.' : 'Retry sends the same scene change, not a new operation.'}`;
+			}
+		} finally {
+			if (!controller.signal.aborted) controlPending = false;
+		}
+	}
+
 	async function createPost(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 
-		if (!data.session || !scene || submitting || moreLoading || !body.trim()) return;
+		if (
+			!data.session ||
+			!scene ||
+			closed ||
+			controlPending ||
+			submitting ||
+			moreLoading ||
+			!body.trim()
+		)
+			return;
 
 		if (!operation || operation.body !== body || operation.register !== register) {
 			operation = { op: nextPostTid(), body, register };
@@ -399,6 +571,68 @@
 			</ul>
 		</section>
 
+		{#if data.sceneControls?.setCast || data.sceneControls?.close}
+			<section aria-labelledby="controls-heading" aria-busy={controlPending}>
+				<h2 id="controls-heading">Scene controls</h2>
+				{#if data.sceneControls.setCast && !closed}
+					{#if editingCast}
+						<form onsubmit={saveCast}>
+							<label for="scene-cast">Cast handles or DIDs</label>
+							<p id="cast-help">
+								Enter one handle or DID per line, or separate them with commas. Keep the opener in
+								the cast.
+							</p>
+							<textarea
+								id="scene-cast"
+								bind:value={castInput}
+								rows="5"
+								maxlength="32768"
+								aria-describedby="cast-help"
+								disabled={!!controlOperation || controlPending}></textarea>
+							<button type="submit" disabled={!!controlOperation || controlPending || submitting}
+								>Save cast</button
+							>
+							<button
+								type="button"
+								onclick={() => (editingCast = false)}
+								disabled={!!controlOperation || controlPending}>Cancel cast edit</button
+							>
+						</form>
+					{:else}
+						<button
+							type="button"
+							onclick={editCast}
+							disabled={!!controlOperation || controlPending || submitting}>Edit cast</button
+						>
+					{/if}
+				{/if}
+				{#if data.sceneControls.close && !closed}
+					<p>Closing this scene stops new posts.</p>
+					<button
+						type="button"
+						onclick={closeScene}
+						disabled={!!controlOperation || controlPending || submitting}>Close scene</button
+					>
+				{/if}
+			</section>
+		{/if}
+		{#if data.sceneControlsUnavailable}<p role="status">
+				Scene controls are unavailable. Reload to check your permissions again. If you signed in
+				before these controls were added, sign out and sign in again.
+			</p>{/if}
+		{#if controlStatus}<p role="status">{controlStatus}</p>{/if}
+		{#if controlError}
+			<p role="alert">{controlError}</p>
+			<p>
+				Reload to check the current scene before starting a different change. Reloading does not
+				cancel a request already sent.
+			</p>
+			<button type="button" onclick={() => window.location.reload()}>Reload current scene</button>
+			<button type="button" onclick={() => void runControl()} disabled={controlPending}
+				>Retry scene change</button
+			>
+		{/if}
+
 		<section aria-labelledby="posts-heading">
 			<h2 id="posts-heading">Admitted posts</h2>
 			{#if posts.length === 0}<p>No posts have been admitted yet.</p>{/if}
@@ -435,7 +669,11 @@
 
 		<section aria-labelledby="compose-heading">
 			<h2 id="compose-heading">Write a post</h2>
-			{#if data.session}
+			{#if closed}
+				<p role="status">This scene is closed. New posts are not accepted.</p>
+			{:else if controlOperation?.kind === 'close'}
+				<p role="status">A close request is unresolved. Retry the scene change before posting.</p>
+			{:else if data.session}
 				<form onsubmit={createPost}>
 					<label for="post-register">Posting as</label>
 					<select id="post-register" bind:value={register} disabled={submitting}>
@@ -454,7 +692,7 @@
 					<button
 						type="submit"
 						class="m-button m-button--variant_filled"
-						disabled={submitting || moreLoading}
+						disabled={submitting || moreLoading || controlPending}
 					>
 						{submitting ? 'Posting…' : 'Post'}
 					</button>

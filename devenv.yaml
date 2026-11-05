@@ -1,0 +1,18 @@
+# Keep these revisions aligned with flake.lock; shell evaluation rejects drift.
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/fe13242281a67641c0102cdb1087f0ebe586c7df
+  rust-overlay:
+    overlays:
+      - default
+    url: github:oxalica/rust-overlay/42076d1c6a0fb405ed04f9a674e4a8f69de62ba3
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  crane:
+    url: github:ipetkov/crane/e675a36b7377bebe41d548388a2501cbb16d380d
+  git-hooks:
+    url: github:cachix/git-hooks.nix/27555e2624241fb116b49095df4caaee85a25691
+    inputs:
+      nixpkgs:
+        follows: nixpkgs

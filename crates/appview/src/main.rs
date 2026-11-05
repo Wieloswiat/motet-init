@@ -163,16 +163,20 @@ async fn serve(args: Serve) -> anyhow::Result<()> {
     let service_auth =
         motet_xrpc::service_auth::authenticate(Arc::clone(&resolver), Arc::new(move |aud: &str| aud == service_did));
     let authenticate = oauth.authenticate(service_auth);
-    let app = api::router(
+    let app = api::served_router(
         Arc::new(api::State {
             pool: pool.clone(),
             auth: Arc::clone(&oauth),
             client: Arc::clone(&client),
         }),
         authenticate,
-    )?
-    .merge(oauth.router())
-    .route("/_health", axum::routing::get(|| async { "ok" }));
+        motet_xrpc::limits::Limits::new(
+            args.max_in_flight,
+            1,
+            Duration::from_secs(args.request_timeout_secs),
+            None,
+        ),
+    )?;
 
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
     tracing::info!(listen = %args.listen, "appview serving");

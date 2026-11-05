@@ -8,6 +8,15 @@ use clap::Args;
 
 #[derive(Debug, Clone, Args)]
 pub struct Config {
+    /// Maximum admitted HTTP requests before returning 503.
+    #[arg(long, env = "MOTET_TENOR_MAX_IN_FLIGHT", default_value_t = 128)]
+    pub max_in_flight: usize,
+    /// Maximum simultaneous firehose subscriptions.
+    #[arg(long, env = "MOTET_TENOR_MAX_FIREHOSE_CONNECTIONS", default_value_t = 64)]
+    pub max_firehose_connections: usize,
+    /// Deadline for ordinary HTTP requests, in seconds.
+    #[arg(long, env = "MOTET_TENOR_REQUEST_TIMEOUT_SECS", default_value_t = 30)]
+    pub request_timeout_secs: u64,
     /// Where to serve XRPC.
     #[arg(long, env = "MOTET_TENOR_LISTEN", default_value = "127.0.0.1:2584")]
     pub listen: SocketAddr,

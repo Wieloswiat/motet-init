@@ -1,13 +1,17 @@
 # The development environment: toolchains, local services and git hooks.
 #
-#   nix develop --no-pure-eval   (or `direnv allow`)
+#   devenv shell                 (or `direnv allow`)
 #   devenv up                    PostgreSQL, SeaweedFS, atproto network, AppView and tenor
 #   devenv test                  the whole CI gate, services included
 #   devenv info                  lists the scripts below with descriptions
 #
 # Commands live here as devenv scripts, so they're on PATH in the shell and
-# CI runs exactly the same ones (`nix develop --no-pure-eval -c <script>`).
-{ rustToolchain, networkPackages }:
+# CI runs exactly the same ones (`devenv shell -- <script>`).
+{
+  rustToolchain,
+  networkPackages,
+  kani,
+}:
 {
   pkgs,
   lib,
@@ -19,9 +23,12 @@ let
   s3Port = 9010;
   s3Key = "motet";
   s3Secret = "motet-dev-secret";
+  # Host trust outlives test runs; never create a second CA in test-state.
+  tlsDir = "${config.devenv.root}/.devenv/state/tls";
   networkState = "${config.devenv.state}/network";
   networkPassword = "motet-network-dev";
-  # Leave readiness to process-compose; ready.timeout makes wrappers supervise dependencies.
+  relayAccountLimit = 1000000;
+  # Leave readiness to the process manager; ready.timeout makes wrappers supervise dependencies.
   httpReady = port: path: {
     http.get = { inherit port path; };
     period = 1;
@@ -55,6 +62,7 @@ in
     with pkgs;
     [
       rustToolchain
+      kani
       cargo-nextest
       cargo-deny
       cargo-mutants
@@ -198,6 +206,8 @@ in
     '';
     env = {
       RELAY_ALLOW_PRIVATE_HOSTS = "true";
+      # Persistent dev state accumulates accounts; the upstream default drops new commits as host-throttled.
+      RELAY_DEFAULT_ACCOUNT_LIMIT = toString relayAccountLimit;
       RELAY_PLC_HOST = "https://plc.motet.test";
       RELAY_ADMIN_PASSWORD = networkPassword;
       RELAY_API_BIND = "127.0.0.1:2470";
@@ -247,6 +257,8 @@ in
       PDS_HOSTNAME = "pds.motet.test";
       PDS_SERVICE_DID = "did:web:pds.motet.test";
       PDS_TRUSTED_PROXY_HOPS = "1";
+      # The dev-only gate creates dozens of accounts and sessions from loopback within one window.
+      PDS_RATE_LIMIT_AUTH = "0";
       PDS_DID_PLC_URL = "https://plc.motet.test";
       PDS_CRAWLERS = "https://relay.motet.test";
       PDS_INVITE_REQUIRED = "false";
@@ -305,6 +317,12 @@ in
           --header 'Content-Type: application/json' \
           --data "{\"hostname\":\"$host\"}" \
           "$MOTET_RELAY_URL/admin/pds/requestCrawl"
+        # Defaults affect only new hosts; this also reactivates previously throttled accounts.
+        ${lib.getExe pkgs.curl} --fail-with-body --silent --show-error \
+          --user "admin:$MOTET_RELAY_ADMIN_PASSWORD" \
+          --header 'Content-Type: application/json' \
+          --data "{\"host\":\"$host\",\"repo_limit\":${toString relayAccountLimit}}" \
+          "$MOTET_RELAY_URL/admin/pds/changeLimits"
       done
       touch "$marker"
       exec sleep infinity
@@ -383,12 +401,13 @@ in
     MOTET_ALLOW_PRIVATE_NETWORK = "true";
     MOTET_RELAY_ADMIN_PASSWORD = networkPassword;
     MOTET_TAP_ADMIN_PASSWORD = networkPassword;
-    MOTET_TLS_CERT = "${config.devenv.state}/tls/server.crt";
-    MOTET_TLS_KEY = "${config.devenv.state}/tls/server.key";
-    SSL_CERT_FILE = "${config.devenv.state}/tls/ca-bundle.crt";
-    CURL_CA_BUNDLE = "${config.devenv.state}/tls/ca-bundle.crt";
-    REQUESTS_CA_BUNDLE = "${config.devenv.state}/tls/ca-bundle.crt";
-    NODE_EXTRA_CA_CERTS = "${config.devenv.state}/tls/rootCA.crt";
+    MOTET_TLS_DIR = tlsDir;
+    MOTET_TLS_CERT = "${tlsDir}/server.crt";
+    MOTET_TLS_KEY = "${tlsDir}/server.key";
+    SSL_CERT_FILE = "${tlsDir}/ca-bundle.crt";
+    CURL_CA_BUNDLE = "${tlsDir}/ca-bundle.crt";
+    REQUESTS_CA_BUNDLE = "${tlsDir}/ca-bundle.crt";
+    NODE_EXTRA_CA_CERTS = "${tlsDir}/rootCA.crt";
     NO_PROXY = "localhost,127.0.0.1,::1,motet.test,.motet.test";
     no_proxy = "localhost,127.0.0.1,::1,motet.test,.motet.test";
   }
@@ -424,7 +443,7 @@ in
       exec = ''
         set -euo pipefail
         cargo fmt --all
-        nixfmt flake.nix nix/*.nix nix/pkgs/*.nix
+        nixfmt devenv.nix flake.nix nix/*.nix nix/pkgs/*.nix
         taplo fmt
         pnpm format
       '';
@@ -434,7 +453,7 @@ in
       exec = ''
         set -euo pipefail
         cargo fmt --all --check
-        nixfmt --check flake.nix nix/*.nix nix/pkgs/*.nix
+        nixfmt --check devenv.nix flake.nix nix/*.nix nix/pkgs/*.nix
         taplo fmt --check
         pnpm format:check
       '';
@@ -559,6 +578,26 @@ in
     };
 
     # Slower assurance.
+    proofs = {
+      description = "Prove the Spaces serving properties with pinned Kani, Rust and CBMC";
+      exec = ''
+        set -euo pipefail
+        export PATH="${kani}/bin:$PATH"
+        report=target/kani/proofs.json
+        mkdir -p target/kani
+        rm -f "$report"
+        ${rustToolchain}/bin/cargo kani -p motet-spaces --lib -Z unstable-options --export-json "$report"
+        # Kani accepts a crate with no harnesses. Missing or incomplete proofs
+        # must fail this gate, not silently become a successful empty run.
+        ${pkgs.jq}/bin/jq --exit-status '
+          .verification_results as $proofs
+          | $proofs.summary.total_harnesses > 0
+            and $proofs.summary.executed == $proofs.summary.total_harnesses
+            and ($proofs.results | length) == $proofs.summary.total_harnesses
+            and all($proofs.results[]; .status == "Success")
+        ' "$report"
+      '';
+    };
     audit = {
       description = "Known advisories in Rust crates and production npm packages (needs network)";
       exec = ''
@@ -585,9 +624,8 @@ in
     };
   };
 
-  # `devenv test` starts the processes above, then runs this: the whole CI
-  # gate in one command. CI starts the processes itself and runs `ci`, so it
-  # can keep their logs.
+  # Developers and CI use `devenv test` to start the processes above and run
+  # the whole gate. CI retains the native manager's temporary process log.
   enterTest = "ci";
 
   enterShell = ''

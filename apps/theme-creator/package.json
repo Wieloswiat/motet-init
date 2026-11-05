@@ -2,6 +2,7 @@
 	"name": "@motet/theme-creator",
 	"description": "The Theme Creator from the design export: an editor for a World's theme record, with a live preview. Static, nothing is saved beyond the browser.",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",

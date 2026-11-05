@@ -34,6 +34,12 @@ pub struct Config {
 
 #[derive(Debug, Clone, Args)]
 pub struct Serve {
+    /// Maximum admitted HTTP requests before returning 503.
+    #[arg(long, env = "MOTET_APPVIEW_MAX_IN_FLIGHT", default_value_t = 128)]
+    pub max_in_flight: usize,
+    /// Deadline for an ordinary HTTP request, in seconds.
+    #[arg(long, env = "MOTET_APPVIEW_REQUEST_TIMEOUT_SECS", default_value_t = 30)]
+    pub request_timeout_secs: u64,
     #[command(flatten)]
     pub config: Config,
 

@@ -4,6 +4,7 @@ description = "Types generated from lexicons/, plus the schemas themselves for v
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

@@ -29,6 +29,12 @@ research and plan"); the decisions that shaped the code are in
   runs on its shard's one writer, is made durable in a fenced log in the
   tenor's bucket, then lands in the shard's SlateDB
   ([ADR 0014](../adr/0014-tenor-state-in-slatedb.md)).
+- **HTTP bounds**: the AppView and the tenor admit at most 128 ordinary
+  requests at once and return 503 when saturated. An ordinary request times
+  out after 30 seconds with 504. Tenor firehose subscriptions bypass that
+  deadline and have a separate cap of 64 connections. A timed-out shard call
+  may already be queued: the shard writer still completes it and records its
+  outcome, so a retry with the same operation ID returns that outcome.
 - **Workers**: Typst rendering (`crates/render`) runs in a separate,
   resource-limited process because its input is untrusted. An image proxy,
   email and exports come later.
@@ -88,11 +94,16 @@ handlers can't forget it:
   a tenor recovery key. An owner-scoped operation ID recovers the same live
   reservation after a lost response; creation retries use the signed genesis.
   Later World-scoped calls resolve the World's `#motet_tenor`
-  service and check its destination. The open-scene API forwards a
-  client-chosen operation ID, so retries of the same request return the
-  original scene. Posting uses an author-scoped client TID as the create-only
-  PDS record key. The outbox compares a read-back after an
-  uncertain PDS response before requesting admission of that exact version.
+  service and check its destination. Scene opening, cast changes and closure
+  forward client-chosen operation IDs, so unchanged retries return their
+  original results. Cast changes and closure also require the current scene
+  CID. A separate authenticated, non-cacheable query discovers the member's
+  current scene grants for UI controls; each mutation still checks authority.
+  Sessions created before the discovery permission was added can still post,
+  but need sign-in again to discover controls. Posting uses an author-scoped
+  client TID as the create-only PDS record key. The outbox compares a read-back
+  after an uncertain PDS response before requesting admission of that exact
+  version.
   It retries admissions with the same operation ID and fresh service tokens.
   After six unsuccessful attempts, admission fails visibly and later posts
   can proceed. A recorded outcome remains retrievable after membership

@@ -35,9 +35,9 @@ ignore = [
 
 [licenses]
 version = 2
-# Motet's own licence is still an open decision (docs/adr/0001); its crates are
-# unpublished and skipped here. Dependencies must be permissive or weak
-# copyleft so that choice stays open.
+# Motet's own code is MIT (docs/adr/0001-licence.md); its crates are unpublished
+# and skipped here. Dependencies must stay permissive or weak copyleft, so that
+# Motet can be distributed under MIT.
 confidence-threshold = 0.9
 allow = [
   "0BSD",

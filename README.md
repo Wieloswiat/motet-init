@@ -10,15 +10,16 @@ the decisions behind it are in [docs/adr](docs/adr/README.md).
 
 ## Getting started
 
-Everything comes from the nix flake: toolchains, PostgreSQL with pg_search,
+The native devenv shell supplies toolchains, PostgreSQL with pg_search,
 S3 storage, and a [local atproto network](docs/local-network.md). `tls-setup`
 uses sudo to change local DNS, CA trust and port permissions; read the
 [host setup](docs/local-network.md#host-setup) before running it, and record
 the previous port setting. With [nix](https://nixos.org) and
+[devenv](https://devenv.sh/getting-started/) 2.4.0 and optionally
 [direnv](https://direnv.net):
 
 ```sh
-direnv allow          # or: nix develop --no-pure-eval
+direnv allow          # or: devenv shell
 tls-setup             # local DNS, port 443 and CA trust; uses sudo, rerun after reboot
 devenv up             # PostgreSQL, storage, local network, tenor, AppView and proxy
 ```
@@ -111,4 +112,4 @@ reaches a handler. A test must name the bug it would catch. See
 
 ## Licence
 
-Not chosen yet ([ADR 0001](docs/adr/0001-licence.md)).
+MIT. See [LICENSE](LICENSE) and [ADR 0001](docs/adr/0001-licence.md).

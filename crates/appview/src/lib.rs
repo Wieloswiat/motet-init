@@ -32,6 +32,7 @@ pub mod config;
 pub mod event;
 pub mod indexer;
 pub mod outbox;
+pub mod private_spaces;
 pub mod projection;
 pub mod public_space;
 pub mod tap;

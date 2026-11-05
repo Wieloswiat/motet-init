@@ -3,6 +3,7 @@
 	import { resolve } from '$app/paths';
 	import '../app.css';
 	import favicon from '#lib/assets/favicon.svg';
+	import SessionUnavailableNotice from '#lib/components/SessionUnavailableNotice.svelte';
 	import type { LayoutProps } from './$types';
 
 	let { children, data }: LayoutProps = $props();
@@ -55,6 +56,9 @@
 		<a class="m-button m-button--variant_text" href={resolve('/sign-in')}>Sign in</a>
 	{/if}
 </nav>
+{#if data.sessionUnavailable}
+	<SessionUnavailableNotice />
+{/if}
 {#if signOutError}
 	<p role="alert">{signOutError}</p>
 {/if}

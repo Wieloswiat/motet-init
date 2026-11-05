@@ -1,0 +1,45 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.play.getSceneControls",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get the caller's current scene RPC grants. Advisory UI state only; mutations recheck authorization. Requires member service auth.",
+			"parameters": {
+				"type": "params",
+				"required": ["world"],
+				"properties": {
+					"world": {
+						"type": "string",
+						"format": "did"
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["setCast", "close"],
+					"properties": {
+						"setCast": {
+							"type": "boolean"
+						},
+						"close": {
+							"type": "boolean"
+						}
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The caller is not a current World member."
+				},
+				{
+					"name": "NotFound",
+					"description": "The World was not found."
+				}
+			]
+		}
+	}
+}

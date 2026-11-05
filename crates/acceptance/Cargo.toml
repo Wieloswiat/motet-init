@@ -4,6 +4,7 @@ description = "Acceptance tests from the backend plan that need more than one pa
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]

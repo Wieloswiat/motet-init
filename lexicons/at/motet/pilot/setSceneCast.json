@@ -1,0 +1,88 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.setSceneCast",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Replace an open public scene cast as the signed-in member. Handles resolve to verified DIDs and the opener is retained. Retry with the same operation ID, swapRecord and input after an uncertain response. The tenor checks current World RPC grants on every attempt. Handles resolve on each attempt. Prefer DIDs for stable retries: a reassigned handle changes the resolved input and the tenor refuses reuse of the operation ID.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["op", "world", "scene", "cast", "swapRecord"],
+					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "A caller-chosen operation ID, unique to this World and actor."
+						},
+						"world": {
+							"type": "string",
+							"format": "did"
+						},
+						"scene": {
+							"type": "string",
+							"format": "record-key"
+						},
+						"cast": {
+							"type": "array",
+							"maxLength": 100,
+							"items": {
+								"type": "string",
+								"format": "at-identifier"
+							}
+						},
+						"swapRecord": {
+							"type": "string",
+							"format": "cid",
+							"description": "The current scene CID. A stale value is refused."
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["scene", "uri", "cid"],
+					"properties": {
+						"scene": {
+							"type": "string",
+							"format": "record-key"
+						},
+						"uri": {
+							"type": "string",
+							"format": "at-uri"
+						},
+						"cid": {
+							"type": "string",
+							"format": "cid"
+						}
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The actor is not authorized to change this World's scene casts."
+				},
+				{
+					"name": "NotFound",
+					"description": "The public scene or repository was not found."
+				},
+				{
+					"name": "InvalidSwap",
+					"description": "The scene record changed since swapRecord."
+				},
+				{
+					"name": "SceneClosed",
+					"description": "The scene is already closed."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The PDS or tenor could not complete the request."
+				}
+			]
+		}
+	}
+}

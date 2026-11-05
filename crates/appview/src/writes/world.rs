@@ -14,11 +14,14 @@ use serde_json::{Value, json};
 
 use crate::api::State;
 use crate::auth::{self, pds::PdsError};
-use crate::writes::client::ClientError;
+use crate::writes::client::{ClientError, Target};
 
 const RESERVE_WORLD: &str = "at.motet.pilot.tenor.reserveWorld";
 const CREATE_WORLD: &str = "at.motet.pilot.tenor.createWorld";
 const OPEN_SCENE: &str = "at.motet.pilot.play.openScene";
+const SET_CAST: &str = "at.motet.pilot.play.setSceneCast";
+const CLOSE_SCENE: &str = "at.motet.pilot.play.closeScene";
+const GET_CONTROLS: &str = "at.motet.pilot.play.getSceneControls";
 
 const BEGIN: Method = Method {
     nsid: "at.motet.pilot.beginWorld",
@@ -39,13 +42,36 @@ const OPEN: Method = Method {
     max_body: 256 * 1024,
 };
 
-/// Register the three procedures with the same browser-session boundary.
+const CAST: Method = Method {
+    nsid: "at.motet.pilot.setSceneCast",
+    kind: Kind::Procedure,
+    access: Access::AppviewSession,
+    max_body: 256 * 1024,
+};
+const CLOSE: Method = Method {
+    nsid: "at.motet.pilot.closeScene",
+    kind: Kind::Procedure,
+    access: Access::AppviewSession,
+    max_body: 4096,
+};
+
+const CONTROLS: Method = Method {
+    nsid: "at.motet.pilot.getSceneControls",
+    kind: Kind::Query,
+    access: Access::AppviewSession,
+    max_body: 0,
+};
+
+/// Register World and scene procedures with the same browser-session boundary.
 #[must_use]
 pub fn register(service: Service<Arc<State>>) -> Service<Arc<State>> {
     service
         .method(BEGIN, begin_world)
         .method(FINISH, finish_world)
         .method(OPEN, open_scene)
+        .method(CAST, set_scene_cast)
+        .method(CLOSE, close_scene)
+        .method(CONTROLS, get_scene_controls)
 }
 
 #[derive(Deserialize)]
@@ -195,14 +221,7 @@ async fn open_scene(state: Arc<State>, caller: Caller, input: Input) -> Result<R
         return Err(invalid("cast exceeds 100 members"));
     }
     let target = state.client.world_target(&request.world).await.map_err(client_error)?;
-    let client = &state.client;
-    let identifiers: BTreeSet<_> = request.cast.into_iter().collect();
-    let cast: BTreeSet<String> = stream::iter(identifiers)
-        .map(|identifier| async move { client.member_did(&identifier).await })
-        .buffer_unordered(8)
-        .try_collect()
-        .await
-        .map_err(client_error)?;
+    let cast = resolve_cast(&state.client, request.cast).await?;
     let token = state
         .auth
         .pds()
@@ -228,6 +247,143 @@ async fn open_scene(state: Arc<State>, caller: Caller, input: Input) -> Result<R
         return Err(upstream());
     }
     Ok(Json(opened).into_response())
+}
+
+async fn resolve_cast(
+    client: &crate::writes::client::Client,
+    identifiers: Vec<String>,
+) -> Result<BTreeSet<String>, XrpcError> {
+    let identifiers: BTreeSet<_> = identifiers.into_iter().collect();
+    stream::iter(identifiers)
+        .map(|identifier| async move { client.member_did(&identifier).await })
+        .buffer_unordered(8)
+        .try_collect()
+        .await
+        .map_err(client_error)
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneInput {
+    world: String,
+    scene: String,
+    op: String,
+    swap_record: String,
+}
+
+impl SceneInput {
+    fn validate(&self) -> Result<(), XrpcError> {
+        atproto_record::record_key::check_record_key(&self.op).map_err(invalid)?;
+        atproto_record::record_key::check_record_key(&self.scene).map_err(invalid)?;
+        self.swap_record.parse::<atproto_dasl::Cid>().map_err(invalid)?;
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+struct CastInput {
+    #[serde(flatten)]
+    scene: SceneInput,
+    cast: Vec<String>,
+}
+
+async fn set_scene_cast(state: Arc<State>, caller: Caller, input: Input) -> Result<Response, XrpcError> {
+    require_session(&caller)?;
+    let request: CastInput = serde_json::from_slice(&input.body).map_err(invalid)?;
+    request.scene.validate()?;
+    if request.cast.len() > 100 {
+        return Err(invalid("cast exceeds 100 members"));
+    }
+    let target = state
+        .client
+        .world_target(&request.scene.world)
+        .await
+        .map_err(client_error)?;
+    let cast = resolve_cast(&state.client, request.cast).await?;
+    let body = json!({
+        "world": request.scene.world,
+        "scene": request.scene.scene,
+        "op": request.scene.op,
+        "swapRecord": request.scene.swap_record,
+        "cast": cast,
+    });
+    change_scene(&state, &input, &target, &request.scene.world, SET_CAST, &body).await
+}
+
+async fn close_scene(state: Arc<State>, caller: Caller, input: Input) -> Result<Response, XrpcError> {
+    require_session(&caller)?;
+    let request: SceneInput = serde_json::from_slice(&input.body).map_err(invalid)?;
+    request.validate()?;
+    let target = state.client.world_target(&request.world).await.map_err(client_error)?;
+    let body = serde_json::to_value(&request).map_err(invalid)?;
+    change_scene(&state, &input, &target, &request.world, CLOSE_SCENE, &body).await
+}
+
+async fn change_scene(
+    state: &State,
+    input: &Input,
+    target: &Target,
+    world: &str,
+    method: &str,
+    body: &Value,
+) -> Result<Response, XrpcError> {
+    let session = auth::session_cookie(&input.headers)?;
+    // Each attempt gets a fresh single-use token; the caller keeps its operation and swap unchanged.
+    let token = state
+        .auth
+        .pds()
+        .service_token(session, target.audience(), method)
+        .await
+        .map_err(pds_error)?;
+    let response = state
+        .client
+        .post(target, &token, method, body)
+        .await
+        .map_err(client_error)?;
+    let changed: Opened = serde_json::from_value(response).map_err(|_| upstream())?;
+    if body.get("scene").and_then(Value::as_str) != Some(changed.scene.as_str())
+        || changed.uri != format!("at://{world}/at.motet.pilot.scene/{}", changed.scene)
+        || changed.cid.parse::<atproto_dasl::Cid>().is_err()
+    {
+        return Err(upstream());
+    }
+    Ok(Json(changed).into_response())
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Controls {
+    set_cast: bool,
+    close: bool,
+}
+
+async fn get_scene_controls(state: Arc<State>, caller: Caller, input: Input) -> Result<Response, XrpcError> {
+    require_session(&caller)?;
+    let [(name, world)] = input.params.as_slice() else {
+        return Err(invalid("world is required and must be the only parameter"));
+    };
+    if name != "world" {
+        return Err(invalid("world is required"));
+    }
+    let session = auth::session_cookie(&input.headers)?;
+    let target = state.client.world_target(world).await.map_err(client_error)?;
+    let token = state
+        .auth
+        .pds()
+        .service_token(session, target.audience(), GET_CONTROLS)
+        .await
+        .map_err(pds_error)?;
+    let response = state
+        .client
+        .query(&target, &token, GET_CONTROLS, &[("world", world)])
+        .await
+        .map_err(client_error)?;
+    let controls: Controls = serde_json::from_value(response).map_err(|_| upstream())?;
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "private, no-store")],
+        Json(controls),
+    )
+        .into_response())
 }
 
 fn require_session(caller: &Caller) -> Result<(), XrpcError> {
@@ -274,6 +430,16 @@ fn client_error(error: ClientError) -> XrpcError {
         ClientError::NotFound => XrpcError::NotFound,
         ClientError::Forbidden => forbidden(),
         ClientError::InvalidRequest(message) => XrpcError::InvalidRequest(message),
+        ClientError::InvalidSwap => XrpcError::Protocol {
+            status: StatusCode::BAD_REQUEST,
+            name: "InvalidSwap",
+            message: "the scene changed since the supplied swapRecord; reload before making a new change".into(),
+        },
+        ClientError::SceneClosed => XrpcError::Protocol {
+            status: StatusCode::BAD_REQUEST,
+            name: "SceneClosed",
+            message: "the scene is already closed".into(),
+        },
         ClientError::Unauthorized | ClientError::Upstream => {
             tracing::warn!(error = %error, "tenor request failed");
             upstream()

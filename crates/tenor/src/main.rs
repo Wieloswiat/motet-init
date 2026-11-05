@@ -85,7 +85,16 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Arc::<DidResolver>::clone(&resolver),
         Arc::new(move |aud| api::accepts_audience(aud, &audience)),
     );
-    let app = api::router(state, authenticate)?;
+    let app = api::served_router(
+        state,
+        authenticate,
+        motet_xrpc::limits::Limits::new(
+            config.max_in_flight,
+            config.max_firehose_connections,
+            Duration::from_secs(config.request_timeout_secs),
+            Some("/xrpc/com.atproto.sync.subscribeRepos"),
+        ),
+    )?;
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, shard = %config.shard, "tenor serving");

@@ -4,10 +4,10 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use motet_rules::world::{Command, CommandError, Outcome, Refusal, World};
+use motet_rules::world::{Command, CommandError, Outcome, Place, ReadBack, Refusal, World};
 use motet_rules::{Cid, Did, OperationId, RecordUri, SceneId};
 use proptest::prelude::*;
-use support::{history, run};
+use support::{admission_history, history, run};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(512))]
@@ -61,37 +61,96 @@ proptest! {
         prop_assert_eq!(world, before);
     }
 
-    /// Places in a scene are unique and handed out in admission order; an edit
-    /// keeps the place of the post it replaces.
+    /// An author's preflight agrees with a fresh admission at every point and
+    /// changes no World state. Catches preflights that ignore changed authority
+    /// or read-back versions, or consume a place before the real admission.
     #[test]
-    fn places_are_unique_ordered_and_kept_by_edits(actions in history()) {
+    fn preflight_agrees_with_fresh_admission_without_changing_state(actions in admission_history()) {
         let (_, run) = run(&actions);
-        let mut place_of: BTreeMap<RecordUri, (SceneId, u64)> = BTreeMap::new();
-        let mut last_new: BTreeMap<SceneId, u64> = BTreeMap::new();
-        let mut taken: BTreeSet<(SceneId, u64)> = BTreeSet::new();
-        for (_, _, outcome) in &run.log {
-            match outcome {
-                Outcome::Admitted(a) if a.replaces.is_some() => {
-                    prop_assert_eq!(
-                        place_of.get(&a.post.uri),
-                        Some(&(a.scene.clone(), a.place.seq)),
-                        "an edit moved its post"
-                    );
+        let mut world = World::new(0);
+        let mut facts = Facts::default();
+        for (op, command, _) in &run.log {
+            let checked = if let Command::Admit { post, replaces } = command {
+                let before = world.clone();
+                let checked = world.check(post, replaces.as_ref());
+                prop_assert_eq!(&world, &before, "preflight changed the World");
+                prop_assert_eq!(
+                    checked.is_ok(),
+                    facts.can_admit(post, replaces.as_ref()),
+                    "preflight disagreed with command facts for {:?}",
+                    command
+                );
+                Some(checked)
+            } else {
+                None
+            };
+            prop_assert!(!world.has_operation(op), "comparison must use a fresh operation");
+            let outcome = world.apply(op.clone(), command.clone()).expect("fresh operation ID");
+            if let Some(checked) = checked {
+                match outcome {
+                    Outcome::Admitted(_) => prop_assert_eq!(checked, Ok(())),
+                    Outcome::Refused(why) => prop_assert_eq!(checked, Err(why)),
+                    other => prop_assert!(false, "admission produced {:?}", other),
                 }
-                Outcome::Admitted(a) => {
-                    if let Some(prev) = last_new.get(&a.scene) {
-                        prop_assert!(a.place.seq > *prev, "places went backwards");
+            }
+            facts.record(command);
+        }
+    }
+
+    /// Each scene numbers new admissions consecutively in the selected epoch;
+    /// edits keep their whole place. Catches counters shared between scenes,
+    /// consumed by edits or refusals, reset on reopen, or reused after deletion.
+    #[test]
+    fn places_are_unique_ordered_and_kept_by_edits(actions in admission_history(), epoch in any::<u32>()) {
+        let (_, run) = run(&actions);
+        let mut world = World::new(epoch);
+        let mut facts = Facts::default();
+        let mut place_of: BTreeMap<RecordUri, (SceneId, Place)> = BTreeMap::new();
+        let mut next_seq: BTreeMap<SceneId, u64> = BTreeMap::new();
+        for (op, command, _) in &run.log {
+            let outcome = world.apply(op.clone(), command.clone()).expect("fresh operation ID");
+            match command {
+                Command::Admit { post, replaces } if facts.can_admit(post, replaces.as_ref()) => {
+                    let expected = place_of.entry(post.post.uri.clone()).or_insert_with(|| {
+                        let seq = next_seq.entry(post.scene.clone()).or_default();
+                        let place = Place { epoch, seq: *seq };
+                        *seq += 1;
+                        (post.scene.clone(), place)
+                    });
+                    let Outcome::Admitted(admission) = outcome else {
+                        prop_assert!(false, "eligible admission produced {:?}", outcome);
+                        return Ok(());
+                    };
+                    prop_assert_eq!(&admission.post, &post.post);
+                    prop_assert_eq!(&admission.author, &post.author);
+                    prop_assert_eq!(&admission.scene, &expected.0);
+                    prop_assert_eq!(admission.place, expected.1);
+                    prop_assert_eq!(admission.authority_rev, facts.rev);
+                    prop_assert_eq!(&admission.replaces, replaces);
+                }
+                Command::Admit { .. } => {
+                    prop_assert!(matches!(outcome, Outcome::Refused(_)), "ineligible admission took a place");
+                }
+                Command::ObserveDeletion { post } => {
+                    if let Some((scene, place)) = place_of.remove(post) {
+                        let Outcome::Closed(admission) = outcome else {
+                            prop_assert!(false, "deletion did not close its admission");
+                            return Ok(());
+                        };
+                        prop_assert_eq!(admission.place, place);
+                        prop_assert_eq!(admission.scene, scene);
+                    } else {
+                        prop_assert_eq!(outcome, Outcome::Unchanged);
                     }
-                    prop_assert!(taken.insert((a.scene.clone(), a.place.seq)), "place reused");
-                    last_new.insert(a.scene.clone(), a.place.seq);
-                    place_of.insert(a.post.uri.clone(), (a.scene.clone(), a.place.seq));
-                }
-                Outcome::Closed(a) => {
-                    place_of.remove(&a.post.uri);
                 }
                 _ => {}
             }
+            facts.record(command);
         }
+        let actual: BTreeMap<_, _> = world.admissions()
+            .map(|a| (a.post.uri.clone(), (a.scene.clone(), a.place)))
+            .collect();
+        prop_assert_eq!(actual, place_of);
     }
 
     /// Every outcome is justified by the authority facts at the point the
@@ -182,6 +241,50 @@ struct Facts {
 impl Facts {
     fn cast(&self, scene: &SceneId) -> BTreeSet<Did> {
         self.casts.get(scene).cloned().unwrap_or_default()
+    }
+
+    fn can_admit(&self, post: &ReadBack, replaces: Option<&Cid>) -> bool {
+        self.open.contains(&post.scene)
+            && self
+                .casts
+                .get(&post.scene)
+                .is_some_and(|cast| cast.contains(&post.author))
+            && !self.suspended.contains(&post.author)
+            && self.admitted.get(&post.post.uri) == replaces
+            && self.admitted.get(&post.post.uri) != Some(&post.post.cid)
+            && self
+                .scene_of
+                .get(&post.post.uri)
+                .is_none_or(|scene| scene == &post.scene)
+    }
+
+    /// Advance the model from command facts, never from the World's outcome.
+    fn record(&mut self, command: &Command) {
+        match command {
+            Command::Admit { post, replaces } => {
+                if self.can_admit(post, replaces.as_ref()) {
+                    self.admitted.insert(post.post.uri.clone(), post.post.cid.clone());
+                    self.scene_of.insert(post.post.uri.clone(), post.scene.clone());
+                }
+            }
+            Command::ObserveDeletion { post } => {
+                self.admitted.remove(post);
+                self.scene_of.remove(post);
+            }
+            command => {
+                let known = match command {
+                    Command::CloseScene { scene }
+                    | Command::SetSceneCast { scene, .. }
+                    | Command::JoinCast { scene, .. }
+                    | Command::LeaveCast { scene, .. } => self.known.contains(scene),
+                    _ => true,
+                };
+                if known {
+                    self.rev += 1;
+                    self.apply(command);
+                }
+            }
+        }
     }
 
     fn apply(&mut self, command: &Command) {

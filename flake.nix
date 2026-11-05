@@ -4,22 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    devenv = {
-      url = "github:cachix/devenv";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
-    # Required by devenv's flake module, which evaluates its container
-    # outputs during `nix flake check`.
-    nix2container = {
-      url = "github:nlewo/nix2container";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-    mk-shell-bin.url = "github:rrbutani/nix-mk-shell-bin";
   };
 
   nixConfig = {
@@ -30,7 +19,6 @@
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ inputs.devenv.flakeModule ];
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -44,9 +32,10 @@
             inherit system;
             overlays = [ (import inputs.rust-overlay) ];
           };
-          # One toolchain, read from rust-toolchain.toml, for the shell, the
-          # build and CI.
+          # The production toolchain stays stable; Kani owns a separate,
+          # ABI-matched nightly compiler in its private Nix closure.
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          kani = import ./nix/pkgs/kani.nix { inherit pkgs; };
           rust = import ./nix/rust.nix {
             inherit pkgs rustToolchain;
             crane = inputs.crane;
@@ -65,16 +54,32 @@
             // network.packages
             // {
               default = rust.packages.motet-appview;
+              inherit kani;
             };
 
           # `nix flake check`: everything that needs no running services. The
           # local network's packages aren't checks: the gate builds them to
           # start them, and `nix build` builds them on demand.
-          checks = rust.checks;
-
-          devenv.shells.default = import ./nix/devenv.nix {
-            inherit rustToolchain;
-            networkPackages = network.packages;
+          checks = rust.checks // {
+            # A partial lock update must not give CI and developers different tools.
+            shell-pins =
+              let
+                shellLock = builtins.fromJSON (builtins.readFile ./devenv.lock);
+                samePin =
+                  name:
+                  let
+                    shellPin = shellLock.nodes.${shellLock.nodes.root.inputs.${name}}.locked;
+                  in
+                  inputs.${name}.rev == shellPin.rev && inputs.${name}.narHash == shellPin.narHash;
+              in
+              assert
+                builtins.all samePin [
+                  "nixpkgs"
+                  "rust-overlay"
+                  "crane"
+                ]
+                || throw "devenv.lock differs from flake.lock; align devenv.yaml and run devenv update";
+              pkgs.runCommand "motet-shell-pins" { } "touch $out";
           };
 
           formatter = pkgs.nixfmt;

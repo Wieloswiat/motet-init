@@ -373,7 +373,7 @@ async fn submit(
             .await?;
             return Ok(());
         }
-        Err(ClientError::InvalidRequest(_)) => {
+        Err(ClientError::InvalidRequest(_) | ClientError::InvalidSwap | ClientError::SceneClosed) => {
             outbox::finish(pool, job, owner, true, &json!({"error": "upstream"})).await?;
             return Ok(());
         }

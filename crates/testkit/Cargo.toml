@@ -4,6 +4,7 @@ description = "Shared test machinery: delivery-order generators, service fixture
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 # Generic on purpose: no Motet domain crate depends on it except as a

@@ -77,6 +77,18 @@ pub enum RouterError {
     Registry(#[from] RegistryError),
 }
 
+/// Compose the public server, including admission bounds for every HTTP route.
+pub fn served_router<R: Records + 'static>(
+    state: Arc<State<R>>,
+    authenticate: Authenticate,
+    limits: motet_xrpc::limits::Limits,
+) -> Result<axum::Router, RouterError> {
+    Ok(router(state, authenticate)?.layer(axum::middleware::from_fn_with_state(
+        limits,
+        motet_xrpc::limits::enforce,
+    )))
+}
+
 pub fn router<R: Records + 'static>(
     state: Arc<State<R>>,
     authenticate: Authenticate,

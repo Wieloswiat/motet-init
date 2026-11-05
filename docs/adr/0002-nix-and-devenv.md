@@ -1,6 +1,6 @@
 # 0002. One nix flake for the toolchain, services, checks and CI
 
-Status: Accepted
+Status: Accepted; shell entry point superseded in part by [0025](0025-native-devenv.md)
 
 ## Context
 

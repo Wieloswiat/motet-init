@@ -2,6 +2,7 @@
 	"name": "@motet/design",
 	"description": "Motet's design tokens, its Panda CSS preset and theme checks. Provisional: Ark UI and Panda are the working choice, not a settled one.",
 	"private": true,
+	"license": "MIT",
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
