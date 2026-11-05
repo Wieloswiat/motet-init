@@ -29,6 +29,12 @@ research and plan"); the decisions that shaped the code are in
   runs on its shard's one writer, is made durable in a fenced log in the
   tenor's bucket, then lands in the shard's SlateDB
   ([ADR 0014](../adr/0014-tenor-state-in-slatedb.md)).
+- **HTTP bounds**: the AppView and the tenor admit at most 128 ordinary
+  requests at once and return 503 when saturated. An ordinary request times
+  out after 30 seconds with 504. Tenor firehose subscriptions bypass that
+  deadline and have a separate cap of 64 connections. A timed-out shard call
+  may already be queued: the shard writer still completes it and records its
+  outcome, so a retry with the same operation ID returns that outcome.
 - **Workers**: Typst rendering (`crates/render`) runs in a separate,
   resource-limited process because its input is untrusted. An image proxy,
   email and exports come later.

@@ -68,6 +68,22 @@ pub const GET_POST_STATUS: Method = Method {
     max_body: 0,
 };
 
+/// Compose the public server. Health and OAuth share the API's admission budget and deadline.
+pub fn served_router(
+    state: Arc<State>,
+    authenticate: Authenticate,
+    limits: motet_xrpc::limits::Limits,
+) -> Result<axum::Router, RegistryError> {
+    let oauth = state.auth.router();
+    Ok(router(state, authenticate)?
+        .merge(oauth)
+        .route("/_health", axum::routing::get(|| async { "ok" }))
+        .layer(axum::middleware::from_fn_with_state(
+            limits,
+            motet_xrpc::limits::enforce,
+        )))
+}
+
 pub fn router(state: Arc<State>, authenticate: Authenticate) -> Result<axum::Router, RegistryError> {
     let service = Service::new(authenticate)
         .method(GET_RECORD_VERSION, get_record_version)

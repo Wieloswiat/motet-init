@@ -142,10 +142,16 @@ pub(super) async fn subscribe(handle: &Handle, input: Input) -> Result<Response,
     let upgrade = input
         .websocket
         .ok_or_else(|| Error::InvalidRequest("WebSocket upgrade required".into()))?;
+    let permit = input
+        .stream_permit
+        .ok_or_else(|| Error::InvalidRequest("stream connection limit missing".into()))?;
     let feed = Subscription::new(handle).start(cursor).await;
     Ok(upgrade
         .protocols(["xrpc.v0.cbor"])
-        .on_upgrade(move |socket| send(socket, feed)))
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            send(socket, feed).await;
+        }))
 }
 
 async fn send(mut socket: WebSocket, feed: Result<Feed, StartError>) {

@@ -38,6 +38,8 @@ pub struct Input {
     /// An upgrade extracted only after the registry authorized this caller.
     /// Subscription handlers consume it; ordinary requests leave it absent.
     pub websocket: Option<WebSocketUpgrade>,
+    /// Connection lease installed by the explicit stream-limits route.
+    pub stream_permit: Option<crate::limits::StreamPermit>,
 }
 
 type Handler<S> = Arc<dyn Fn(S, Caller, Input) -> BoxFuture<'static, Result<Response, XrpcError>> + Send + Sync>;
@@ -236,6 +238,7 @@ async fn serve<S: Clone + Send + Sync + 'static>(
             body,
             headers: parts.headers,
             websocket,
+            stream_permit: parts.extensions.remove::<crate::limits::StreamPermit>(),
         },
     )
     .await

@@ -146,7 +146,16 @@ impl Fixture {
         let service = Service::new(Arc::new(|_| Box::pin(async { Ok(Caller::Anonymous) })));
         let router = super::methods(service)
             .into_router(state)
-            .expect("registered sync transport");
+            .expect("registered sync transport")
+            .layer(axum::middleware::from_fn_with_state(
+                motet_xrpc::limits::Limits::new(
+                    128,
+                    64,
+                    Duration::from_secs(30),
+                    Some("/xrpc/com.atproto.sync.subscribeRepos"),
+                ),
+                motet_xrpc::limits::enforce,
+            ));
         Self {
             handle,
             router,
