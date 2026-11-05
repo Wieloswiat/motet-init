@@ -259,7 +259,20 @@ the channel itself. It does not test a second PDS implementation, OAuth
 sign-in or private Space access.
 
 The local stack registers the Rust PDS and tenor through the relay's
-authenticated admin endpoint. `network-smoke` also requests the PDS crawl.
+authenticated admin endpoint. Both native and compose relay configurations set
+`RELAY_DEFAULT_ACCOUNT_LIMIT=1000000`. Persistent development state accumulates
+accounts across runs; Indigo's default of 100 eventually marks new accounts
+`host-throttled` and drops their commits even when the tenor admits posts. Zero is
+not an unlimited setting in the pinned relay.
+
+Registration also calls `/admin/pds/changeLimits` with the same limit for each
+host. The default affects only newly registered hosts; this authenticated call
+updates existing rows and reactivates previously throttled accounts through the
+relay's own account lifecycle. A failed limit update fails registration. Restart
+the local stack after upgrading; do not erase accumulated state to bypass this
+limit. These settings apply only to the isolated development network.
+
+`network-smoke` also requests the PDS crawl.
 For another local PDS, use its full HTTPS URL in the same call:
 
 ```sh
@@ -346,6 +359,13 @@ resolve. Recreate accounts and Worlds for the new directory as needed.
 Re-running `network-smoke` without restarting PLC needs no reset. The AppView's
 OAuth and session keys under `$DEVENV_STATE/appview` are separate from this
 reset, as are TLS certificates and the tenor master key.
+
+Older retained relay databases can contain a `localhost:4800` crawler from the
+pre-HTTPS setup. Current registration and PDS announcements use
+`pds.motet.test`; the old row can log "new account from a different host" for
+the same upstream events. It does not replace the canonical crawler and is not
+created by current configuration. Leave retained history intact when diagnosing
+this alias; it is not a reason to wipe state or disable ingestion checks.
 
 The compose atproto services, AppView, tenor and proxy share PLC's network
 namespace; PostgreSQL and S3 stay on the compose bridge. After stopping

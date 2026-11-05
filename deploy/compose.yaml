@@ -195,6 +195,8 @@ services:
     environment:
       <<: *local-network-env
       RELAY_ALLOW_PRIVATE_HOSTS: 'true'
+      # Persistent dev volumes accumulate accounts; the default drops new commits as host-throttled.
+      RELAY_DEFAULT_ACCOUNT_LIMIT: '1000000'
       RELAY_PLC_HOST: https://plc.motet.test
       RELAY_ADMIN_PASSWORD: motet-network-dev
       RELAY_API_BIND: 0.0.0.0:2470
@@ -297,6 +299,18 @@ services:
       - --data
       - '{"hostname":"https://pds.motet.test"}'
       - https://relay.motet.test/admin/pds/requestCrawl
+      # The default does not update persisted hosts; this reactivates throttled accounts too.
+      - --next
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --user
+      - admin:motet-network-dev
+      - --header
+      - 'Content-Type: application/json'
+      - --data
+      - '{"host":"https://pds.motet.test","repo_limit":1000000}'
+      - https://relay.motet.test/admin/pds/changeLimits
       - --next
       - --fail-with-body
       - --silent
@@ -308,6 +322,18 @@ services:
       - --data
       - '{"hostname":"https://tenor.motet.test"}'
       - https://relay.motet.test/admin/pds/requestCrawl
+      # The default does not update persisted hosts; this reactivates throttled accounts too.
+      - --next
+      - --fail-with-body
+      - --silent
+      - --show-error
+      - --user
+      - admin:motet-network-dev
+      - --header
+      - 'Content-Type: application/json'
+      - --data
+      - '{"host":"https://tenor.motet.test","repo_limit":1000000}'
+      - https://relay.motet.test/admin/pds/changeLimits
     restart: on-failure
     depends_on:
       relay: { condition: service_healthy }

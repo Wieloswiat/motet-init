@@ -27,6 +27,7 @@ let
   tlsDir = "${config.devenv.root}/.devenv/state/tls";
   networkState = "${config.devenv.state}/network";
   networkPassword = "motet-network-dev";
+  relayAccountLimit = 1000000;
   # Leave readiness to the process manager; ready.timeout makes wrappers supervise dependencies.
   httpReady = port: path: {
     http.get = { inherit port path; };
@@ -205,6 +206,8 @@ in
     '';
     env = {
       RELAY_ALLOW_PRIVATE_HOSTS = "true";
+      # Persistent dev state accumulates accounts; the upstream default drops new commits as host-throttled.
+      RELAY_DEFAULT_ACCOUNT_LIMIT = toString relayAccountLimit;
       RELAY_PLC_HOST = "https://plc.motet.test";
       RELAY_ADMIN_PASSWORD = networkPassword;
       RELAY_API_BIND = "127.0.0.1:2470";
@@ -314,6 +317,12 @@ in
           --header 'Content-Type: application/json' \
           --data "{\"hostname\":\"$host\"}" \
           "$MOTET_RELAY_URL/admin/pds/requestCrawl"
+        # Defaults affect only new hosts; this also reactivates previously throttled accounts.
+        ${lib.getExe pkgs.curl} --fail-with-body --silent --show-error \
+          --user "admin:$MOTET_RELAY_ADMIN_PASSWORD" \
+          --header 'Content-Type: application/json' \
+          --data "{\"host\":\"$host\",\"repo_limit\":${toString relayAccountLimit}}" \
+          "$MOTET_RELAY_URL/admin/pds/changeLimits"
       done
       touch "$marker"
       exec sleep infinity
