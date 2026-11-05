@@ -50,7 +50,10 @@ from the local PDS. Signup uses the PDS authorization flow with
 The tenor's `MOTET_TENOR_HANDLE_DOMAINS=.motet.test` serves World handles;
 `PDS_SERVICE_HANDLE_DOMAINS=.pds.motet.test` serves PDS account handles.
 The PDS requires the account-name label to have 3–18 characters and refuses
-reserved names.
+reserved names. The local PDS disables only its auth/account-creation rate
+limit (`PDS_RATE_LIMIT_AUTH=0`): the full development gate creates dozens of
+accounts and sessions from one loopback address within a single limit window.
+The global request limit remains enabled, and production defaults are unchanged.
 These names need local DNS as well as proxy routes and certificate coverage;
 see [Host setup](#host-setup).
 

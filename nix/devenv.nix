@@ -254,6 +254,8 @@ in
       PDS_HOSTNAME = "pds.motet.test";
       PDS_SERVICE_DID = "did:web:pds.motet.test";
       PDS_TRUSTED_PROXY_HOPS = "1";
+      # The dev-only gate creates dozens of accounts and sessions from loopback within one window.
+      PDS_RATE_LIMIT_AUTH = "0";
       PDS_DID_PLC_URL = "https://plc.motet.test";
       PDS_CRAWLERS = "https://relay.motet.test";
       PDS_INVITE_REQUIRED = "false";
