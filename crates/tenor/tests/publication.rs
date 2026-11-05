@@ -40,7 +40,7 @@ enum Audience {
 struct Setup(Audience);
 
 fn scene() -> Value {
-    json!({ "$type": SCENE, "title": "The Reach", "state": "open", "createdAt": "2026-10-26T00:00:00Z" })
+    json!({ "$type": SCENE, "title": "The Reach", "state": "open", "cast": [AUTHOR], "openedBy": AUTHOR, "createdAt": "2026-10-26T00:00:00Z" })
 }
 
 fn scene_write(rkey: &str) -> Write {

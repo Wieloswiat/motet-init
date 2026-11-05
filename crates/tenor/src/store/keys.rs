@@ -12,9 +12,11 @@
 //! | `n/`        | handles (the identity module)                          |
 //! | `q/`        | reservations, their sealed keys and creation receipts   |
 //! | `v/`, `x/`  | reserved handles and reservation expiry order           |
+//! | `o/`        | owner-scoped reservation operations                     |
 //! | `s/`        | Spaces (the spaces module)                             |
-//! | `o/`        | OAuth server state (the oauth module)                  |
 //! | `p/`        | admission publication queue and receipts               |
+//! | `c/`        | typed scene operation receipts                         |
+//! | `t/`        | spent member service tokens and their expiry order     |
 //!
 //! DIDs contain no `/`, so they can be a path component as they are. A
 //! component that can contain `/` is followed by `\0` instead.
@@ -47,6 +49,87 @@ pub const PUBLICATIONS: &[u8] = b"p/queue/";
 /// The next per-shard publication decision sequence.
 pub const PUBLICATION_SEQ: &[u8] = b"p/next";
 
+/// Spent member service tokens, ordered by expiration for bounded cleanup.
+pub const SERVICE_TOKEN_EXPIRIES: &[u8] = b"t/expiry/";
+/// Greatest time used to expire a spent token, persisted across clock rollback.
+pub const SERVICE_TOKEN_CLOCK: &[u8] = b"t/clock";
+/// Pending Space delegation origins, ordered by their expiration.
+pub const SPACE_DELEGATION_EXPIRY: &[u8] = b"s/delegation-origin-expiry/";
+/// Cross-World credential reverse entries, ordered by credential expiration.
+pub const SPACE_DELEGATED_CREDENTIAL_EXPIRY: &[u8] = b"s/delegated-credential-expiry/";
+
+/// The issuer and token ID identify a token regardless of its request body.
+#[must_use]
+pub fn service_token(issuer: &Did, jti: &str) -> Vec<u8> {
+    join(&[b"t/token/", issuer.as_str().as_bytes(), b"/", jti.as_bytes()])
+}
+
+#[must_use]
+pub fn service_token_expiry(expires: u64, issuer: &Did, jti: &str) -> Vec<u8> {
+    join(&[
+        SERVICE_TOKEN_EXPIRIES,
+        &expires.to_be_bytes(),
+        issuer.as_str().as_bytes(),
+        b"/",
+        jti.as_bytes(),
+    ])
+}
+
+#[must_use]
+pub fn service_token_expiry_time(key: &[u8]) -> Option<u64> {
+    let bytes = key.strip_prefix(SERVICE_TOKEN_EXPIRIES)?.get(..8)?;
+    Some(u64::from_be_bytes(bytes.try_into().ok()?))
+}
+
+#[must_use]
+pub fn space_delegation_origins(world: &Did) -> Vec<u8> {
+    space_delegation_origin(world, "")
+}
+
+/// A World-issued Space delegation is bound to its requesting member.
+#[must_use]
+pub fn space_delegation_origin(world: &Did, jti: &str) -> Vec<u8> {
+    join(&[
+        b"s/delegation-origin/",
+        world.as_str().as_bytes(),
+        b"\0",
+        jti.as_bytes(),
+    ])
+}
+
+#[must_use]
+pub fn space_delegation_expiry(expires: u64, world: &Did, jti: &str) -> Vec<u8> {
+    join(&[
+        SPACE_DELEGATION_EXPIRY,
+        &expires.to_be_bytes(),
+        world.as_str().as_bytes(),
+        b"\0",
+        jti.as_bytes(),
+    ])
+}
+
+/// Credentials obtained through a locally hosted World's delegations.
+#[must_use]
+pub fn space_delegated_credentials(world: &Did) -> Vec<u8> {
+    space_delegated_credential(world, &[])
+}
+
+#[must_use]
+pub fn space_delegated_credential(world: &Did, credential: &[u8]) -> Vec<u8> {
+    join(&[b"s/delegated-credential/", world.as_str().as_bytes(), b"\0", credential])
+}
+
+#[must_use]
+pub fn space_delegated_credential_expiry(expires: u64, world: &Did, credential: &[u8]) -> Vec<u8> {
+    join(&[
+        SPACE_DELEGATED_CREDENTIAL_EXPIRY,
+        &expires.to_be_bytes(),
+        world.as_str().as_bytes(),
+        b"\0",
+        credential,
+    ])
+}
+
 #[must_use]
 pub fn publication(sequence: u64) -> Vec<u8> {
     join(&[b"p/receipt/", &sequence.to_be_bytes()])
@@ -66,6 +149,19 @@ pub fn publication_operation(world: &Did, operation: &motet_rules::OperationId) 
         &(world.as_str().len() as u64).to_be_bytes(),
         world.as_str().as_bytes(),
         operation.as_str().as_bytes(),
+    ])
+}
+
+/// Idempotency receipts are isolated by World and verified actor.
+#[must_use]
+pub fn scene_operation(world: &Did, actor: &Did, operation: &str) -> Vec<u8> {
+    join(&[
+        b"c/scene/",
+        world.as_str().as_bytes(),
+        b"/",
+        actor.as_str().as_bytes(),
+        b"/",
+        operation.as_bytes(),
     ])
 }
 
@@ -181,6 +277,11 @@ pub fn reserved_handle(handle: &str) -> Vec<u8> {
 #[must_use]
 pub fn reservation(reservation: &str) -> Vec<u8> {
     join(&[b"q/", reservation.as_bytes(), b"/info"])
+}
+
+#[must_use]
+pub fn reservation_op(owner: &Did, op: &str) -> Vec<u8> {
+    join(&[b"o/", owner.as_str().as_bytes(), b"/", op.as_bytes()])
 }
 
 #[must_use]
@@ -418,21 +519,4 @@ pub fn space_info(space: &SpaceUri) -> Vec<u8> {
         b"/",
         space.space_key.as_str().as_bytes(),
     ])
-}
-
-/// OAuth signer and confidential-client keys, sealed under the master key.
-pub const OAUTH_SIGNING_KEY: &[u8] = b"o/key/signing";
-pub const OAUTH_CLIENT_KEY: &[u8] = b"o/key/client";
-/// Expiring OAuth entries, ordered by deadline for bounded maintenance.
-pub const OAUTH_EXPIRIES: &[u8] = b"o/expiry/";
-
-/// Credentials are addressed only by their SHA-256 digest.
-#[must_use]
-pub fn oauth(kind: &str, digest: &str) -> Vec<u8> {
-    join(&[b"o/", kind.as_bytes(), b"/", digest.as_bytes()])
-}
-
-#[must_use]
-pub fn oauth_expiry(expires: u64, key: &[u8]) -> Vec<u8> {
-    join(&[OAUTH_EXPIRIES, &expires.to_be_bytes(), key])
 }

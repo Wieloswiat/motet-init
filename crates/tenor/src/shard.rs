@@ -22,7 +22,7 @@
 //! The log records two kinds of entry. Rules commands are deterministic, so
 //! they're logged as commands and replayed by re-running them; the rules
 //! state lives in memory and is snapshotted into the database at checkpoints.
-//! Everything else (keys, repo commits, Spaces, sessions) is logged as the
+//! Everything else (keys, repo commits, Spaces) is logged as the
 //! key-value mutations and firehose events it produced, and replayed by
 //! re-applying them: signing and revisions aren't functions of a command.
 //!
@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use atproto_dasl::{BlockStorage, Cid, StorageError};
 use atproto_identity::key::KeyData;
@@ -176,6 +176,25 @@ pub trait Op: Send + 'static {
     type Output: Send + 'static;
     type Error: Send + 'static;
     fn run(self, txn: &mut Txn<'_>) -> impl Future<Output = Result<Self::Output, Self::Error>> + Send;
+}
+
+/// Reclaim up to `limit` expired service-token markers on an idle shard.
+///
+/// The observed expiry watermark commits even when no markers are removed,
+/// so a clock rollback cannot revive a previously unused expired token.
+#[derive(Debug)]
+pub struct SweepServiceTokens {
+    pub now: SystemTime,
+    pub limit: usize,
+}
+
+impl Op for SweepServiceTokens {
+    type Output = usize;
+    type Error = crate::spaces::SpaceError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<usize, Self::Error> {
+        crate::authorization::sweep_service_tokens(txn, self.now, self.limit).await
+    }
 }
 
 /// Rules entries capture their publication effects before becoming durable.
@@ -340,6 +359,16 @@ impl Txn<'_> {
             .or_else(|| self.base.get(world))
     }
 
+    /// Operation IDs used by admission are unique to an author across Worlds.
+    pub(crate) fn operation_in_other_world(&self, world: &Did, op: &OperationId) -> bool {
+        self.scope
+            .worlds
+            .iter()
+            .chain(&self.batch.worlds)
+            .chain(self.base)
+            .any(|(did, state)| did != world && state.has_operation(op))
+    }
+
     fn rules(&mut self, entry: Entry) -> Applied {
         if let Some(world) = entry.world()
             && !self.scope.worlds.contains_key(world)
@@ -391,15 +420,6 @@ impl Txn<'_> {
             return Ok(None);
         };
         Ok(Some(self.master.unseal(world, purpose, &sealed)?))
-    }
-
-    /// OAuth secrets use their full database key as authenticated context.
-    pub(crate) fn seal_secret(&self, context: &[u8], plaintext: &[u8]) -> Result<Bytes, KeyError> {
-        self.master.seal_secret(context, plaintext).map(Bytes::from)
-    }
-
-    pub(crate) fn unseal_secret(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, KeyError> {
-        self.master.unseal_secret(context, sealed)
     }
 
     /// Generates a key before the owner's signature determines the World DID.

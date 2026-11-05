@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Event {
     Record(RecordEvent),
+    /// A snapshot of a record in a publicly readable Space repository.
+    SpaceRecord(SpaceRecordEvent),
     /// A DID's handle changed (or was confirmed).
     Identity {
         did: String,
@@ -40,6 +42,26 @@ pub struct RecordEvent {
     pub cid: Option<String>,
     /// The record as JSON, verified by Tap. Lexicon validation is a separate
     /// ingestion stage, not yet implemented. Absent for deletions.
+    pub record: Option<serde_json::Value>,
+}
+
+/// One current record in a publicly readable Space repository.
+///
+/// Ingestion must verify that the Space is public before archiving its
+/// records. Space revisions are independent of public repository revisions.
+/// A missing record is represented by a deletion at the snapshot revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceRecordEvent {
+    pub space: String,
+    /// The DID of the repository within the Space.
+    pub did: String,
+    /// The Space repository revision observed consistently with the record.
+    pub rev: String,
+    pub collection: String,
+    pub rkey: String,
+    pub action: Action,
+    pub cid: Option<String>,
     pub record: Option<serde_json::Value>,
 }
 

@@ -475,10 +475,10 @@ async fn another_members_signature_cannot_claim_alices_membership() {
     ));
 }
 
-/// A request without a delegation learns no more about a private Space than an absent one.
-/// Catches application-policy errors or diagnostic differences exposing a private Space's existence.
+/// Private Spaces stay concealed, and a World signature alone cannot assert a member.
+/// Catches diagnostic leaks and unattributed delegation bypassing member removal.
 #[tokio::test]
-async fn tokenless_private_spaces_are_concealed_and_world_access_needs_no_membership() {
+async fn private_spaces_are_concealed_and_unattributed_world_delegations_are_refused() {
     let fixture = Fixture::new().await;
     let private = prepare_mint(
         fixture.handle.reader(),
@@ -512,12 +512,14 @@ async fn tokenless_private_spaces_are_concealed_and_world_access_needs_no_member
         .expect("World key");
     let token =
         create_delegation_token(WORLD, &scene(), &signing, DELEGATION_TOKEN_TTL_SECS).expect("World delegation");
-    fixture
-        .handle
-        .run(fixture.prepare(token).await)
-        .await
-        .expect("durable mint")
-        .expect("World has full access");
+    assert!(matches!(
+        fixture
+            .handle
+            .run(fixture.prepare(token).await)
+            .await
+            .expect("durable mint"),
+        Err(CredentialError::InvalidDelegationToken(_))
+    ));
 }
 
 /// MAC-enabled reads derive from the served World's KEM key and require the right response type.

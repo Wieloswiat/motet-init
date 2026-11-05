@@ -26,6 +26,10 @@ lcov.info
 mutants.out*/
 **/reports/mutation/
 .stryker-tmp/
+# Vitest browser mode's screenshots of failed tests.
+__screenshots__/
+# CI's `devenv up` log: it holds compiler output, which typos would scan.
+/services.log
 
 # Local
 .env

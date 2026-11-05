@@ -1,0 +1,79 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.beginWorld",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Reserve a World on the configured tenor as the signed-in owner. A retry with the same op and fields returns the live original reservation. Sign the returned operation on the owner's device; never send its private key.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["op", "handle", "name", "visibility", "rotationKey"],
+					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "Client-chosen operation ID, unique per owner."
+						},
+						"handle": { "type": "string", "format": "handle" },
+						"name": { "type": "string", "maxGraphemes": 64, "maxLength": 640 },
+						"visibility": { "type": "string", "enum": ["public", "private"] },
+						"rotationKey": {
+							"type": "string",
+							"format": "did",
+							"description": "The owner's public P-256 or K-256 did:key."
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": [
+						"reservation",
+						"operation",
+						"signingBytes",
+						"expiresAt",
+						"tenor",
+						"tenorUrl"
+					],
+					"properties": {
+						"reservation": { "type": "string" },
+						"operation": {
+							"type": "unknown",
+							"description": "Unsigned PLC genesis. Add only its sig field before finishing."
+						},
+						"signingBytes": {
+							"type": "string",
+							"description": "Unpadded base64url canonical DAG-CBOR bytes. Sign with ECDSA SHA-256 as compact low-S r || s."
+						},
+						"expiresAt": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Reservation expiry in Unix seconds."
+						},
+						"tenor": {
+							"type": "string",
+							"format": "did",
+							"description": "The configured tenor's service DID."
+						},
+						"tenorUrl": {
+							"type": "string",
+							"format": "uri",
+							"description": "The validated configured tenor endpoint."
+						}
+					}
+				}
+			},
+			"errors": [
+				{ "name": "Forbidden", "description": "The signed-in owner cannot reserve a World." },
+				{
+					"name": "UpstreamFailure",
+					"description": "The PDS or tenor could not complete the request."
+				}
+			]
+		}
+	}
+}

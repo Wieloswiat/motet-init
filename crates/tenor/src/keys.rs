@@ -135,8 +135,7 @@ impl MasterKey {
         self.seal_secret(&associated_data(subject, purpose), key.bytes())
     }
 
-    /// Seals private protocol state, bound to its exact database key.
-    pub(crate) fn seal_secret(&self, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, KeyError> {
+    fn seal_secret(&self, context: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, KeyError> {
         let mut nonce = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce).map_err(|_| KeyError::Random)?;
         let sealed = self
@@ -175,7 +174,7 @@ impl MasterKey {
         Ok(KeyData::new(purpose.key_type(), bytes))
     }
 
-    pub(crate) fn unseal_secret(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, KeyError> {
+    fn unseal_secret(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, KeyError> {
         let (&format, rest) = sealed.split_first().ok_or(KeyError::Unseal)?;
         if format != SEALED_FORMAT {
             return Err(KeyError::UnknownFormat(format));

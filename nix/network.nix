@@ -43,11 +43,16 @@ in
     plc-image = image "motet-plc" "${plc}/bin/plc-server" [ ];
     relay-image = image "motet-relay" "${indigo}/bin/relay" [ ];
     tap-image = image "motet-tap" "${indigo}/bin/tap" [ ];
+    caddy-image = image "motet-caddy" "${lib.getExe pkgs.caddy}" [ "HOME=/tmp" ];
+    dnsmasq-image = pkgs.dockerTools.streamLayeredImage {
+      name = "motet-dnsmasq";
+      tag = "dev";
+      contents = [ pkgs.busybox ];
+      config = {
+        Entrypoint = [ (lib.getExe pkgs.dnsmasq) ];
+        User = "65534:65534";
+      };
+    };
     pds-rs-image = image "motet-pds-rs" "${pds-rs}/bin/pds" [ "PDS_LEXICON_DIR=${../lexicons}" ];
-  };
-  checks = {
-    network-plc = plc;
-    network-indigo = indigo;
-    network-pds-rs = pds-rs;
   };
 }

@@ -38,7 +38,6 @@ motet-xrpc.workspace = true
 object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_urlencoded.workspace = true
 slatedb.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["net"] }
@@ -51,6 +50,7 @@ atproto-firehose = { git = "https://tangled.org/ngerakines.me/atproto-crates", r
 atproto-testkit.workspace = true
 motet-testkit = { workspace = true, features = ["services"] }
 futures.workspace = true
+p256 = "0.14"
 proptest.workspace = true
 tower = { workspace = true, features = ["util"] }
 

@@ -4,7 +4,7 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Create a reserved World from its unchanged PLC genesis signed by the owner's rotation key. Service auth must come from the reserving owner, addressed to this tenor's did:web service with #motet_tenor. Retry the same reservation and signed operation after an uncertain response; accepted creation intents retain their keys until completion.",
+			"description": "Create a reserved World from its unchanged PLC genesis signed by the owner's rotation key. Service auth must come from the reserving owner, addressed to this tenor's bare service DID. Retry the same reservation and signed operation after an uncertain response; accepted creation intents retain their keys until completion.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
@@ -14,7 +14,7 @@
 						"reservation": { "type": "string" },
 						"signedOperation": {
 							"type": "unknown",
-							"description": "The reserved plc_operation with the owner's unpadded base64url signature in sig."
+							"description": "The unchanged reserved plc_operation. Its sig is the owner's ECDSA SHA-256 signature over the decoded signingBytes: compact 64-byte r || s, low-S, encoded as unpadded base64url. The tenor-held recovery key cannot sign genesis."
 						}
 					}
 				}
@@ -29,7 +29,13 @@
 						"handle": { "type": "string", "format": "handle" }
 					}
 				}
-			}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The authenticated member did not reserve this World."
+				}
+			]
 		}
 	}
 }

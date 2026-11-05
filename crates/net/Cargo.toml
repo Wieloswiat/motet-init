@@ -16,6 +16,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
+atproto-oauth.workspace = true
+axum.workspace = true
+motet-xrpc.workspace = true
 proptest.workspace = true
 url.workspace = true
 

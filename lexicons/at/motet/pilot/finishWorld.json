@@ -1,0 +1,45 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.finishWorld",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Finish a World reservation with the original PLC genesis signed by the owner's rotation key.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["reservation", "signedOperation"],
+					"properties": {
+						"reservation": { "type": "string" },
+						"signedOperation": {
+							"type": "unknown",
+							"description": "The reserved PLC genesis with its compact low-S signature as unpadded base64url in sig."
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["did", "handle"],
+					"properties": {
+						"did": { "type": "string", "format": "did" },
+						"handle": { "type": "string", "format": "handle" }
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The signed-in owner cannot finish this reservation."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The PDS or tenor could not complete the request."
+				}
+			]
+		}
+	}
+}

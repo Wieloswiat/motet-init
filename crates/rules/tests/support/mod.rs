@@ -60,6 +60,10 @@ pub enum Action {
         author: usize,
         scene: usize,
     },
+    SetCast {
+        scene: usize,
+        mask: u8,
+    },
     CloseScene {
         scene: usize,
     },
@@ -108,6 +112,7 @@ pub fn action() -> impl Strategy<Value = Action> {
         1 => (a.clone(), p.clone()).prop_map(|(author, post)| Action::Delete { author, post }),
         1 => (a.clone(), s.clone()).prop_map(|(author, scene)| Action::JoinCast { author, scene }),
         1 => (a.clone(), s.clone()).prop_map(|(author, scene)| Action::LeaveCast { author, scene }),
+        1 => (s.clone(), 0u8..(1 << AUTHORS)).prop_map(|(scene, mask)| Action::SetCast { scene, mask }),
         1 => s.clone().prop_map(|scene| Action::CloseScene { scene }),
         1 => s.prop_map(|scene| Action::ReopenScene { scene }),
         1 => a.clone().prop_map(|author| Action::Suspend { author }),
@@ -223,6 +228,10 @@ pub fn run(actions: &[Action]) -> (World, Run) {
                     },
                 );
             }
+            Action::SetCast { scene: s, mask } => {
+                let cast = (0..AUTHORS).filter(|a| mask & (1 << a) != 0).map(author).collect();
+                tenor(&mut world, &mut out, Command::SetSceneCast { scene: scene(s), cast });
+            }
             Action::CloseScene { scene: s } => {
                 tenor(&mut world, &mut out, Command::CloseScene { scene: scene(s) });
             }
@@ -289,6 +298,7 @@ fn cast_of(run: &Run, scene: &SceneId) -> std::collections::BTreeSet<Did> {
     for (_, command, _) in &run.log {
         match command {
             Command::OpenScene { scene: s, cast: c } if s == scene => cast.clone_from(c),
+            Command::SetSceneCast { scene: s, cast: c } if s == scene => cast.clone_from(c),
             Command::JoinCast { scene: s, member } if s == scene => {
                 cast.insert(member.clone());
             }

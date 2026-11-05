@@ -41,6 +41,17 @@ let
 
   cargoArtifacts = craneLib.buildDepsOnly common;
 
+  # Clippy and the tests build with the `checks` profile (Cargo.toml), so
+  # they get dependency artifacts of their own; shipped binaries keep
+  # `release`.
+  checksCommon = common // {
+    CARGO_PROFILE = "checks";
+    # The sandbox has no system trust store, and building an HTTPS client
+    # fails without one; the images set the same variable.
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+  };
+  checksArtifacts = craneLib.buildDepsOnly checksCommon;
+
   binary =
     {
       crate,
@@ -93,9 +104,9 @@ in
     fmt = craneLib.cargoFmt { src = source; };
 
     clippy = craneLib.cargoClippy (
-      common
+      checksCommon
       // {
-        inherit cargoArtifacts;
+        cargoArtifacts = checksArtifacts;
         cargoClippyExtraArgs = "--all-targets --all-features -- --deny warnings";
       }
     );
@@ -103,9 +114,9 @@ in
     # The default suite: pure and in-process tests, property tests included.
     # Integration tests need services and run outside the sandbox (the tests-integration script).
     nextest = craneLib.cargoNextest (
-      common
+      checksCommon
       // {
-        inherit cargoArtifacts;
+        cargoArtifacts = checksArtifacts;
         cargoNextestExtraArgs = "--profile ci";
         # PROPTEST_CASES replaces each suite's own case count, so every
         # property runs 256 cases in this check. The seed is random each time

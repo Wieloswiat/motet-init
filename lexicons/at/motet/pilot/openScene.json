@@ -1,0 +1,55 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.openScene",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Open a public scene as the signed-in member. The opener is always in the cast.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["op", "world", "title"],
+					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "A caller-chosen operation ID, unique to this World and actor. Reuse it when retrying the same request."
+						},
+						"world": { "type": "string", "format": "did" },
+						"title": { "type": "string", "maxGraphemes": 120, "maxLength": 1200 },
+						"cast": {
+							"type": "array",
+							"maxLength": 100,
+							"items": { "type": "string", "format": "at-identifier" },
+							"description": "Members' handles or DIDs. The opener is added automatically."
+						}
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["scene", "uri", "cid"],
+					"properties": {
+						"scene": { "type": "string", "format": "record-key" },
+						"uri": { "type": "string", "format": "at-uri" },
+						"cid": { "type": "string", "format": "cid" }
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The signed-in member cannot open a scene in this World."
+				},
+				{ "name": "NotFound", "description": "The World or a cast member could not be resolved." },
+				{
+					"name": "UpstreamFailure",
+					"description": "The PDS or tenor could not complete the request."
+				}
+			]
+		}
+	}
+}

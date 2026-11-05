@@ -2,21 +2,57 @@
 //! checked against DID documents served by an in-memory resolver.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use atproto_identity::key::{KeyData, KeyType, generate_key, to_public};
 use atproto_identity::model::{Document, VerificationMethod};
 use atproto_identity::traits::IdentityResolver;
 use atproto_oauth::jwt::{Claims, Header, JoseClaims, mint};
-use motet_xrpc::Caller;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::response::IntoResponse;
+use motet_xrpc::server::Service;
 use motet_xrpc::service_auth::{MAX_LIFETIME_SECS, ServiceAuthError, verify};
+use motet_xrpc::{Access, Caller, Kind, Method};
 use proptest::prelude::*;
+use tower::ServiceExt;
 
 const ALICE: &str = "did:plc:alice";
 const APPVIEW: &str = "did:web:api.motet.test#motet_appview";
 const METHOD: &str = "at.motet.pilot.play.submitAdmission";
 
+#[derive(Clone)]
 struct Directory(BTreeMap<String, Document>);
+
+struct CountingDirectory {
+    directory: Directory,
+    resolutions: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl IdentityResolver for CountingDirectory {
+    async fn resolve(&self, subject: &str) -> anyhow::Result<Document> {
+        self.resolutions.fetch_add(1, Ordering::SeqCst);
+        self.directory.resolve(subject).await
+    }
+}
+
+struct InterruptibleDirectory {
+    directory: Directory,
+    unavailable: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl IdentityResolver for InterruptibleDirectory {
+    async fn resolve(&self, subject: &str) -> anyhow::Result<Document> {
+        if self.unavailable.load(Ordering::SeqCst) {
+            anyhow::bail!("directory unavailable");
+        }
+        self.directory.resolve(subject).await
+    }
+}
 
 #[async_trait::async_trait]
 impl IdentityResolver for Directory {
@@ -82,21 +118,65 @@ impl Fixture {
     }
 
     async fn verify(&self, token: &str) -> Result<Caller, ServiceAuthError> {
-        verify(token, &self.directory, |aud| aud == APPVIEW, now()).await
+        verify(token, &self.directory, |aud| aud == APPVIEW, METHOD, now()).await
     }
 }
 
+/// The replay ledger needs the exact signed identifier and expiry. Dropping
+/// either would let a token be reused or recorded for the wrong interval.
 #[tokio::test]
-async fn a_well_formed_token_names_its_issuer_and_method() {
+async fn verified_service_token_retains_identifier_and_expiry() {
     let f = Fixture::new();
+    let expiry = now() + 50;
+    let token = f.token(|claims| {
+        claims.jose.expiration = Some(expiry);
+        claims.jose.json_web_token_id = Some("token-from-the-pds".into());
+    });
     assert_eq!(
-        f.verify(&f.token(|_| {})).await,
+        f.verify(&token).await,
         Ok(Caller::Service {
             did: ALICE.into(),
             lxm: METHOD.into(),
             audience: APPVIEW.into(),
+            jti: Some("token-from-the-pds".into()),
+            expires_at: expiry,
         })
     );
+    let token = f.token(|claims| claims.jose.expiration = Some(expiry));
+    assert_eq!(
+        f.verify(&token).await,
+        Ok(Caller::Service {
+            did: ALICE.into(),
+            lxm: METHOD.into(),
+            audience: APPVIEW.into(),
+            jti: None,
+            expires_at: expiry,
+        })
+    );
+}
+
+/// A service issuer must remain distinguishable from its owning account.
+/// Stripping the fragment would let a service be mistaken for a World member.
+#[tokio::test]
+async fn verified_service_issuer_keeps_its_signed_fragment() {
+    let f = Fixture::new();
+    for issuer in ["did:plc:alice#atproto_pds", "did:plc:alice#atproto_labeler"] {
+        let expiry = now() + 50;
+        let token = f.token(|claims| {
+            claims.jose.issuer = Some(issuer.into());
+            claims.jose.expiration = Some(expiry);
+        });
+        assert_eq!(
+            f.verify(&token).await,
+            Ok(Caller::Service {
+                did: issuer.into(),
+                lxm: METHOD.into(),
+                audience: APPVIEW.into(),
+                jti: None,
+                expires_at: expiry,
+            })
+        );
+    }
 }
 
 #[tokio::test]
@@ -124,6 +204,176 @@ async fn long_lived_or_endless_tokens_are_refused() {
     assert_eq!(f.verify(&long).await, Err(ServiceAuthError::BadLifetime));
 }
 
+/// A long-lived token cannot become acceptable merely because it is near its
+/// expiry; otherwise a stolen token is valid beyond the issuer's minute.
+#[tokio::test]
+async fn lifetime_cap_includes_the_signed_issuance_time() {
+    let f = Fixture::new();
+    let now = 1_700_000_000;
+    for (issued, expires, accepted) in [
+        (now, now + 60, true),
+        (now - 1, now + 60, false),
+        (now - 60, now + 1, false),
+    ] {
+        let token = f.token(|claims| {
+            claims.jose.issued_at = Some(issued);
+            claims.jose.expiration = Some(expires);
+        });
+        assert_eq!(
+            verify(&token, &f.directory, |aud| aud == APPVIEW, METHOD, now)
+                .await
+                .is_ok(),
+            accepted,
+        );
+    }
+}
+
+/// Invalid claims must not turn unauthenticated HTTP requests into DID
+/// directory traffic, while a valid request still reaches the handler.
+#[tokio::test]
+async fn invalid_audience_method_and_lifetime_never_resolve_through_the_router() {
+    let f = Fixture::new();
+    let directory = Arc::new(CountingDirectory {
+        directory: f.directory.clone(),
+        resolutions: AtomicUsize::new(0),
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let authenticate = motet_xrpc::service_auth::authenticate(
+        Arc::<CountingDirectory>::clone(&directory),
+        Arc::new(|aud| aud == APPVIEW),
+    );
+    let router = Service::new(authenticate)
+        .method(
+            Method {
+                nsid: METHOD,
+                kind: Kind::Procedure,
+                access: Access::Service,
+                max_body: 0,
+            },
+            |calls: Arc<AtomicUsize>, _: Caller, _| async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(StatusCode::NO_CONTENT.into_response())
+            },
+        )
+        .into_router(Arc::clone(&calls))
+        .expect("registered method");
+    let now = now();
+    let invalid = [
+        f.token(|c| c.jose.audience = Some("did:web:elsewhere.test".into())),
+        f.token(|c| c.jose.audience = None),
+        f.token(|c| {
+            c.private.remove("lxm");
+        }),
+        f.token(|c| {
+            c.private.insert("lxm".into(), "".into());
+        }),
+        f.token(|c| {
+            c.private.insert("lxm".into(), "at.motet.pilot.play.closeScene".into());
+        }),
+        f.token(|c| c.jose.expiration = None),
+        f.token(|c| c.jose.issued_at = None),
+        f.token(|c| {
+            c.jose.issued_at = None;
+            c.jose.not_before = Some(now.saturating_sub(1));
+        }),
+        f.token(|c| c.jose.expiration = Some(now)),
+        f.token(|c| {
+            c.jose.issued_at = Some(now);
+            c.jose.expiration = Some(now + 61);
+        }),
+        f.token(|c| c.jose.not_before = Some(now + 40)),
+        f.token(|c| {
+            c.jose.issued_at = Some(now + 30);
+            c.jose.expiration = Some(now + 20);
+        }),
+        f.token(|c| {
+            c.jose.issued_at = Some(now + 61);
+            c.jose.expiration = Some(now + 40);
+        }),
+    ];
+    for token in invalid {
+        let request = Request::post(format!("/xrpc/{METHOD}"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request");
+        let response = router.clone().oneshot(request).await.expect("router");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(directory.resolutions.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    // The expected method is the registry's decoded path, not the raw URI.
+    let token = f.token(|_| {});
+    let request = Request::post("/xrpc/at.motet.pilot.play.submit%41dmission?other=value")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = router.oneshot(request).await.expect("router");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(directory.resolutions.load(Ordering::SeqCst), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+/// An outage must not consume a token, and a forged token must not consume
+/// another token's identifier. Mapping every resolver error to 401, or
+/// admitting unverified claims to the handler, breaks this retry.
+#[tokio::test]
+async fn resolver_outage_and_forgery_cannot_consume_a_valid_token() {
+    let f = Fixture::new();
+    let directory = Arc::new(InterruptibleDirectory {
+        directory: f.directory.clone(),
+        unavailable: AtomicBool::new(true),
+    });
+    let calls = Arc::new(AtomicUsize::new(0));
+    let authenticate = motet_xrpc::service_auth::authenticate(
+        Arc::<InterruptibleDirectory>::clone(&directory),
+        Arc::new(|aud| aud == APPVIEW),
+    );
+    let router = Service::new(authenticate)
+        .method(
+            Method {
+                nsid: METHOD,
+                kind: Kind::Procedure,
+                access: Access::Service,
+                max_body: 0,
+            },
+            |calls: Arc<AtomicUsize>, caller: Caller, _| async move {
+                assert!(matches!(&caller, Caller::Service { jti: Some(jti), .. } if jti == "single-use"));
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(StatusCode::NO_CONTENT.into_response())
+            },
+        )
+        .into_router(Arc::clone(&calls))
+        .expect("registered method");
+    let token = f.token(|claims| claims.jose.json_web_token_id = Some("single-use".into()));
+    let request = |token: &str| {
+        Request::post(format!("/xrpc/{METHOD}"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("request")
+    };
+
+    let response = router.clone().oneshot(request(&token)).await.expect("router");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .expect("error body");
+    let error: serde_json::Value = serde_json::from_slice(&body).expect("XRPC error");
+    assert_eq!(error["error"], "UpstreamFailure");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    directory.unavailable.store(false, Ordering::SeqCst);
+    let mallory = Fixture::new();
+    let forged = mallory.token(|claims| claims.jose.json_web_token_id = Some("single-use".into()));
+    let response = router.clone().oneshot(request(&forged)).await.expect("router");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let response = router.oneshot(request(&token)).await.expect("router");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
 /// Both verification layers use the supplied clock and distinguish signed
 /// lifetime refusals from forged signatures, even when wall time differs.
 #[tokio::test]
@@ -135,10 +385,14 @@ async fn signed_time_claims_use_one_clock_and_report_lifetime_refusals() {
         c.jose.expiration = Some(issued + 60);
         c.jose.not_before = Some(issued);
     });
-    assert!(verify(&token, &f.directory, |aud| aud == APPVIEW, issued).await.is_ok());
+    assert!(
+        verify(&token, &f.directory, |aud| aud == APPVIEW, METHOD, issued)
+            .await
+            .is_ok()
+    );
     for time in [issued - 1, issued + 60] {
         assert_eq!(
-            verify(&token, &f.directory, |aud| aud == APPVIEW, time).await,
+            verify(&token, &f.directory, |aud| aud == APPVIEW, METHOD, time).await,
             Err(ServiceAuthError::BadLifetime),
         );
     }
@@ -147,7 +401,7 @@ async fn signed_time_claims_use_one_clock_and_report_lifetime_refusals() {
         c.jose.expiration = Some(issued + 120);
     });
     assert_eq!(
-        verify(&future, &f.directory, |aud| aud == APPVIEW, issued).await,
+        verify(&future, &f.directory, |aud| aud == APPVIEW, METHOD, issued).await,
         Err(ServiceAuthError::BadLifetime),
     );
 }
@@ -162,6 +416,94 @@ async fn a_key_that_isnt_the_atproto_key_doesnt_sign() {
     assert_eq!(f.verify(&f.token(|_| {})).await, Err(ServiceAuthError::NoSigningKey));
 }
 
+/// A document may mention another DID's key. Selecting it by the suffix
+/// alone would let that DID sign requests as the document's subject.
+#[tokio::test]
+async fn foreign_atproto_keys_cannot_impersonate_the_document_subject() {
+    let mut f = Fixture::new();
+    let attacker = Fixture {
+        key: generate_key(KeyType::K256Private).expect("attacker key"),
+        directory: f.directory.clone(),
+    };
+    let foreign = document("did:plc:mallory", "atproto", &attacker.key)
+        .verification_method
+        .remove(0);
+    f.directory
+        .0
+        .get_mut(ALICE)
+        .expect("Alice document")
+        .verification_method
+        .insert(0, foreign);
+    let forged = attacker.token(|claims| claims.jose.json_web_token_id = Some("forged".into()));
+    let legitimate = f.token(|_| {});
+    assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::BadSignature));
+    assert!(f.verify(&legitimate).await.is_ok());
+
+    let alice_document = f.directory.0.get_mut(ALICE).expect("Alice document");
+    let VerificationMethod::Multikey { id, .. } = &mut alice_document.verification_method[1] else {
+        panic!("Alice's verification method is a Multikey");
+    };
+    *id = "#atproto".into();
+    assert!(f.verify(&legitimate).await.is_ok());
+    assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::BadSignature));
+
+    f.directory
+        .0
+        .get_mut(ALICE)
+        .expect("Alice document")
+        .verification_method
+        .truncate(1);
+    assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::NoSigningKey));
+}
+
+/// A foreign controller cannot authorize an issuer's service tokens merely
+/// by placing its public key under the issuer's own method ID.
+#[tokio::test]
+async fn atproto_keys_with_foreign_controllers_cannot_impersonate_the_subject() {
+    for method_id in ["#atproto", "did:plc:alice#atproto"] {
+        let mut f = Fixture::new();
+        let attacker = Fixture {
+            key: generate_key(KeyType::K256Private).expect("attacker key"),
+            directory: f.directory.clone(),
+        };
+        let mut foreign = document(ALICE, "atproto", &attacker.key).verification_method.remove(0);
+        let VerificationMethod::Multikey { id, controller, .. } = &mut foreign else {
+            panic!("fixture verification method is a Multikey");
+        };
+        *id = method_id.into();
+        *controller = "did:plc:mallory".into();
+        f.directory
+            .0
+            .get_mut(ALICE)
+            .expect("Alice document")
+            .verification_method
+            .insert(0, foreign);
+        let forged = attacker.token(|_| {});
+        let legitimate = f.token(|_| {});
+        assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::BadSignature));
+        assert!(f.verify(&legitimate).await.is_ok());
+
+        f.directory
+            .0
+            .get_mut(ALICE)
+            .expect("Alice document")
+            .verification_method
+            .truncate(1);
+        assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::NoSigningKey));
+    }
+}
+
+/// A resolver returning a different subject's document must not let that
+/// subject's signing key authenticate the requested issuer.
+#[tokio::test]
+async fn mismatched_resolved_document_cannot_authenticate_an_issuer() {
+    let mut f = Fixture::new();
+    f.directory
+        .0
+        .insert(ALICE.into(), document("did:plc:mallory", "atproto", &f.key));
+    assert_eq!(f.verify(&f.token(|_| {})).await, Err(ServiceAuthError::Unresolvable));
+}
+
 #[tokio::test]
 async fn someone_elses_key_doesnt_sign_for_alice() {
     let f = Fixture::new();
@@ -174,6 +516,28 @@ async fn someone_elses_key_doesnt_sign_for_alice() {
     )
     .expect("claims json");
     let forged = mint(&mallory, &header, &claims).expect("minting");
+    assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::BadSignature));
+}
+
+/// A forged identifier must not reach the replay ledger. The inexpensive
+/// pre-checks must not make unverified claims authoritative.
+#[tokio::test]
+async fn changing_a_signed_identifier_does_not_authenticate() {
+    let f = Fixture::new();
+    let token = f.token(|claims| claims.jose.json_web_token_id = Some("original".into()));
+    let mut parts = token.split('.');
+    let header = parts.next().expect("header");
+    let payload = parts.next().expect("payload");
+    let signature = parts.next().expect("signature");
+    let bytes =
+        base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload).expect("encoded claims");
+    let mut claims: Claims = serde_json::from_slice(&bytes).expect("claims");
+    claims.jose.json_web_token_id = Some("attacker".into());
+    let payload = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        serde_json::to_vec(&claims).expect("claims JSON"),
+    );
+    let forged = format!("{header}.{payload}.{signature}");
     assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::BadSignature));
 }
 

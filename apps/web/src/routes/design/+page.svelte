@@ -5,8 +5,7 @@
 
 	let theme: ThemeName = $state('light');
 
-	// The screens ported from the design export, in the export's order. Each
-	// renders demo content; none of them reads the AppView yet.
+	// These remaining design-export screens still show sample content.
 	const world = 'gilded-reach';
 
 	const screens = [
@@ -15,22 +14,13 @@
 		{ href: resolve('/inbox'), label: 'Inbox' },
 		{ href: resolve('/search'), label: 'Search' },
 		{ href: resolve('/settings'), label: 'Settings' },
-		{ href: resolve('/sign-in'), label: 'Sign in' },
 		{
 			href: resolve('/profile/[handle]', { handle: 'aurelia.bsky.social' }),
 			label: 'Profile: someone else'
 		},
 		{ href: resolve('/profile/[handle]', { handle: 'iga.bsky.social' }), label: 'Profile: yours' },
-		{ href: resolve('/new-world'), label: 'Start a World' },
 		{ href: resolve('/w/[world]/visitor', { world }), label: 'World overview: visitor' },
 		{ href: resolve('/w/[world]/apply', { world }), label: 'Apply and create a character' },
-		{ href: resolve('/w/[world]', { world }), label: 'World overview: member' },
-		{ href: resolve('/w/[world]/play', { world }), label: 'Locations and scenes' },
-		{
-			href: resolve('/w/[world]/play/[scene]', { world, scene: 'feast-of-lanterns' }),
-			label: 'Scene'
-		},
-		{ href: resolve('/w/[world]/play/new', { world }), label: 'New scene' },
 		{ href: resolve('/w/[world]/characters', { world }), label: 'Characters' },
 		{
 			href: resolve('/w/[world]/characters/[character]', { world, character: 'lady-maren' }),
@@ -62,7 +52,9 @@
 >
 	<h1 class={css({ fontFamily: 'display', color: 'accent.ink' })}>Motet</h1>
 	<ThemeSwitch bind:value={theme} />
-	<nav aria-label="Screens">
+	<h2>Demo screens</h2>
+	<p>These design studies show sample content and do not use the AppView.</p>
+	<nav aria-label="Demo screens">
 		<ul class={css({ display: 'grid', gap: '2', paddingInlineStart: '6' })}>
 			{#each screens as screen (screen.href)}
 				<li><a class={css({ color: 'accent.ink' })} href={screen.href}>{screen.label}</a></li>

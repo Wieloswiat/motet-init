@@ -62,7 +62,7 @@ async fn concurrent_workers_never_share_a_job() {
 #[ignore = "integration: needs PostgreSQL (devenv up)"]
 async fn an_accounts_jobs_go_out_in_order() {
     let pool = pool().await;
-    let first = enqueue(&pool, "did:plc:alice", "op-1", "post", &json!({}))
+    enqueue(&pool, "did:plc:alice", "op-1", "post", &json!({}))
         .await
         .expect("enqueue");
     enqueue(&pool, "did:plc:alice", "op-2", "post", &json!({}))
@@ -77,7 +77,7 @@ async fn an_accounts_jobs_go_out_in_order() {
         "op-2 waits for op-1"
     );
 
-    assert!(finish(&pool, first, "w", false, &json!({})).await.expect("finish"));
+    assert!(finish(&pool, &jobs[0], "w", false, &json!({})).await.expect("finish"));
     let jobs = claim(&pool, "w", 10, lease).await.expect("claim");
     assert_eq!(jobs.iter().map(|j| j.op_id.as_str()).collect::<Vec<_>>(), ["op-2"]);
 }
@@ -86,7 +86,7 @@ async fn an_accounts_jobs_go_out_in_order() {
 #[ignore = "integration: needs PostgreSQL (devenv up)"]
 async fn an_expired_lease_passes_the_job_on() {
     let pool = pool().await;
-    let id = enqueue(&pool, "did:plc:alice", "op-1", "post", &json!({}))
+    enqueue(&pool, "did:plc:alice", "op-1", "post", &json!({}))
         .await
         .expect("enqueue");
     let stale = claim(&pool, "slow", 1, Duration::from_millis(1)).await.expect("claim");
@@ -96,12 +96,12 @@ async fn an_expired_lease_passes_the_job_on() {
     let taken = claim(&pool, "fast", 1, Duration::from_secs(60)).await.expect("claim");
     assert_eq!(taken.first().map(|j| j.attempts), Some(2));
     assert!(
-        !finish(&pool, id, "slow", false, &json!({"by": "slow"}))
+        !finish(&pool, &stale[0], "slow", false, &json!({"by": "slow"}))
             .await
             .expect("finish")
     );
     assert!(
-        finish(&pool, id, "fast", false, &json!({"by": "fast"}))
+        finish(&pool, &taken[0], "fast", false, &json!({"by": "fast"}))
             .await
             .expect("finish")
     );

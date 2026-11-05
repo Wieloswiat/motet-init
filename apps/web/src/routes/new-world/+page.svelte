@@ -5,4 +5,4 @@
 	let { data }: PageProps = $props();
 </script>
 
-<StartWorld data={data.screen} />
+<StartWorld signedIn={data.session !== null} />

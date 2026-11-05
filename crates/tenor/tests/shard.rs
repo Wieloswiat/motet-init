@@ -130,12 +130,18 @@ proptest! {
 
             let mut outcomes = Vec::new();
             let mut rest = entries.as_slice();
+            // Back-to-back checkpoints pile up L0 tables faster than the
+            // compactor clears them, and past the store's limit each flush
+            // waits for a manifest poll. Sixteen per case still checkpoint at
+            // arbitrary points without measuring that wait instead of replay.
+            let mut checkpoints = 0;
             for (cut, checkpoint) in cuts.iter().cycle() {
                 if rest.is_empty() { break; }
                 let (batch, tail) = rest.split_at((*cut).min(rest.len()));
                 outcomes.extend(batched.commit(batch).await.expect("commit"));
-                if *checkpoint {
+                if *checkpoint && checkpoints < 16 {
                     batched.checkpoint().await.expect("checkpoint");
+                    checkpoints += 1;
                 }
                 rest = tail;
             }

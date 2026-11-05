@@ -1,0 +1,63 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.createPost",
+	"defs": {
+		"main": {
+			"type": "procedure",
+			"description": "Publish a post in the signed-in author's repo and request admission of that exact version. Retrying the same operation and content returns the original post.",
+			"input": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["op", "world", "scene", "body", "register"],
+					"properties": {
+						"op": {
+							"type": "string",
+							"format": "tid",
+							"description": "An author-chosen TID, reused for retries of the same post and used as its record key."
+						},
+						"world": { "type": "string", "format": "did" },
+						"scene": { "type": "string", "format": "record-key" },
+						"body": { "type": "string", "maxLength": 65536, "description": "Typst source." },
+						"register": { "type": "string", "knownValues": ["in-character", "out-of-character"] }
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["uri", "cid", "status"],
+					"properties": {
+						"uri": { "type": "string", "format": "at-uri" },
+						"cid": { "type": "string", "format": "cid" },
+						"status": {
+							"type": "string",
+							"knownValues": ["admitted", "refused", "pending", "failed"]
+						},
+						"reason": {
+							"type": "string",
+							"description": "The reason when admission is refused or has failed."
+						},
+						"epoch": {
+							"type": "integer",
+							"minimum": 0,
+							"description": "Recovery epoch when admitted."
+						},
+						"seq": { "type": "integer", "minimum": 0, "description": "Scene place when admitted." }
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The signed-in author is not authorized to publish."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The post could not be published to the author's PDS."
+				}
+			]
+		}
+	}
+}

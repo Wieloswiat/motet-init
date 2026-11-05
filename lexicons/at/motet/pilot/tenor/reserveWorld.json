@@ -4,13 +4,18 @@
 	"defs": {
 		"main": {
 			"type": "procedure",
-			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's did:web service with #motet_tenor as audience. The owner signs the returned PLC genesis on their device; its DID is determined only by that signature.",
+			"description": "Reserve a World handle and keys for 24 hours. Service auth must name the owner as issuer and this tenor's bare service DID as audience. A retry with the same op and fields returns the live original reservation; changing fields with the same op is invalid. A different op from the same owner supersedes an unsigned draft for the handle and invalidates its keys. A submitted genesis cannot be superseded. The owner signs the returned PLC genesis on their device; the DID is derived from that signed genesis.",
 			"input": {
 				"encoding": "application/json",
 				"schema": {
 					"type": "object",
-					"required": ["handle", "rotationKey", "tenorRotationKey"],
+					"required": ["op", "handle", "rotationKey", "tenorRotationKey"],
 					"properties": {
+						"op": {
+							"type": "string",
+							"format": "record-key",
+							"description": "Client-chosen operation ID, unique per owner."
+						},
 						"handle": { "type": "string", "format": "handle" },
 						"rotationKey": {
 							"type": "string",
@@ -20,6 +25,17 @@
 						"tenorRotationKey": {
 							"type": "boolean",
 							"description": "Opt in to a tenor-held recovery key listed after the owner's key."
+						},
+						"visibility": {
+							"type": "string",
+							"enum": ["public", "private"],
+							"description": "Initial meta Space visibility. Omit for private. Public Worlds publish a group declaration in their public repo."
+						},
+						"name": {
+							"type": "string",
+							"maxGraphemes": 64,
+							"maxLength": 640,
+							"description": "Initial group profile display name. If omitted, the World handle is used."
 						}
 					}
 				}
@@ -37,7 +53,7 @@
 						},
 						"signingBytes": {
 							"type": "string",
-							"description": "Unpadded base64url of the canonical DAG-CBOR unsigned operation. Sign these bytes with rotationKey."
+							"description": "Unpadded base64url of the raw canonical DAG-CBOR unsigned operation. Sign the decoded bytes with ECDSA using rotationKey and SHA-256, not a precomputed digest."
 						},
 						"expiresAt": {
 							"type": "integer",
@@ -46,7 +62,21 @@
 						}
 					}
 				}
-			}
+			},
+			"errors": [
+				{
+					"name": "HandleTaken",
+					"description": "The handle is already in use, reserved by another owner, or has a submitted genesis."
+				},
+				{
+					"name": "InvalidRequest",
+					"description": "The operation ID is invalid or was reused with different fields."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The issuer's DID document could not be resolved; retry with a fresh service token."
+				}
+			]
 		}
 	}
 }

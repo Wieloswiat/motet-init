@@ -1,0 +1,59 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.queryDefs",
+	"defs": {
+		"world": {
+			"type": "object",
+			"description": "A group or World identified by a public group declaration or a public Motet scene, with its projected handle and public meta Space display name if known. A group declaration alone does not identify a Motet World.",
+			"required": ["did"],
+			"properties": {
+				"did": { "type": "string", "format": "did" },
+				"handle": { "type": "string", "format": "handle" },
+				"displayName": {
+					"type": "string",
+					"description": "The World's name from its public meta Space."
+				}
+			}
+		},
+		"record": {
+			"type": "object",
+			"description": "A public record and the exact version returned.",
+			"required": ["uri", "cid", "value"],
+			"properties": {
+				"uri": { "type": "string", "format": "at-uri" },
+				"cid": { "type": "string", "format": "cid" },
+				"value": { "type": "unknown" }
+			}
+		},
+		"strongRef": {
+			"type": "object",
+			"required": ["uri", "cid"],
+			"properties": {
+				"uri": { "type": "string", "format": "at-uri" },
+				"cid": { "type": "string", "format": "cid" }
+			}
+		},
+		"place": {
+			"type": "object",
+			"description": "The admitted post's position in the World.",
+			"required": ["epoch", "seq"],
+			"properties": {
+				"epoch": { "type": "integer", "minimum": 0 },
+				"seq": { "type": "integer", "minimum": 0 }
+			}
+		},
+		"admittedPost": {
+			"type": "object",
+			"description": "A public post version admitted to this scene.",
+			"required": ["admission", "uri", "cid", "author", "place", "value"],
+			"properties": {
+				"admission": { "type": "ref", "ref": "#strongRef" },
+				"uri": { "type": "string", "format": "at-uri" },
+				"cid": { "type": "string", "format": "cid" },
+				"author": { "type": "string", "format": "did" },
+				"place": { "type": "ref", "ref": "#place" },
+				"value": { "type": "unknown" }
+			}
+		}
+	}
+}

@@ -23,7 +23,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use futures::future::BoxFuture;
 
-use crate::{Caller, Kind, Method, Registry, RegistryError, XrpcError};
+use crate::{Access, Caller, Kind, Method, Registry, RegistryError, XrpcError};
 
 /// What a handler receives besides its state and caller.
 #[derive(Debug, Default)]
@@ -51,6 +51,8 @@ pub struct AuthenticationContext<'a> {
     pub headers: &'a HeaderMap,
     pub method: &'a Verb,
     pub uri: &'a Uri,
+    /// The registry's resolved XRPC method, independent of URI encoding.
+    pub nsid: &'a str,
 }
 
 /// Establishes who is calling from their credentials and HTTP context.
@@ -69,6 +71,21 @@ pub fn public_cors(response: &mut Response) {
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
         HeaderValue::from_static("DPoP-Nonce, WWW-Authenticate"),
     );
+}
+
+fn suppress_cors(response: &mut Response) {
+    let headers = response.headers_mut();
+    for name in [
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        header::ACCESS_CONTROL_MAX_AGE,
+    ] {
+        headers.remove(name);
+    }
+    headers.remove("access-control-allow-private-network");
 }
 
 const CORS_REQUEST_HEADERS: &str = "authorization,dpop,content-type,accept,accept-language,content-language,atproto-proxy,atproto-space-audience,atproto-space-want-mac,signature,signature-input";
@@ -137,11 +154,27 @@ async fn dispatch<S: Clone + Send + Sync + 'static>(
     request: Request,
 ) -> Response {
     let preflight = request.method() == Verb::OPTIONS;
-    let mut response = match serve(&shared, &nsid, request).await {
+    // Cookie responses must not inherit the wildcard for independent clients.
+    // Check the declaration without the verb so errors and preflights are
+    // covered too.
+    let mut private_cors = request.headers().contains_key(header::COOKIE)
+        || shared
+            .registry
+            .methods
+            .get(nsid.as_str())
+            .is_some_and(|method| method.access == Access::AppviewSession);
+    let mut response = match serve(&shared, &nsid, request, &mut private_cors).await {
         Ok(response) => response,
         Err(error) => error.into_response(),
     };
-    public_cors(&mut response);
+    if private_cors {
+        suppress_cors(&mut response);
+    } else {
+        public_cors(&mut response);
+    }
+    response
+        .headers_mut()
+        .append(header::VARY, HeaderValue::from_static("Cookie, Authorization"));
     if preflight {
         response.headers_mut().append(
             header::VARY,
@@ -155,6 +188,7 @@ async fn serve<S: Clone + Send + Sync + 'static>(
     shared: &Shared<S>,
     nsid: &str,
     request: Request,
+    private_cors: &mut bool,
 ) -> Result<Response, XrpcError> {
     let (mut parts, body) = request.into_parts();
     if parts.method == Verb::OPTIONS {
@@ -170,8 +204,10 @@ async fn serve<S: Clone + Send + Sync + 'static>(
         headers: &parts.headers,
         method: &parts.method,
         uri: &parts.uri,
+        nsid: method.nsid,
     })
     .await?;
+    *private_cors |= matches!(&caller, Caller::AppviewSession { .. });
     let method = Registry::authorize_method(method, &caller)?;
     let handler = shared
         .handlers
@@ -218,7 +254,12 @@ fn preflight(registry: &Registry, nsid: &str, headers: &HeaderMap) -> Result<Res
         (Some(b"POST"), None) => (Kind::Procedure, "POST"),
         _ => return Err(invalid()),
     };
-    registry.resolve(nsid, kind)?;
+    let method = registry.resolve(nsid, kind)?;
+    if method.access == Access::AppviewSession {
+        return Err(XrpcError::InvalidRequest(
+            "cross-origin access is not allowed for this XRPC method".into(),
+        ));
+    }
     for requested in headers.get_all(header::ACCESS_CONTROL_REQUEST_HEADERS) {
         for name in requested.to_str().map_err(|_| invalid())?.split(',') {
             if !CORS_REQUEST_HEADERS

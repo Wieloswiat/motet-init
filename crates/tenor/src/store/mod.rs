@@ -40,6 +40,13 @@ fn settings() -> Settings {
         // How soon a fenced writer notices when it isn't writing: its writes
         // notice at once. vlpds uses the same.
         manifest_poll_interval: Duration::from_secs(10),
+        // Each checkpoint's flush adds a small L0 table holding the marker
+        // keys. Past SlateDB's defaults of 8 tables (in all, and covering any
+        // one key), a flush waits until the writer next reads the manifest and
+        // sees the compactor's work, up to `manifest_poll_interval`, and every
+        // World on the shard waits with it. vlpds allows 32.
+        l0_max_ssts: 32,
+        l0_max_ssts_per_key: 32,
         ..Settings::default()
     }
 }
@@ -111,10 +118,6 @@ impl Reader {
             return Ok(None);
         };
         Ok(Some(self.master.unseal(world, purpose, &sealed)?))
-    }
-
-    pub(crate) fn unseal_secret(&self, context: &[u8], sealed: &[u8]) -> Result<Vec<u8>, KeyError> {
-        self.master.unseal_secret(context, sealed)
     }
 
     /// A World's committed repo blocks, read-only.

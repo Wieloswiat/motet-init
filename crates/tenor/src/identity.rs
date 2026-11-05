@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
 
+use crate::authorization::ServiceToken;
 use crate::keys::{KeyError, Purpose};
 use crate::shard::{Handle, Op, SubmitError, Txn, TxnError};
 use crate::store::{ReadError, Reader, keys};
@@ -36,6 +37,10 @@ pub enum IdentityError {
     InvalidHandle,
     #[error("handle is already in use or reserved")]
     HandleTaken,
+    #[error("operation ID is invalid or was reused for a different reservation")]
+    InvalidReserveOp,
+    #[error("World profile is invalid: {0}")]
+    InvalidProfile(String),
     #[error("rotationKey must be a public P-256 or K-256 did:key")]
     InvalidRotationKey,
     #[error("reservation does not exist")]
@@ -184,12 +189,25 @@ fn normalize_handle(handle: &str) -> Result<String, IdentityError> {
     is_valid_handle(handle).ok_or(IdentityError::InvalidHandle)
 }
 
-#[derive(Debug, Deserialize)]
+/// The initial audience of a World's meta Space.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    #[default]
+    Private,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReserveRequest {
+    pub op: String,
     pub handle: String,
     pub rotation_key: String,
     pub tenor_rotation_key: bool,
+    #[serde(default)]
+    pub visibility: Visibility,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -215,11 +233,42 @@ pub struct CreateRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Reservation {
     pub(crate) owner: Did,
+    #[serde(default)]
+    pub(crate) request: Option<ReserveRequest>,
     pub(crate) handle: String,
+    #[serde(default)]
+    pub(crate) visibility: Visibility,
+    #[serde(default)]
+    pub(crate) name: Option<String>,
     pub(crate) operation: UnsignedOperation,
     pub(crate) expires: u64,
     pub(crate) signed: Option<Operation>,
     pub(crate) created: bool,
+}
+
+/// A reservation and its verified token share one shard transaction.
+pub(crate) struct AuthorizedReserve {
+    pub token: ServiceToken,
+    pub request: ReserveRequest,
+    pub hosting: Arc<Hosting>,
+    pub now: SystemTime,
+}
+
+impl Op for AuthorizedReserve {
+    type Output = Reserved;
+    type Error = IdentityError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<Reserved, IdentityError> {
+        self.token.consume(txn).await?;
+        ReserveWorld {
+            owner: self.token.issuer,
+            request: self.request,
+            hosting: self.hosting,
+            now: self.now,
+        }
+        .run(txn)
+        .await
+    }
 }
 
 /// Reserves a handle and sealed keys on the one writer. The caller supplies
@@ -238,6 +287,27 @@ impl Op for ReserveWorld {
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Reserved, IdentityError> {
         let now = unix_seconds(self.now)?;
+        atproto_record::record_key::check_record_key(&self.request.op).map_err(|_| IdentityError::InvalidReserveOp)?;
+        let op_key = keys::reservation_op(&self.owner, &self.request.op);
+        if let Some(id) = txn.get(&op_key).await? {
+            let id = std::str::from_utf8(&id).map_err(|_| IdentityError::Inconsistent)?;
+            let reserved = load(txn, id).await?;
+            if reserved.signed.is_some() || reserved.expires > now {
+                if reserved.request.as_ref() != Some(&self.request) {
+                    return Err(IdentityError::InvalidReserveOp);
+                }
+                let signing_bytes = URL_SAFE_NO_PAD.encode(
+                    atproto_dasl::to_vec(&reserved.operation).map_err(|e| IdentityError::Encoding(e.to_string()))?,
+                );
+                return Ok(Reserved {
+                    reservation: id.to_owned(),
+                    operation: reserved.operation,
+                    signing_bytes,
+                    expires_at: reserved.expires,
+                });
+            }
+            remove_draft(txn, id, &reserved);
+        }
         let handle = self.hosting.handle(&self.request.handle)?;
         let rotation = identify_key(&self.request.rotation_key).map_err(|_| IdentityError::InvalidRotationKey)?;
         if !self.request.rotation_key.starts_with("did:key:")
@@ -245,13 +315,26 @@ impl Op for ReserveWorld {
         {
             return Err(IdentityError::InvalidRotationKey);
         }
+        // An invalid profile must not strand a DID after PLC accepts genesis.
+        let profile = serde_json::json!({
+            "$type": "group.opensocial.profile",
+            "displayName": self.request.name.as_deref().unwrap_or(&handle),
+            "joinPolicy": "invite",
+        });
+        let profile = crate::repo::record_from_json(&profile)?;
+        crate::repo::validate_record("group.opensocial.profile", "self", &profile).map_err(|error| match error {
+            crate::repo::RepoError::InvalidRecord(message) => IdentityError::InvalidProfile(message),
+            other => other.into(),
+        })?;
         if txn.get(&keys::handle(&handle)).await?.is_some() {
             return Err(IdentityError::HandleTaken);
         }
         if let Some(id) = txn.get(&keys::reserved_handle(&handle)).await? {
             let id = std::str::from_utf8(&id).map_err(|_| IdentityError::Inconsistent)?;
             let reserved = load(txn, id).await?;
-            if reserved.signed.is_some() || reserved.expires > now {
+            // A submitted genesis may already exist at PLC, even after a lost
+            // response. Only unsigned drafts can safely be superseded.
+            if reserved.signed.is_some() || (reserved.expires > now && reserved.owner != self.owner) {
                 return Err(IdentityError::HandleTaken);
             }
             remove_draft(txn, id, &reserved);
@@ -277,12 +360,16 @@ impl Op for ReserveWorld {
         let reserved = Reservation {
             owner: self.owner,
             handle,
+            visibility: self.request.visibility,
+            name: self.request.name.clone(),
+            request: Some(self.request),
             operation,
             expires,
             signed: None,
             created: false,
         };
         txn.put(keys::reservation(&id), serde_json::to_vec(&reserved)?.into());
+        txn.put(op_key, Bytes::copy_from_slice(id.as_bytes()));
         txn.put(
             keys::reserved_handle(&reserved.handle),
             Bytes::copy_from_slice(id.as_bytes()),
@@ -312,6 +399,9 @@ fn remove_draft(txn: &mut Txn<'_>, id: &str, reservation: &Reservation) {
     txn.delete(keys::reservation(id));
     txn.delete(keys::reserved_handle(&reservation.handle));
     txn.delete(keys::reservation_expiry(id, reservation.expires));
+    if let Some(request) = &reservation.request {
+        txn.delete(keys::reservation_op(&reservation.owner, &request.op));
+    }
     for purpose in [Purpose::Signing, Purpose::Kem, Purpose::Rotation] {
         txn.delete(keys::reserved_key(id, purpose));
     }
@@ -349,7 +439,7 @@ impl Op for SweepReservations {
 }
 
 struct BeginCreate {
-    owner: Did,
+    token: ServiceToken,
     request: CreateRequest,
 }
 
@@ -365,12 +455,13 @@ impl Op for BeginCreate {
     type Error = IdentityError;
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<Prepared, IdentityError> {
+        self.token.consume(txn).await?;
         let id = self.request.reservation;
         if id.len() != 43 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
             return Err(IdentityError::ReservationNotFound);
         }
         let mut reserved = load(txn, &id).await?;
-        if reserved.owner != self.owner {
+        if reserved.owner != self.token.issuer {
             return Err(IdentityError::NotOwner);
         }
         if reserved.signed.is_none() && reserved.expires <= unix_seconds(SystemTime::now())? {
@@ -434,14 +525,15 @@ fn verify_reserved(reserved: &UnsignedOperation, signed: &Operation) -> Result<(
 }
 
 /// Publishes the exact owner-signed operation, then atomically creates the
-/// World. Retrying the same request reconciles PLC before another submission.
-pub async fn create(
+/// World. A committed intent spends its token even if the PLC response fails;
+/// retrying with a fresh token reconciles PLC before another submission.
+pub(crate) async fn create(
     shard: &Handle,
     hosting: &Hosting,
-    owner: Did,
+    token: ServiceToken,
     request: CreateRequest,
 ) -> Result<WorldInfo, IdentityError> {
-    let prepared = shard.run(BeginCreate { owner, request }).await??;
+    let prepared = shard.run(BeginCreate { token, request }).await??;
     if prepared.created {
         return world::get(shard.reader(), &prepared.did)
             .await?

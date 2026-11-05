@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use atproto_tap::{RecordAction, TapConfig, TapError, TapEvent, TapStream};
 use futures::StreamExt as _;
+use tokio::sync::Mutex;
 
 use crate::event::{Action, Event, RecordEvent};
 use crate::indexer::{IndexError, Indexer};
@@ -33,15 +34,19 @@ pub enum Error {
 /// # Errors
 ///
 /// Returns fatal Tap errors, malformed input, or archive/projection failures.
-pub async fn run(mut indexer: Indexer, config: TapConfig, shutdown: impl Future<Output = ()>) -> Result<(), Error> {
+pub async fn run(
+    indexer: Arc<Mutex<Indexer>>,
+    config: TapConfig,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), Error> {
     let mut stream = atproto_tap::connect(config);
-    let result = ingest(&mut indexer, &mut stream, shutdown).await;
+    let result = ingest(&indexer, &mut stream, shutdown).await;
     stream.close().await;
     result
 }
 
 async fn ingest(
-    indexer: &mut Indexer,
+    indexer: &Mutex<Indexer>,
     stream: &mut TapStream,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), Error> {
@@ -78,7 +83,7 @@ async fn ingest(
         };
         if !ids.is_empty() {
             // Never cancel ingest on shutdown: append can already be durable.
-            indexer.ingest(&events).await?;
+            indexer.lock().await.ingest(&events).await?;
             for &id in &ids {
                 stream.ack(id)?;
             }

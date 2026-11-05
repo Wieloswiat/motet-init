@@ -85,7 +85,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
         Arc::<DidResolver>::clone(&resolver),
         Arc::new(move |aud| api::accepts_audience(aud, &audience)),
     );
-    let app = api::router(state, authenticate).await?;
+    let app = api::router(state, authenticate)?;
 
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %config.listen, shard = %config.shard, "tenor serving");
@@ -144,15 +144,41 @@ async fn maintain(hosting: Arc<identity::Hosting>, handle: shard::Handle) {
             }
         }
         loop {
-            match handle.run(motet_tenor::oauth::Sweep { limit: 256 }).await {
+            match handle
+                .run(motet_tenor::spaces::credentials::SweepDelegationOrigins {
+                    now: SystemTime::now(),
+                    limit: 256,
+                })
+                .await
+            {
                 Ok(Ok(256)) => {}
                 Ok(Ok(_)) => break,
                 Ok(Err(error)) => {
-                    tracing::error!(%error, "OAuth expiration sweep failed");
+                    tracing::error!(%error, "delegation-origin sweep failed");
                     break;
                 }
                 Err(error) => {
-                    tracing::error!(%error, "OAuth expiration writer stopped");
+                    tracing::error!(%error, "delegation-origin writer stopped");
+                    return;
+                }
+            }
+        }
+        loop {
+            match handle
+                .run(shard::SweepServiceTokens {
+                    now: SystemTime::now(),
+                    limit: 256,
+                })
+                .await
+            {
+                Ok(Ok(256)) => {}
+                Ok(Ok(_)) => break,
+                Ok(Err(error)) => {
+                    tracing::error!(%error, "service-token sweep failed");
+                    break;
+                }
+                Err(error) => {
+                    tracing::error!(%error, "service-token writer stopped");
                     return;
                 }
             }

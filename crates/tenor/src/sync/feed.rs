@@ -60,10 +60,15 @@ impl Subscription {
 
     pub(super) async fn start(self, cursor: Option<i64>) -> Result<Feed, StartError> {
         let until = watermark(&self.reader).await.map_err(StartError::Storage)?;
-        let next = cursor.map_or(until, |cursor| u64::try_from(cursor).map_or(0, |seq| seq + 1));
-        if next > until {
-            return Err(StartError::FutureCursor);
-        }
+        // A zero cursor may subscribe before sequence zero has been committed.
+        let next = match cursor {
+            None => until,
+            Some(cursor) => match u64::try_from(cursor) {
+                Ok(seq) if seq > until.saturating_sub(1) => return Err(StartError::FutureCursor),
+                Ok(seq) => (seq + 1).min(until),
+                Err(_) => 0,
+            },
+        };
         Ok(Feed {
             reader: self.reader,
             live: self.live,

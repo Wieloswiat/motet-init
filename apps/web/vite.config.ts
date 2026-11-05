@@ -8,6 +8,8 @@ import { sveltekit } from '@sveltejs/kit/vite';
 const chromium = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
 
 export default defineConfig({
+	server: { allowedHosts: ['motet.test'] },
+	preview: { allowedHosts: ['motet.test'] },
 	plugins: [
 		sveltekit({
 			compilerOptions: {

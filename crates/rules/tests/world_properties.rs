@@ -151,7 +151,10 @@ proptest! {
                     f.apply(command);
                 }
                 (
-                    Command::CloseScene { scene } | Command::JoinCast { scene, .. } | Command::LeaveCast { scene, .. },
+                    Command::CloseScene { scene }
+                    | Command::SetSceneCast { scene, .. }
+                    | Command::JoinCast { scene, .. }
+                    | Command::LeaveCast { scene, .. },
                     Outcome::Refused(Refusal::UnknownScene),
                 ) => prop_assert!(!f.known.contains(scene), "{:?} refused, but its scene exists", command),
                 (c, o) => prop_assert!(false, "unexpected outcome {:?} for {:?}", o, c),
@@ -190,6 +193,9 @@ impl Facts {
             }
             Command::CloseScene { scene } => {
                 self.open.remove(scene);
+            }
+            Command::SetSceneCast { scene, cast } => {
+                self.casts.insert(scene.clone(), cast.clone());
             }
             Command::JoinCast { scene, member } => {
                 self.casts.entry(scene.clone()).or_default().insert(member.clone());

@@ -1,6 +1,7 @@
 //! Configuration, from flags or the environment (`MOTET_APPVIEW_*`).
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::Args;
 
@@ -46,6 +47,29 @@ pub struct Serve {
         default_value = "did:web:localhost#motet_appview"
     )]
     pub service_did: String,
+    /// Public HTTPS origin shared by the web app and AppView.
+    #[arg(long, env = "MOTET_APPVIEW_PUBLIC_ORIGIN")]
+    pub public_origin: String,
+
+    /// PDS used for account creation.
+    #[arg(long, env = "MOTET_APPVIEW_DEFAULT_PDS")]
+    pub default_pds: String,
+
+    /// Default tenor for reserving and creating Worlds.
+    #[arg(long, env = "MOTET_APPVIEW_TENOR_URL")]
+    pub tenor_url: String,
+
+    /// Bare service DID of the default tenor.
+    #[arg(long, env = "MOTET_APPVIEW_TENOR_DID")]
+    pub tenor_did: String,
+
+    /// P-256 OAuth client signing key, as 32 raw bytes or standard base64.
+    #[arg(long, env = "MOTET_APPVIEW_OAUTH_SIGNING_KEY_FILE")]
+    pub oauth_signing_key_file: PathBuf,
+
+    /// Independent 32-byte key used to seal pending logins and sessions.
+    #[arg(long, env = "MOTET_APPVIEW_SESSION_KEY_FILE")]
+    pub session_key_file: PathBuf,
 
     /// Tap HTTP(S) URL. Without it, only the API runs.
     #[arg(long, env = "MOTET_APPVIEW_TAP_URL")]

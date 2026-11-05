@@ -157,7 +157,7 @@ fn record(id: u64, live: bool) -> Value {
 
 fn start(indexer: Indexer, config: TapConfig) -> (oneshot::Sender<()>, JoinHandle<Result<(), tap::Error>>) {
     let (stop, shutdown) = oneshot::channel();
-    let task = tokio::spawn(tap::run(indexer, config, async {
+    let task = tokio::spawn(tap::run(Arc::new(tokio::sync::Mutex::new(indexer)), config, async {
         let _ = shutdown.await;
     }));
     (stop, task)

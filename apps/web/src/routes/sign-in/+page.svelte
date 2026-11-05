@@ -5,4 +5,4 @@
 	let { data }: PageProps = $props();
 </script>
 
-<SignIn data={data.screen} />
+<SignIn returnTo={data.returnTo} />

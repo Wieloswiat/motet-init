@@ -1,0 +1,51 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.getScene",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get a public scene and its admitted public post versions in epoch and sequence order. Returns NotFound when the World or scene is unknown.",
+			"parameters": {
+				"type": "params",
+				"required": ["actor", "scene"],
+				"properties": {
+					"actor": {
+						"type": "string",
+						"format": "at-identifier",
+						"description": "The World's DID or handle."
+					},
+					"scene": {
+						"type": "string",
+						"format": "record-key",
+						"description": "The scene record key."
+					},
+					"limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 },
+					"cursor": {
+						"type": "string",
+						"description": "Continue after epoch:seq, with both components nonnegative signed 64-bit integers."
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["world", "scene", "posts"],
+					"properties": {
+						"world": { "type": "ref", "ref": "at.motet.pilot.queryDefs#world" },
+						"scene": { "type": "ref", "ref": "at.motet.pilot.queryDefs#record" },
+						"posts": {
+							"type": "array",
+							"maxLength": 100,
+							"items": { "type": "ref", "ref": "at.motet.pilot.queryDefs#admittedPost" }
+						},
+						"cursor": {
+							"type": "string",
+							"description": "The last returned epoch:seq when more posts are available."
+						}
+					}
+				}
+			}
+		}
+	}
+}

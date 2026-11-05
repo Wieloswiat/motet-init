@@ -4,14 +4,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Create a reserved World from its unchanged PLC genesis signed by the owner's rotation key. Service auth must come from the reserving owner, addressed to this tenor's did:web service with #motet_tenor. Retry the same reservation and signed operation after an uncertain response; accepted creation intents retain their keys until completion.
+/// Create a reserved World from its unchanged PLC genesis signed by the owner's rotation key. Service auth must come from the reserving owner, addressed to this tenor's bare service DID. Retry the same reservation and signed operation after an uncertain response; accepted creation intents retain their keys until completion.
 pub const NSID: &str = "at.motet.pilot.tenor.createWorld";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateWorldInput {
     pub reservation: String,
-    /// The reserved plc_operation with the owner's unpadded base64url signature in sig.
+    /// The unchanged reserved plc_operation. Its sig is the owner's ECDSA SHA-256 signature over the decoded signingBytes: compact 64-byte r || s, low-S, encoded as unpadded base64url. The tenor-held recovery key cannot sign genesis.
     pub signed_operation: serde_json::Value,
     /// Fields this version of Motet doesn't know. Kept and written back unchanged.
     #[serde(flatten)]

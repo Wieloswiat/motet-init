@@ -104,7 +104,8 @@ impl Op for CreateWorld {
             &info.did,
             &info.owner,
             crate::spaces::ProfileInput {
-                display_name: Some(info.handle.clone()),
+                display_name: Some(reserved.name.clone().unwrap_or_else(|| info.handle.clone())),
+                public: matches!(reserved.visibility, identity::Visibility::Public),
                 ..crate::spaces::ProfileInput::default()
             },
         )

@@ -40,7 +40,7 @@ use serde_json::{Value, json};
 use super::credentials::{self, CredentialError, VerifiedCredential};
 use super::storage::TxnStorage;
 use super::{SpaceError, SpaceWrite, notify};
-use crate::oauth::grants::{Policy as SessionPolicy, Session};
+use crate::authorization::{Actor, Policy};
 use crate::shard::{Handle, Op, Txn};
 use crate::store::keys;
 
@@ -83,7 +83,7 @@ const fn procedure(nsid: &'static str, access: Access, max_body: usize) -> Metho
 // remain the one management path; getSpace/listMembers derive their view.
 const METHODS: &[Method] = &[
     procedure("com.atproto.space.getSpaceCredential", Access::Public, 64 * 1024),
-    query("com.atproto.space.getDelegationToken", Access::Session),
+    query("com.atproto.space.getDelegationToken", Access::Service),
     query("com.atproto.space.listRepos", Access::SpaceCredential),
     query("com.atproto.space.getRepo", Access::SpaceCredential),
     query("com.atproto.space.getLatestCommit", Access::SpaceCredential),
@@ -97,22 +97,14 @@ const METHODS: &[Method] = &[
     procedure("com.atproto.space.notifyWrite", Access::Service, 4096),
     procedure("com.atproto.space.notifySpaceDeleted", Access::Service, 4096),
     procedure("com.atproto.space.notifyCredentialRevoked", Access::Service, 64 * 1024),
-    procedure(
-        "com.atproto.space.createRecord",
-        Access::ServiceOrSession,
-        2 * 1024 * 1024,
-    ),
-    procedure("com.atproto.space.putRecord", Access::ServiceOrSession, 2 * 1024 * 1024),
-    procedure("com.atproto.space.deleteRecord", Access::ServiceOrSession, 4096),
-    procedure(
-        "com.atproto.space.applyWrites",
-        Access::ServiceOrSession,
-        4 * 1024 * 1024,
-    ),
+    procedure("com.atproto.space.createRecord", Access::Service, 2 * 1024 * 1024),
+    procedure("com.atproto.space.putRecord", Access::Service, 2 * 1024 * 1024),
+    procedure("com.atproto.space.deleteRecord", Access::Service, 4096),
+    procedure("com.atproto.space.applyWrites", Access::Service, 4 * 1024 * 1024),
     query("com.atproto.space.listSpaces", Access::Service),
-    procedure("group.opensocial.createSpace", Access::ServiceOrSession, 64 * 1024),
-    procedure("group.opensocial.deleteSpace", Access::ServiceOrSession, 4096),
-    procedure("com.atproto.simplespace.deleteSpace", Access::ServiceOrSession, 4096),
+    procedure("group.opensocial.createSpace", Access::Service, 64 * 1024),
+    procedure("group.opensocial.deleteSpace", Access::Service, 4096),
+    procedure("com.atproto.simplespace.deleteSpace", Access::Service, 4096),
     query("com.atproto.simplespace.getSpace", Access::SpaceCredential),
     query("com.atproto.simplespace.listMembers", Access::Service),
 ];
@@ -916,6 +908,12 @@ async fn receive_notify(state: &State, nsid: &str, caller: Caller, input: &Input
     else {
         return Err(XrpcError::AuthRequired);
     };
+    // Space notifications identify the signing account even when iss names
+    // one of its services. World-member mutations require a bare DID instead.
+    let issuer = issuer
+        .split_once('#')
+        .map_or(issuer.as_str(), |(did, _)| did)
+        .to_owned();
     let (space, notification) = match nsid {
         "com.atproto.space.notifyWrite" => {
             let value: notify::NotifyWrite = body(input)?;
@@ -945,68 +943,50 @@ async fn receive_notify(state: &State, nsid: &str, caller: Caller, input: &Input
     Ok(StatusCode::OK.into_response())
 }
 
-enum Principal {
-    Service(String),
-    Session(Session),
-}
-
 struct Authority {
-    principal: Principal,
+    actor: Actor,
     world: Did,
 }
 
 impl Authority {
     fn from_caller(caller: Caller, world: Did) -> Result<Self, XrpcError> {
-        let principal = match caller {
-            Caller::Service { did, audience, .. } => {
-                if !matches!(
-                    audience.strip_prefix(world.as_str()),
-                    Some("" | "#atproto_pds" | "#motet_tenor")
-                ) {
-                    return Err(XrpcError::AuthRequired);
-                }
-                Principal::Service(did)
-            }
-            caller @ Caller::Session { .. } => {
-                let session = Session::from_caller(caller).map_err(space_error)?;
-                if session.world != world {
-                    return Err(XrpcError::AuthRequired);
-                }
-                Principal::Session(session)
-            }
-            _ => return Err(XrpcError::AuthRequired),
-        };
-        Ok(Self { principal, world })
+        let actor = Actor::from_caller(caller, world.clone()).map_err(space_error)?;
+        Ok(Self { actor, world })
     }
 
-    async fn check(&self, txn: &Txn<'_>) -> Result<Option<SessionPolicy>, XrpcError> {
-        if let Principal::Session(session) = &self.principal {
-            return session.policy(txn).await.map(Some).map_err(space_error);
-        }
-        let raw = txn
-            .get(&keys::world_info(&self.world))
+    async fn check(&self, txn: &Txn<'_>) -> Result<Policy, XrpcError> {
+        self.actor.check_fresh(txn).await.map_err(space_error)?;
+        self.actor.policy(txn).await.map_err(space_error)
+    }
+    async fn consume(&self, txn: &mut Txn<'_>) -> Result<(), XrpcError> {
+        self.actor.consume(txn).await.map_err(space_error)
+    }
+
+    async fn can_inspect(&self, txn: &Txn<'_>, policy: &Policy, space: &SpaceUri) -> Result<bool, XrpcError> {
+        if super::access_txn(txn, space, Some(self.actor.member.as_str()))
             .await
-            .map_err(internal)?
-            .ok_or(XrpcError::AuthRequired)?;
-        let world: crate::world::WorldInfo = serde_json::from_slice(&raw).map_err(internal)?;
-        if matches!(&self.principal, Principal::Service(issuer) if issuer == self.world.as_str() || issuer == world.owner.as_str())
+            .map_err(space_error)?
+            .read
         {
-            Ok(None)
-        } else {
-            Err(XrpcError::AuthRequired)
+            return Ok(true);
         }
+        for verb in [SpaceManageVerb::Update, SpaceManageVerb::Delete] {
+            match policy.manage(space, verb) {
+                Ok(()) => return Ok(true),
+                Err(SpaceError::NotAuthorized) => {}
+                Err(error) => return Err(space_error(error)),
+            }
+        }
+        Ok(false)
     }
 
     async fn audit(&self, txn: &mut Txn<'_>, action: &str, subject: &str) -> Result<(), XrpcError> {
-        if let Principal::Session(session) = &self.principal {
-            session.audit(txn, action, subject).await.map_err(space_error)?;
-        }
-        Ok(())
+        self.actor.audit(txn, action, subject).await.map_err(space_error)
     }
 }
 
 struct Delegation {
-    session: Session,
+    actor: Actor,
     space: SpaceUri,
 }
 
@@ -1015,38 +995,47 @@ impl Op for Delegation {
     type Error = SpaceError;
 
     async fn run(self, txn: &mut Txn<'_>) -> Result<String, SpaceError> {
-        self.session
+        self.actor.check_fresh(txn).await?;
+        self.actor
             .policy(txn)
             .await?
             .space(&self.space, None, SpaceAction::Read)?;
-        if self.space.space_did == self.session.world.as_str() {
-            super::require_live(&super::info_txn(txn, &self.space).await?)?;
-        }
+        let authority = Did::new(&self.space.space_did);
+        let local = if credentials::locally_hosted(txn, &authority).await? {
+            let info = super::info_txn(txn, &self.space).await?;
+            super::require_live(&info)?;
+            Some(info)
+        } else {
+            None
+        };
         let key = txn
-            .key(&self.session.world, crate::keys::Purpose::Signing)
+            .key(&self.actor.world, crate::keys::Purpose::Signing)
             .await?
             .ok_or(SpaceError::NotAuthorized)?;
-        Ok(create_delegation_token(
-            self.session.world.as_str(),
-            &self.space,
-            &key,
-            DELEGATION_TOKEN_TTL_SECS,
-        )?)
+        let token = create_delegation_token(self.actor.world.as_str(), &self.space, &key, DELEGATION_TOKEN_TTL_SECS)?;
+        if let Some(info) = local {
+            credentials::remember_delegation(
+                txn,
+                &self.actor.world,
+                &self.actor.member,
+                &self.space,
+                &info.generation,
+                &token,
+            )
+            .await?;
+        }
+        self.actor.check_fresh(txn).await?;
+        Ok(token)
     }
 }
 
 async fn delegation(state: &State, caller: Caller, input: &Input) -> Result<Response, XrpcError> {
-    let session = Session::from_caller(caller).map_err(|_| {
-        protocol(
-            StatusCode::FORBIDDEN,
-            "OAuthSessionRequired",
-            "OAuth session with verified client identity required",
-        )
-    })?;
     let space = parse_space(required(input, "space")?)?;
+    let world = Actor::world(&caller).map_err(space_error)?;
+    let actor = Actor::from_caller(caller, world).map_err(space_error)?;
     let token = state
         .shard
-        .run(Delegation { session, space })
+        .run(Delegation { actor, space })
         .await
         .map_err(internal)?
         .map_err(space_error)?;
@@ -1137,6 +1126,7 @@ impl Op for WriteRecords {
     type Output = Value;
     type Error = XrpcError;
     async fn run(self, txn: &mut Txn<'_>) -> Result<Value, XrpcError> {
+        self.authority.consume(txn).await?;
         let policy = self.authority.check(txn).await?;
         let mut writes = Vec::with_capacity(self.writes.len());
         let mut actions = Vec::with_capacity(self.writes.len());
@@ -1175,9 +1165,7 @@ impl Op for WriteRecords {
                 swap,
             });
         }
-        if let Some(policy) = policy {
-            policy.records(txn, &self.space, &writes).await.map_err(space_error)?;
-        }
+        policy.records(txn, &self.space, &writes).await.map_err(space_error)?;
         let committed = super::write_as_world(txn, &self.space, writes)
             .await
             .map_err(space_error)?;
@@ -1307,8 +1295,7 @@ async fn write_records(state: &State, nsid: &str, caller: Caller, input: &Input)
             }],
         )
     };
-    // A member's credential or service token never implicitly becomes the
-    // World. Explicit World/owner authority is rechecked inside the operation.
+    // The request identifies the target World, never the acting member.
     if repo != space.space_did {
         return Err(XrpcError::AuthRequired);
     }
@@ -1346,14 +1333,14 @@ impl Op for Create {
     type Output = Value;
     type Error = XrpcError;
     async fn run(self, txn: &mut Txn<'_>) -> Result<Value, XrpcError> {
-        if let Some(policy) = self.authority.check(txn).await? {
-            policy
-                .manage(&self.space, SpaceManageVerb::Create)
-                .map_err(space_error)?;
-            policy
-                .access_change(&self.space, None, Some(&self.access))
-                .map_err(space_error)?;
-        }
+        self.authority.consume(txn).await?;
+        let policy = self.authority.check(txn).await?;
+        policy
+            .manage(&self.space, SpaceManageVerb::Create)
+            .map_err(space_error)?;
+        policy
+            .access_change(&self.space, None, Some(&self.access))
+            .map_err(space_error)?;
         let committed = super::create(txn, &self.space, self.access, self.indexed)
             .await
             .map_err(|error| match error {
@@ -1390,19 +1377,9 @@ fn require_modality(space: &SpaceUri) -> Result<(), XrpcError> {
     }
 }
 
-fn caller_world(caller: &Caller) -> Result<Did, XrpcError> {
-    match caller {
-        Caller::Service { audience, .. } => {
-            parse_did(audience.split_once('#').map_or(audience.as_str(), |(did, _)| did))
-        }
-        Caller::Session { world, .. } => parse_did(world),
-        _ => Err(XrpcError::AuthRequired),
-    }
-}
-
 async fn create_space(state: &State, caller: Caller, input: &Input) -> Result<Response, XrpcError> {
     let request: CreateInput = body(input)?;
-    let world = caller_world(&caller)?;
+    let world = Actor::world(&caller).map_err(space_error)?;
     let authority = Authority::from_caller(caller, world.clone())?;
     let skey = request.skey.unwrap_or_else(|| Tid::new().to_string());
     let space = parse_space(&format!("at://{world}/space/{}/{skey}", request.space_type))?;
@@ -1435,14 +1412,15 @@ impl Op for Delete {
     type Output = ();
     type Error = XrpcError;
     async fn run(self, txn: &mut Txn<'_>) -> Result<(), XrpcError> {
-        if let Some(policy) = self.authority.check(txn).await? {
-            policy
-                .manage(&self.space, SpaceManageVerb::Delete)
-                .map_err(space_error)?;
-        }
+        self.authority.consume(txn).await?;
+        self.authority
+            .check(txn)
+            .await?
+            .manage(&self.space, SpaceManageVerb::Delete)
+            .map_err(space_error)?;
         require_modality(&self.space)?;
-        // The audit destination cannot be removed by a session which needs it.
-        if self.space.space_type.as_str() == super::GMS && matches!(self.authority.principal, Principal::Session(_)) {
+        // Every write needs this audit destination.
+        if self.space.space_type.as_str() == super::GMS {
             return Err(XrpcError::AuthRequired);
         }
         match super::delete(txn, &self.space).await {
@@ -1465,54 +1443,83 @@ async fn delete_space(state: &State, caller: Caller, input: &Input, mode: Delete
     Ok(StatusCode::OK.into_response())
 }
 
+struct ListSpaces {
+    authority: Authority,
+    cursor: Option<String>,
+    kind: Option<String>,
+    limit: usize,
+}
+
+impl Op for ListSpaces {
+    type Output = Value;
+    type Error = XrpcError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<Value, XrpcError> {
+        let policy = self.authority.check(txn).await?;
+        let rows = txn
+            .scan(&keys::space_inventory(&self.authority.world), usize::MAX)
+            .await
+            .map_err(|error| space_error(error.into()))?;
+        let mut entries = Vec::new();
+        for (_, value) in rows {
+            let info: super::SpaceInfo = super::decode(&value).map_err(space_error)?;
+            if info.deleted
+                || self
+                    .kind
+                    .as_deref()
+                    .is_some_and(|kind| kind != info.space.space_type.as_str())
+                || self
+                    .cursor
+                    .as_deref()
+                    .is_some_and(|cursor| info.space.to_string().as_str() <= cursor)
+            {
+                continue;
+            }
+            if self.authority.can_inspect(txn, &policy, &info.space).await? {
+                entries.push(info);
+            }
+        }
+        entries.sort_by_key(|info| info.space.to_string());
+        let more = entries.len() > self.limit;
+        entries.truncate(self.limit);
+        let next = if more {
+            entries.last().map(|info| info.space.to_string())
+        } else {
+            None
+        };
+        let mut spaces = Vec::with_capacity(entries.len());
+        for info in entries {
+            spaces.push(json!({"uri": info.space.to_string(), "isOwner": true, "isMember": true, "createdAt": revision_time(&info.generation)?}));
+        }
+        let mut value = json!({"spaces": spaces});
+        if let Some(cursor) = next {
+            value
+                .as_object_mut()
+                .ok_or(XrpcError::Internal)?
+                .insert("cursor".into(), cursor.into());
+        }
+        self.authority.actor.check_fresh(txn).await.map_err(space_error)?;
+        Ok(value)
+    }
+}
+
 async fn list_spaces(state: &State, caller: Caller, input: &Input) -> Result<Response, XrpcError> {
-    let world = caller_world(&caller)?;
+    let world = Actor::world(&caller).map_err(space_error)?;
     if parameter(input, "did")?.is_some_and(|did| did != world.as_str()) {
         return Err(XrpcError::AuthRequired);
     }
-    let authority = Authority::from_caller(caller, world.clone())?;
-    state.shard.run(CheckAuthority(authority)).await.map_err(internal)??;
-    let cursor = parameter(input, "cursor")?;
-    let kind = parameter(input, "spaceType")?;
-    let limit = page_limit(input, 50, 100)? as usize;
-    let mut entries = super::list_spaces(state.shard.reader(), &world)
+    let authority = Authority::from_caller(caller, world)?;
+    let value = state
+        .shard
+        .run(ListSpaces {
+            authority,
+            cursor: parameter(input, "cursor")?.map(str::to_owned),
+            kind: parameter(input, "spaceType")?.map(str::to_owned),
+            limit: page_limit(input, 50, 100)? as usize,
+        })
         .await
-        .map_err(space_error)?;
-    entries.retain(|info| {
-        !info.deleted
-            && kind.is_none_or(|kind| kind == info.space.space_type.as_str())
-            && cursor.is_none_or(|cursor| info.space.to_string().as_str() > cursor)
-    });
-    entries.sort_by_key(|info| info.space.to_string());
-    let more = entries.len() > limit;
-    entries.truncate(limit);
-    let next = if more {
-        entries.last().map(|info| info.space.to_string())
-    } else {
-        None
-    };
-    let mut spaces = Vec::with_capacity(entries.len());
-    for info in entries {
-        spaces.push(json!({"uri": info.space.to_string(), "isOwner": true, "isMember": true, "createdAt": revision_time(&info.generation)?}));
-    }
-    let mut value = json!({"spaces": spaces});
-    if let Some(cursor) = next {
-        value
-            .as_object_mut()
-            .ok_or(XrpcError::Internal)?
-            .insert("cursor".into(), cursor.into());
-    }
+        .map_err(internal)??;
     Ok(Json(value).into_response())
-}
-
-struct CheckAuthority(Authority);
-
-impl Op for CheckAuthority {
-    type Output = ();
-    type Error = XrpcError;
-    async fn run(self, txn: &mut Txn<'_>) -> Result<(), XrpcError> {
-        self.0.check(txn).await.map(|_| ())
-    }
 }
 
 fn revision_time(rev: &str) -> Result<String, XrpcError> {
@@ -1581,12 +1588,20 @@ impl Op for Members {
     type Output = Value;
     type Error = XrpcError;
     async fn run(self, txn: &mut Txn<'_>) -> Result<Value, XrpcError> {
-        self.authority.check(txn).await?;
-        let info = super::info_txn(txn, &self.space).await.map_err(space_error)?;
-        if info.deleted {
-            return Err(space_error(SpaceError::Deleted));
+        let policy = self.authority.check(txn).await?;
+        // A roster query must not distinguish an inaccessible Space from an absent one.
+        let info = match super::info_txn(txn, &self.space).await {
+            Ok(info) if !info.deleted => info,
+            Ok(_) | Err(SpaceError::NotFound | SpaceError::Deleted) => return Err(XrpcError::AuthRequired),
+            Err(error) => return Err(space_error(error)),
+        };
+        if !self.authority.can_inspect(txn, &policy, &self.space).await? {
+            return Err(XrpcError::AuthRequired);
         }
         let roster = super::world_space(&self.authority.world, super::MEMBERS).map_err(space_error)?;
+        if !self.authority.can_inspect(txn, &policy, &roster).await? {
+            return Err(XrpcError::AuthRequired);
+        }
         let mut members = std::collections::BTreeMap::new();
         members.insert(
             self.authority.world.to_string(),
@@ -1607,7 +1622,7 @@ impl Op for Members {
             for row in page.records {
                 let membership: motet_lexicons::group_opensocial_membership::Membership =
                     super::record_value(&row).map_err(space_error)?;
-                let access = super::access_txn(txn, &self.space, Some(&membership.member))
+                let access = super::access::granted_access_txn(txn, &self.space, &membership.member)
                     .await
                     .map_err(space_error)?;
                 if access.read || access.write {
@@ -1645,6 +1660,7 @@ impl Op for Members {
                 .ok_or(XrpcError::Internal)?
                 .insert("cursor".into(), cursor.into());
         }
+        self.authority.actor.check_fresh(txn).await.map_err(space_error)?;
         Ok(result)
     }
 }
