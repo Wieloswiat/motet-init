@@ -8,7 +8,7 @@ Superseded.
 
 | ADR                                            | Decision                                                                 | Status                                                             |
 | ---------------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| [0001](0001-licence.md)                        | Motet's licence                                                          | Proposed (open)                                                    |
+| [0001](0001-licence.md)                        | Motet's licence                                                          | Accepted                                                           |
 | [0002](0002-nix-and-devenv.md)                 | One nix flake for the toolchain, services, checks and CI                 | Accepted                                                           |
 | [0003](0003-workspace-layout.md)               | A Rust workspace and a pnpm workspace in one repository                  | Accepted                                                           |
 | [0004](0004-atproto-crates.md)                 | Build on atproto-crates                                                  | Accepted; crates.io half superseded by 0013                        |
@@ -29,3 +29,6 @@ Superseded.
 | [0019](0019-local-tls-for-oauth.md)            | Local TLS for PDS OAuth                                                  | Accepted                                                           |
 | [0020](0020-appview-backed-web-screens.md)     | AppView-backed World and scene screens                                   | Accepted; demo routes and data supersede 0012                      |
 | [0021](0021-single-use-member-tokens.md)       | Consume member service tokens once                                       | Accepted                                                           |
+| [0022](0022-private-space-ingestion.md)        | Private Space ingestion and per-reader serving in the AppView            | Proposed; would supersede part of 0018                             |
+| [0023](0023-kani-proofs.md)                    | Use Kani for selected pure-function proofs                               | Proposed                                                           |
+| [0024](0024-durable-dice.md)                   | Durable, World-signed dice through the tenor                             | Proposed                                                           |
