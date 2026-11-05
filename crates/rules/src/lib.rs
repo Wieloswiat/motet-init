@@ -2,12 +2,13 @@
 //!
 //! A post becomes part of a World when the World's tenor *admits* it: a record
 //! written as the World that pins the post's exact version and gives it a
-//! place in its scene. This crate holds the two halves of that rule as pure
-//! functions:
+//! place in its scene. This crate holds three pure concerns:
 //!
 //! - [`world`]: what the tenor decides. A [`world::World`] applies one
 //!   [`world::Command`] at a time, in the World's single command stream, and
 //!   returns an [`world::Outcome`] to persist and publish.
+//! - [`dice`]: durable request and restricted-slot transitions. It reserves
+//!   outcomes without entropy, storage or publication I/O.
 //! - [`view`]: what every consumer derives. A [`view::WorldView`] folds the
 //!   records it has received, from members' repos and the World's, into what
 //!   a scene shows. It never re-runs the tenor's rules: it follows admissions.
@@ -28,6 +29,7 @@
 //! - an edit keeps its post's place, and a stale edit is a conflict;
 //! - a removal governs everything the tenor commits after it.
 
+pub mod dice;
 pub mod id;
 pub mod view;
 pub mod world;
