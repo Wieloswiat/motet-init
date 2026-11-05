@@ -22,6 +22,83 @@ export const pds = 'https://pds.motet.test';
 export const projectionTimeout = 120_000;
 export const interactionTimeout = 60_000;
 
+export type BrowserErrors = {
+	errors: string[];
+	worldProvisioning: (actor: string) => void;
+};
+
+function worldProjectionSource(source: URL, actor: string): boolean {
+	return (
+		source.origin === app &&
+		source.pathname === `/xrpc/${getWorld.GetWorldNsid}` &&
+		source.searchParams.size === 1 &&
+		source.searchParams.get('actor') === actor
+	);
+}
+
+export function expectedSetupResourceError(
+	sourceUrl: string,
+	status: number,
+	provisioningActor: string | null
+): boolean {
+	if (status !== 404) return false;
+
+	let source: URL;
+
+	try {
+		source = new URL(sourceUrl);
+	} catch {
+		return false;
+	}
+
+	if (source.href === `${pds}/favicon.ico`) return true;
+
+	return provisioningActor !== null && worldProjectionSource(source, provisioningActor);
+}
+
+// Chromium logs handled HTTP failures as console errors. StartWorld treats a getWorld 404 as
+// not yet indexed (ADR 0020); the local OAuth PDS's missing favicon is outside Motet.
+export function collectBrowserErrors(page: Page): BrowserErrors {
+	const errors: string[] = [];
+	let provisioningActor: string | null = null;
+
+	page.on('response', (response) => {
+		if (
+			response.status() === 200 &&
+			provisioningActor !== null &&
+			worldProjectionSource(new URL(response.url()), provisioningActor)
+		) {
+			provisioningActor = null;
+		}
+	});
+	page.on('console', (message) => {
+		if (message.type() !== 'error') return;
+
+		const source = message.location().url;
+
+		const resourceStatus =
+			/^Failed to load resource: the server responded with a status of (\d{3}) \(.*\)$/.exec(
+				message.text()
+			);
+
+		if (
+			resourceStatus &&
+			expectedSetupResourceError(source, Number(resourceStatus[1]), provisioningActor)
+		)
+			return;
+
+		errors.push(`${source}: ${message.text()}`);
+	});
+	page.on('pageerror', (error) => errors.push(error.message));
+
+	return {
+		errors,
+		worldProvisioning: (actor) => {
+			provisioningActor = actor;
+		}
+	};
+}
+
 // Each first label is 17 characters: the pinned PDS accepts at most 18.
 export function uniqueLabel(prefix: string): string {
 	return `${prefix}${randomBytes(8).toString('hex')}`;
@@ -283,7 +360,11 @@ async function waitForWorld(page: Page, world: World): Promise<void> {
 		.toBe(`${world.did}|${world.handle}|${world.name}`);
 }
 
-export async function createWorld(page: Page, lostResponse?: 'retry' | 'reload'): Promise<World> {
+export async function createWorld(
+	page: Page,
+	lostResponse?: 'retry' | 'reload',
+	browserErrors?: BrowserErrors
+): Promise<World> {
 	const label = uniqueLabel('w');
 	const handle = `${label}.motet.test`;
 	const name = `World ${label}`;
@@ -407,6 +488,7 @@ export async function createWorld(page: Page, lostResponse?: 'retry' | 'reload')
 	);
 	await expect(page.getByRole('heading', { name: 'World ready' })).toHaveCount(0);
 	await page.getByLabel('Backup passphrase').fill(passphrase);
+	browserErrors?.worldProvisioning(handle);
 	await page.getByRole('button', { name: 'Verify backup' }).click();
 	await expect(page.getByRole('heading', { name: 'World ready' })).toBeVisible({
 		timeout: projectionTimeout

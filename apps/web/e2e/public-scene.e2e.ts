@@ -5,6 +5,10 @@ import {
 } from '@motet/lexicons';
 import {
 	app,
+	pds,
+	collectBrowserErrors,
+	expectedSetupResourceError,
+	type BrowserErrors,
 	projectionTimeout,
 	interactionTimeout,
 	uniqueLabel,
@@ -21,6 +25,57 @@ import {
 } from './journey-support.js';
 
 test.setTimeout(420_000);
+
+// A broad URL-only allowance would hide outages, other Worlds, or reads after indexing succeeded.
+test('setup diagnostics allow only its pending World 404 and the external PDS favicon, never outages', () => {
+	const actor = 'created-world.motet.test';
+	const source = `${app}/xrpc/at.motet.pilot.getWorld?actor=${actor}`;
+	expect(expectedSetupResourceError(source, 404, actor)).toBe(true);
+	expect(expectedSetupResourceError(source, 500, actor)).toBe(false);
+	expect(expectedSetupResourceError(source, 502, actor)).toBe(false);
+	expect(expectedSetupResourceError(source, 404, 'another-world.motet.test')).toBe(false);
+	expect(expectedSetupResourceError(source, 404, null)).toBe(false);
+	expect(expectedSetupResourceError(`${app}/favicon.ico`, 404, actor)).toBe(false);
+	expect(expectedSetupResourceError(`${pds}/favicon.ico`, 404, null)).toBe(true);
+	expect(expectedSetupResourceError(`${pds}/favicon.ico`, 500, null)).toBe(false);
+});
+
+// Reusing the allowance after the first success would hide a regression in a previously visible World.
+test('setup console allowance expires at the first indexed response and still reports a same-World outage', async ({
+	page
+}) => {
+	const actor = 'diagnostic-world.motet.test';
+	const source = `${app}/xrpc/at.motet.pilot.getWorld?actor=${actor}`;
+	const observed = collectBrowserErrors(page);
+	let status = 404;
+
+	await page.route(source, (route) =>
+		route.fulfill({ status, contentType: 'application/json', body: '{}' })
+	);
+	await page.goto('/');
+	observed.worldProvisioning(actor);
+
+	async function readWorld(): Promise<void> {
+		await page.evaluate(async (url) => {
+			await fetch(url);
+		}, source);
+		// A renderer round-trip drains browser console events produced by the completed fetch.
+		await page.evaluate(() => undefined);
+	}
+
+	await readWorld();
+	expect(observed.errors).toEqual([]);
+	status = 500;
+	await readWorld();
+	expect(observed.errors).toHaveLength(1);
+	expect(observed.errors[0]).toContain(source);
+	status = 200;
+	await readWorld();
+	status = 404;
+	await readWorld();
+	expect(observed.errors).toHaveLength(2);
+	expect(observed.errors[1]).toContain(source);
+});
 
 type ExpectedPost = {
 	uri: string;
@@ -39,16 +94,6 @@ type PublicScene = {
 	first: ExpectedPost;
 };
 
-function pageErrors(page: Page): string[] {
-	const errors: string[] = [];
-	page.on('console', (message) => {
-		if (message.type() === 'error') errors.push(message.text());
-	});
-	page.on('pageerror', (error) => errors.push(error.message));
-
-	return errors;
-}
-
 async function revokeSession(page: Page): Promise<void> {
 	const cookies = await page.context().cookies(app);
 	expect(cookies.length, 'the owner must have a session before signing out').toBeGreaterThan(0);
@@ -65,9 +110,9 @@ async function revokeSession(page: Page): Promise<void> {
 	).toBe(401);
 }
 
-async function publicSceneFixture(page: Page): Promise<PublicScene> {
+async function publicSceneFixture(page: Page, browserErrors: BrowserErrors): Promise<PublicScene> {
 	const owner = await signUp(page);
-	const world = await createWorld(page);
+	const world = await createWorld(page, undefined, browserErrors);
 	const scene = await openPublicScene(page, world, owner);
 	const admitted = await admitFirstPost(page, world, scene, owner);
 	const title = await page.getByRole('heading', { level: 1 }).innerText();
@@ -154,13 +199,13 @@ test('anonymous readers navigate a public World and reload its exact admitted sc
 	page,
 	browser
 }) => {
-	const ownerErrors = pageErrors(page);
-	const fixture = await publicSceneFixture(page);
+	const ownerErrors = collectBrowserErrors(page);
+	const fixture = await publicSceneFixture(page, ownerErrors);
 	const readerContext = await browser.newContext({ baseURL: app });
 
 	try {
 		const reader = await readerContext.newPage();
-		const readerErrors = pageErrors(reader);
+		const readerErrors = collectBrowserErrors(reader);
 		const response = await reader.goto(`/w/${encodeURIComponent(fixture.world.did)}`);
 		expect(response?.status(), 'the World must be public without the owner cookie').toBe(200);
 		await expect(
@@ -178,8 +223,10 @@ test('anonymous readers navigate a public World and reload its exact admitted sc
 		await reader.reload();
 		await expectScene(reader, fixture, [fixture.first]);
 		await expectAnonymousScene(reader);
-		expect(readerErrors, 'public navigation and reload must have no browser errors').toEqual([]);
-		expect(ownerErrors, 'real owner setup must have no browser errors').toEqual([]);
+		expect(readerErrors.errors, 'public navigation and reload must have no browser errors').toEqual(
+			[]
+		);
+		expect(ownerErrors.errors, 'real owner setup must have no browser errors').toEqual([]);
 	} finally {
 		await readerContext.close();
 	}
@@ -191,13 +238,13 @@ test('in-scene sign-in returns the anonymous reader to the exact scene and admit
 	page,
 	browser
 }) => {
-	const ownerErrors = pageErrors(page);
-	const fixture = await publicSceneFixture(page);
+	const ownerErrors = collectBrowserErrors(page);
+	const fixture = await publicSceneFixture(page, ownerErrors);
 	const readerContext = await browser.newContext({ baseURL: app });
 
 	try {
 		const reader = await readerContext.newPage();
-		const readerErrors = pageErrors(reader);
+		const readerErrors = collectBrowserErrors(reader);
 		await reader.goto(fixture.path);
 		await expectScene(reader, fixture, [fixture.first]);
 		await expectAnonymousScene(reader);
@@ -232,10 +279,11 @@ test('in-scene sign-in returns the anonymous reader to the exact scene and admit
 		await reader.goto(fixture.path);
 		await expectScene(reader, fixture, expected);
 		await expectAnonymousScene(reader);
-		expect(readerErrors, 'scene OAuth, posting and sign-out must have no browser errors').toEqual(
-			[]
-		);
-		expect(ownerErrors, 'real owner setup must have no browser errors').toEqual([]);
+		expect(
+			readerErrors.errors,
+			'scene OAuth, posting and sign-out must have no browser errors'
+		).toEqual([]);
+		expect(ownerErrors.errors, 'real owner setup must have no browser errors').toEqual([]);
 	} finally {
 		await readerContext.close();
 	}
