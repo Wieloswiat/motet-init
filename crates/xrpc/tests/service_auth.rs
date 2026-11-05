@@ -14,7 +14,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse;
 use motet_xrpc::server::Service;
-use motet_xrpc::service_auth::{MAX_LIFETIME_SECS, ServiceAuthError, verify};
+use motet_xrpc::service_auth::{MAX_LIFETIME_SECS, ServiceAuthError, check_claims, verify};
 use motet_xrpc::{Access, Caller, Kind, Method};
 use proptest::prelude::*;
 use tower::ServiceExt;
@@ -539,6 +539,187 @@ async fn changing_a_signed_identifier_does_not_authenticate() {
     );
     let forged = format!("{header}.{payload}.{signature}");
     assert_eq!(f.verify(&forged).await, Err(ServiceAuthError::BadSignature));
+}
+
+fn timestamp() -> impl Strategy<Value = u64> {
+    prop_oneof![4 => any::<u64>(), 1 => 0..=61_u64, 1 => (u64::MAX - 61)..=u64::MAX]
+}
+
+fn claims_with_times(issued_at: Option<u64>, expiration: Option<u64>, not_before: Option<u64>) -> Claims {
+    let mut claims = Claims::new(JoseClaims {
+        issuer: Some(ALICE.into()),
+        audience: Some(APPVIEW.into()),
+        issued_at,
+        expiration,
+        not_before,
+        ..JoseClaims::default()
+    });
+    claims.private.insert("lxm".into(), METHOD.into());
+    claims
+}
+
+/// The credential must expire within a minute of both issuance and use.
+/// Widening the arithmetic keeps this predicate independent of overflow handling.
+fn authorized_time_window(now: u64, issued_at: Option<u64>, expiration: Option<u64>, not_before: Option<u64>) -> bool {
+    let (Some(issued_at), Some(expiration)) = (issued_at, expiration) else {
+        return false;
+    };
+    let (now, issued_at, expiration) = (u128::from(now), u128::from(issued_at), u128::from(expiration));
+    expiration > now
+        && expiration > issued_at
+        && expiration <= issued_at + 60
+        && expiration <= now + 60
+        && issued_at <= now + 60
+        && not_before.is_none_or(|not_before| u128::from(not_before) <= now)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// No timestamp can extend a credential's authority beyond its signed
+    /// minute. Wrapping subtraction or accepting absent time claims breaks this.
+    #[test]
+    fn full_domain_time_claims_obey_the_authorization_window(
+        now in timestamp(),
+        issued_at in prop::option::of(timestamp()),
+        expiration in prop::option::of(timestamp()),
+        not_before in prop::option::of(timestamp()),
+    ) {
+        let claims = claims_with_times(issued_at, expiration, not_before);
+        let result = check_claims(&claims, |audience| audience == APPVIEW, now);
+        if authorized_time_window(now, issued_at, expiration, not_before) {
+            prop_assert!(result.is_ok(), "{claims:?}: {result:?}");
+        } else {
+            prop_assert_eq!(result, Err(ServiceAuthError::BadLifetime));
+        }
+    }
+
+    /// Exact expiry, minute and nbf boundaries also apply near the clock's
+    /// maximum. Off-by-one comparisons or overflowing additions break this.
+    #[test]
+    fn authorization_time_boundaries_do_not_wrap(now in timestamp()) {
+        for now in [now, 0, 60, u64::MAX - 60, u64::MAX - 1, u64::MAX] {
+            let boundaries = [
+                now.checked_sub(61),
+                now.checked_sub(60),
+                now.checked_sub(1),
+                Some(now),
+                now.checked_add(1),
+                now.checked_add(59),
+                now.checked_add(60),
+                now.checked_add(61),
+            ];
+            for issued_at in boundaries.into_iter().flatten() {
+                let expirations = [
+                    now.checked_sub(1),
+                    Some(now),
+                    now.checked_add(1),
+                    now.checked_add(60),
+                    now.checked_add(61),
+                    issued_at.checked_sub(1),
+                    Some(issued_at),
+                    issued_at.checked_add(1),
+                    issued_at.checked_add(60),
+                    issued_at.checked_add(61),
+                    Some(u64::MAX),
+                ];
+                for expiration in expirations.into_iter().flatten() {
+                    for not_before in [None, now.checked_sub(1), Some(now), now.checked_add(1), Some(u64::MAX)] {
+                        let claims = claims_with_times(Some(issued_at), Some(expiration), not_before);
+                        let result = check_claims(&claims, |audience| audience == APPVIEW, now);
+                        let authorized = authorized_time_window(now, Some(issued_at), Some(expiration), not_before);
+                        prop_assert_eq!(
+                            result.is_ok(),
+                            authorized,
+                            "now={}, issued_at={}, expiration={}, not_before={:?}",
+                            now, issued_at, expiration, not_before,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A usable credential retains the authority and replay identity supplied
+    /// by verification. Normalizing fragments or dropping JTI/expiry breaks this.
+    #[test]
+    fn accepted_claims_preserve_authority_and_replay_identity(
+        now in 0..=(u64::MAX - 60),
+        age in 0..60_u64,
+        remaining in 1..=60_u64,
+        not_before in prop::option::of(timestamp()),
+        issuer in prop::sample::select(vec![ALICE, "did:plc:alice#atproto_pds", "did:plc:alice#atproto_labeler"]),
+        audience in prop::sample::select(vec![APPVIEW, "did:plc:world", "did:plc:world#motet_tenor"]),
+        method in prop_oneof![Just(METHOD.to_owned()), "[a-z]{1,16}(\\.[a-z]{1,16}){1,4}"],
+        jti in prop::option::of(any::<String>()),
+    ) {
+        let issued_at = now.saturating_sub(age);
+        let expiration = now + remaining.min(60 - age);
+        let mut claims = claims_with_times(Some(issued_at), Some(expiration), not_before.map(|time| time.min(now)));
+        claims.jose.issuer = Some(issuer.into());
+        claims.jose.audience = Some(audience.into());
+        claims.jose.json_web_token_id = jti.clone();
+        claims.private.insert("lxm".into(), method.clone().into());
+        prop_assert_eq!(
+            check_claims(&claims, |aud| [APPVIEW, "did:plc:world", "did:plc:world#motet_tenor"].contains(&aud), now),
+            Ok(Caller::Service {
+                did: issuer.into(),
+                lxm: method,
+                audience: audience.into(),
+                jti,
+                expires_at: expiration,
+            }),
+        );
+    }
+
+    /// Audience and method restrictions compose even for otherwise usable
+    /// credentials. Truthy non-string methods or ignored audiences break this.
+    #[test]
+    fn audience_and_method_claims_cannot_bypass_each_other(
+        now in 0..=(u64::MAX - 60),
+        remaining in 1..=60_u64,
+        method in "[a-z]{1,16}(\\.[a-z]{1,16}){1,4}",
+    ) {
+        for audience in [None, Some(""), Some("did:web:elsewhere.test"), Some(APPVIEW), Some("did:plc:world")] {
+            for method_claim in [
+                None,
+                Some(serde_json::Value::Null),
+                Some(serde_json::json!(true)),
+                Some(serde_json::json!(60)),
+                Some(serde_json::json!([METHOD])),
+                Some(serde_json::json!({"lxm": METHOD})),
+                Some(serde_json::json!("")),
+                Some(serde_json::json!(METHOD)),
+                Some(serde_json::json!(method)),
+            ] {
+                let mut claims = claims_with_times(Some(now), Some(now + remaining), Some(now));
+                claims.jose.audience = audience.map(str::to_owned);
+                let method = method_claim.as_ref().and_then(serde_json::Value::as_str);
+                let expected_method = method.filter(|method| !method.is_empty()).map(str::to_owned);
+                claims.private.remove("lxm");
+                if let Some(value) = method_claim {
+                    claims.private.insert("lxm".into(), value);
+                }
+                let result = check_claims(&claims, |aud| [APPVIEW, "did:plc:world"].contains(&aud), now);
+                if !matches!(audience, Some(APPVIEW | "did:plc:world")) {
+                    prop_assert_eq!(result, Err(ServiceAuthError::WrongAudience));
+                } else if let Some(method) = expected_method {
+                    prop_assert_eq!(
+                        result,
+                        Ok(Caller::Service {
+                            did: ALICE.into(),
+                            lxm: method,
+                            audience: audience.expect("accepted audience").into(),
+                            jti: None,
+                            expires_at: now + remaining,
+                        }),
+                    );
+                } else {
+                    prop_assert_eq!(result, Err(ServiceAuthError::NoMethod));
+                }
+            }
+        }
+    }
 }
 
 proptest! {

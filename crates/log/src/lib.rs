@@ -111,12 +111,19 @@ impl Log {
     /// is an error, never silently skipped.
     pub async fn read_from(&self, from: Seq) -> Result<Vec<(Seq, Bytes)>, ReadError> {
         let mut out = Vec::new();
-        for (expected, seq) in (from..).zip(self.positions().await?.into_iter().filter(|s| *s >= from)) {
+        let mut expected = from;
+        for seq in self.positions().await?.into_iter().filter(|s| *s >= from) {
             if seq != expected {
                 return Err(ReadError::Gap(expected));
             }
             let bytes = self.store.get(&self.key(seq)).await?.bytes().await?;
             out.push((seq, bytes));
+            // Nothing can follow the last representable position, so stop instead of
+            // wrapping the cursor back to zero.
+            expected = match expected.checked_add(1) {
+                Some(next) => next,
+                None => break,
+            };
         }
         Ok(out)
     }
