@@ -36,6 +36,7 @@ pub const SCOPE: &str = concat!(
     "rpc:at.motet.pilot.play.openScene?aud=* ",
     "rpc:at.motet.pilot.play.setSceneCast?aud=* ",
     "rpc:at.motet.pilot.play.closeScene?aud=* ",
+    "rpc:at.motet.pilot.play.getSceneControls?aud=* ",
     "rpc:at.motet.pilot.play.submitAdmission?aud=*",
 );
 
@@ -462,6 +463,7 @@ pub(super) fn has_required_scope(scope: &str) -> bool {
         "at.motet.pilot.profile",
         "at.motet.pilot.character",
     ];
+    // Discovery is optional for older sessions; its PDS checks that grant when called.
     let methods = [
         "at.motet.pilot.tenor.reserveWorld",
         "at.motet.pilot.tenor.createWorld",
@@ -562,9 +564,15 @@ mod tests {
             "&collection=at.motet.pilot.character&action=create&action=update&action=delete ",
             "rpc?lxm=at.motet.pilot.tenor.reserveWorld&lxm=at.motet.pilot.tenor.createWorld",
             "&lxm=at.motet.pilot.play.openScene&lxm=at.motet.pilot.play.setSceneCast",
-            "&lxm=at.motet.pilot.play.closeScene&lxm=at.motet.pilot.play.submitAdmission&aud=*",
+            "&lxm=at.motet.pilot.play.closeScene&lxm=at.motet.pilot.play.getSceneControls",
+            "&lxm=at.motet.pilot.play.submitAdmission&aud=*",
         );
         assert!(has_required_scope(complete));
+        let legacy = complete.replace("&lxm=at.motet.pilot.play.getSceneControls", "");
+        assert!(
+            has_required_scope(&legacy),
+            "discovery must not invalidate an existing write grant"
+        );
         let incomplete = complete.replace("&lxm=at.motet.pilot.play.closeScene", "");
         assert!(!has_required_scope(&incomplete));
     }

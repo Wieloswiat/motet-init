@@ -88,11 +88,16 @@ handlers can't forget it:
   a tenor recovery key. An owner-scoped operation ID recovers the same live
   reservation after a lost response; creation retries use the signed genesis.
   Later World-scoped calls resolve the World's `#motet_tenor`
-  service and check its destination. The open-scene API forwards a
-  client-chosen operation ID, so retries of the same request return the
-  original scene. Posting uses an author-scoped client TID as the create-only
-  PDS record key. The outbox compares a read-back after an
-  uncertain PDS response before requesting admission of that exact version.
+  service and check its destination. Scene opening, cast changes and closure
+  forward client-chosen operation IDs, so unchanged retries return their
+  original results. Cast changes and closure also require the current scene
+  CID. A separate authenticated, non-cacheable query discovers the member's
+  current scene grants for UI controls; each mutation still checks authority.
+  Sessions created before the discovery permission was added can still post,
+  but need sign-in again to discover controls. Posting uses an author-scoped
+  client TID as the create-only PDS record key. The outbox compares a read-back
+  after an uncertain PDS response before requesting admission of that exact
+  version.
   It retries admissions with the same operation ID and fresh service tokens.
   After six unsuccessful attempts, admission fails visibly and later posts
   can proceed. A recorded outcome remains retrievable after membership

@@ -27,6 +27,7 @@ use motet_tenor::world::{Status, WorldInfo};
 use motet_tenor::{api, repo};
 use object_store::ObjectStore;
 use object_store::memory::InMemory;
+use proptest::prelude::*;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -39,6 +40,7 @@ const STRANGER: &str = "did:plc:stranger";
 const OPEN: &str = "at.motet.pilot.play.openScene";
 const SET_CAST: &str = "at.motet.pilot.play.setSceneCast";
 const CLOSE: &str = "at.motet.pilot.play.closeScene";
+const CONTROLS: &str = "at.motet.pilot.play.getSceneControls";
 const ADMIT: &str = "at.motet.pilot.play.submitAdmission";
 const SCENE: &str = "at.motet.pilot.scene";
 
@@ -300,6 +302,14 @@ impl Fixture {
 
     async fn post(&self, method: &str, body: Value, actor: &str) -> (StatusCode, Value) {
         self.post_token(method, body, &self.token(actor, WORLD, method)).await
+    }
+
+    async fn controls(&self, world: &str, token: &str) -> (StatusCode, Value) {
+        let request = Request::get(format!("/xrpc/{CONTROLS}?world={world}"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .expect("controls query");
+        response(self.router().oneshot(request).await.expect("controls response")).await
     }
 
     async fn get_scene(&self, scene: &str) -> Value {
@@ -669,4 +679,147 @@ async fn audit_failure_rolls_back_the_public_record_and_cast_decision() {
         .expect("World is readable");
     assert_eq!(member, Ok(()));
     assert_eq!(player, Err(Refusal::NotInCast));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// Discovery agrees with writes across role combinations and independent grants.
+    /// Catches hard-coded GM checks, merging another role's grants, or granting both controls together.
+    #[test]
+    fn scene_controls_match_mutations_for_generated_roles_and_grants(
+        roles in 0_u8..4,
+        player_grants in 0_u8..4,
+        member_grants in 0_u8..4,
+    ) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let f = Fixture::new().await;
+            let mut opened = Vec::with_capacity(2);
+            for op in ["cast-target", "close-target"] {
+                let (status, scene) = f.post(OPEN, json!({"op":op,"world":WORLD,"title":op}), OWNER).await;
+                assert_eq!(status, StatusCode::OK, "{scene}");
+                opened.push(scene);
+            }
+            let assigned: Vec<_> = [(1, "player"), (2, "member")].into_iter()
+                .filter_map(|(bit, role)| (roles & bit != 0).then_some(role)).collect();
+            let mut member = write("group.opensocial.membership", PLAYER, &membership(PLAYER, &assigned));
+            member.action = OpAction::Update;
+            let grants: Vec<_> = [("player", player_grants), ("member", member_grants)].into_iter()
+                .map(|(role, mask)| {
+                    let scopes: Vec<_> = [(1, SET_CAST), (2, CLOSE)].into_iter()
+                        .filter(|(bit, _)| mask & bit != 0).map(|(_, method)| format!("rpc:{method}")).collect();
+                    json!({"role":role,"assignable":[],"scopes":scopes})
+                }).collect();
+            let mut permissions = write("group.opensocial.permissions", "self", &json!({"grants":grants}));
+            permissions.action = OpAction::Update;
+            f.admin(vec![member, permissions]).await;
+            let signed = f.token(PLAYER, WORLD, CONTROLS);
+            let (status, controls) = f.controls(WORLD, &signed).await;
+            if roles == 0 {
+                assert_eq!(status, StatusCode::FORBIDDEN, "{controls}");
+            } else {
+                assert_eq!(status, StatusCode::OK, "{controls}");
+            }
+            let granted = if roles & 1 != 0 { player_grants } else { 0 }
+                | if roles & 2 != 0 { member_grants } else { 0 };
+            for (index, (method, field, bit)) in [(SET_CAST, "setCast", 1), (CLOSE, "close", 2)].into_iter().enumerate() {
+                let scene = &opened[index];
+                let (status, body) = f.post(method, json!({
+                    "op":format!("mutate-{index}"), "world":WORLD, "scene":scene["scene"],
+                    "swapRecord":scene["cid"], "cast":[MEMBER],
+                }), PLAYER).await;
+                let allowed = granted & bit != 0;
+                assert_eq!(status, if allowed { StatusCode::OK } else { StatusCode::FORBIDDEN }, "{body}");
+                if roles != 0 {
+                    assert_eq!(controls[field], allowed);
+                }
+            }
+        });
+    }
+}
+
+/// A discovery credential is reusable but cannot retain authority after role deletion.
+/// Catches consuming query tokens, cached policy, and trusting discovery instead of checking a write.
+#[tokio::test]
+async fn scene_controls_are_read_only_and_lose_removed_roles_before_mutation() {
+    let f = Fixture::new().await;
+    let (status, opened) = f
+        .post(OPEN, json!({"op":"target","world":WORLD,"title":"Target"}), GM)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let signed = f.token(GM, &format!("{WORLD}#motet_tenor"), CONTROLS);
+    let before = f.audit().await;
+    for _ in 0..2 {
+        let (status, controls) = f.controls(WORLD, &signed).await;
+        assert_eq!(status, StatusCode::OK, "{controls}");
+        assert_eq!(controls, json!({"setCast":true,"close":true}));
+    }
+    let claims = signed.split('.').nth(1).expect("JWT claims");
+    let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(claims).expect("base64 claims")).unwrap();
+    assert!(
+        f.handle()
+            .reader()
+            .get(&keys::service_token(&Did::new(GM), claims["jti"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .is_none(),
+        "read-only query must not spend a token"
+    );
+    assert_eq!(f.audit().await, before);
+    let mut remove = write("group.opensocial.role", "gm", &json!({"displayName":"GM"}));
+    remove.action = OpAction::Delete;
+    remove.value = None;
+    f.admin(vec![remove]).await;
+    assert_eq!(f.controls(WORLD, &signed).await.0, StatusCode::FORBIDDEN);
+    for method in [SET_CAST, CLOSE] {
+        assert_eq!(
+            f.post(
+                method,
+                json!({
+                    "op":"removed-role", "world":WORLD, "scene":opened["scene"],
+                    "swapRecord":opened["cid"], "cast":[MEMBER],
+                }),
+                GM
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+}
+
+/// Discovery only exposes a verified member's own target World's controls.
+/// Catches skipping exact lxm validation or using the query World independently of the audience.
+#[tokio::test]
+async fn scene_controls_refuse_nonmembers_wrong_methods_and_cross_world_tokens() {
+    let f = Fixture::new().await;
+    let owner = f.token(OWNER, WORLD, CONTROLS);
+    for query in [
+        format!("{WORLD}&world={WORLD}"),
+        format!("{WORLD}&actor={OWNER}"),
+        "not-a-did".into(),
+    ] {
+        assert_eq!(f.controls(&query, &owner).await.0, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(
+        f.controls(WORLD, &f.token(STRANGER, WORLD, CONTROLS)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.controls(WORLD, &f.token(OWNER, WORLD, CLOSE)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        f.controls(WORLD, &f.token(OWNER, "did:plc:another", CONTROLS)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.controls(
+            WORLD,
+            &f.token(OWNER, "did:web:elsewhere.example#motet_tenor", CONTROLS)
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
 }

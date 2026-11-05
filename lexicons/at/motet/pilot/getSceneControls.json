@@ -1,0 +1,49 @@
+{
+	"lexicon": 1,
+	"id": "at.motet.pilot.getSceneControls",
+	"defs": {
+		"main": {
+			"type": "query",
+			"description": "Get the signed-in member's current scene RPC grants. Advisory only; mutations recheck authorization. This personalized response must not be cached.",
+			"parameters": {
+				"type": "params",
+				"required": ["world"],
+				"properties": {
+					"world": {
+						"type": "string",
+						"format": "did"
+					}
+				}
+			},
+			"output": {
+				"encoding": "application/json",
+				"schema": {
+					"type": "object",
+					"required": ["setCast", "close"],
+					"properties": {
+						"setCast": {
+							"type": "boolean"
+						},
+						"close": {
+							"type": "boolean"
+						}
+					}
+				}
+			},
+			"errors": [
+				{
+					"name": "Forbidden",
+					"description": "The caller is not a current World member."
+				},
+				{
+					"name": "NotFound",
+					"description": "The World was not found."
+				},
+				{
+					"name": "UpstreamFailure",
+					"description": "The PDS or tenor could not complete the request."
+				}
+			]
+		}
+	}
+}

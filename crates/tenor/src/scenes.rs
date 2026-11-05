@@ -25,9 +25,16 @@ const SCENE: &str = "at.motet.pilot.scene";
 const OPEN: &str = "at.motet.pilot.play.openScene";
 const SET_CAST: &str = "at.motet.pilot.play.setSceneCast";
 const CLOSE: &str = "at.motet.pilot.play.closeScene";
+const CONTROLS: &str = "at.motet.pilot.play.getSceneControls";
 const MAX_CAST: usize = 100;
 
-const METHODS: [Method; 3] = [
+const METHODS: [Method; 4] = [
+    Method {
+        nsid: CONTROLS,
+        kind: Kind::Query,
+        access: Access::Service,
+        max_body: 0,
+    },
     Method {
         nsid: OPEN,
         kind: Kind::Procedure,
@@ -48,7 +55,7 @@ const METHODS: [Method; 3] = [
     },
 ];
 
-/// Add the typed public-scene procedures to the service-auth registry.
+/// Add typed public-scene operations to the service-auth registry.
 #[must_use]
 pub(crate) fn register<S: Clone + Send + Sync + 'static>(mut service: Service<S>, shard: &Handle) -> Service<S> {
     for method in METHODS {
@@ -193,6 +200,17 @@ fn cast(values: Vec<String>) -> Result<BTreeSet<Did>, XrpcError> {
 }
 
 async fn dispatch(shard: Handle, method: &'static str, caller: Caller, input: Input) -> Result<Response, XrpcError> {
+    if method == CONTROLS {
+        let [(name, target)] = input.params.as_slice() else {
+            return Err(invalid("expected exactly one world parameter"));
+        };
+        if name != "world" {
+            return Err(invalid("expected exactly one world parameter"));
+        }
+        let actor = Actor::from_caller(caller, world(target.clone())?).map_err(space_error)?;
+        let controls = shard.run(Controls(actor)).await.map_err(internal)??;
+        return Ok(Json(controls).into_response());
+    }
     let request: Value = serde_json::from_slice(&input.body).map_err(invalid)?;
     let (world, op, change) = match method {
         OPEN => {
@@ -259,6 +277,35 @@ async fn dispatch(shard: Handle, method: &'static str, caller: Caller, input: In
         .await
         .map_err(internal)??;
     Ok(Json(changed).into_response())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SceneControls {
+    set_cast: bool,
+    close: bool,
+}
+
+struct Controls(Actor);
+
+impl Op for Controls {
+    type Output = SceneControls;
+    type Error = XrpcError;
+
+    async fn run(self, txn: &mut Txn<'_>) -> Result<SceneControls, XrpcError> {
+        self.0.check_fresh(txn).await.map_err(space_error)?;
+        let policy = self.0.policy(txn).await.map_err(space_error)?;
+        let allowed = |method| match policy.rpc(method) {
+            Ok(()) => Ok(true),
+            Err(SpaceError::NotAuthorized) => Ok(false),
+            Err(error) => Err(space_error(error)),
+        };
+        // These are current grants, not a reservation of authority for a later write.
+        Ok(SceneControls {
+            set_cast: allowed(SET_CAST)?,
+            close: allowed(CLOSE)?,
+        })
+    }
 }
 
 /// Load the current signed public record through the transaction overlay.
