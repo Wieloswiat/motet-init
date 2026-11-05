@@ -20,8 +20,9 @@ reviewed, and `docs/adr/` before changing a decision recorded there
   tests that restate the implementation, source text, defaults, wiring or a
   mock's output; update the acceptance table when one of its rows gains a
   test. Fix a flaky test's cause; don't retry or skip it.
-- Motet has no formal proofs. Don't call anything proved unless a proof job
-  ran and passed (`docs/testing.md`, "Formal proofs").
+- Motet's only formal proofs are the `proofs` job's Kani harnesses, scoped as
+  in `docs/testing.md`. Don't call anything else proved unless a proof job ran
+  and passed.
 - After editing `lexicons/`, run `lexgen` and commit the generated code.
 - Projection schema changes bump `PROJECTION_VERSION`; service-state changes
   are new migrations in `crates/appview/migrations`.

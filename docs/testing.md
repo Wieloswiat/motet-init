@@ -274,32 +274,29 @@ do not lower the threshold or exclude a whole mutator to hide a real gap.
 
 ## Formal proofs
 
-Motet has no formal proofs. Do not call a property proved or formally
-verified until an executed proof establishes it.
-
-[Creusot](https://creusot.rs/) is a candidate for pure, synchronous code with
-small, stable specifications. Good targets include access-freshness bounds
-and admission ordering/idempotency. The current future-timestamp defect in
-`spaces::serving::decide` must be resolved before claiming its intended
-freshness property. A proof of the existing expression alone would prove the
-wrong contract.
-
-The [installation guide](https://guide.creusot.rs/installation.html) requires
-a compatible compiler, Why3 and solvers. Those tools are not in Motet's dev
-shell. Adding them is justified only for a concrete property whose benefit
-exceeds its proof and maintenance cost. Do not impose a proof gate on the
-whole async application.
+The `proofs` devenv command and CI job run Kani harnesses against the
+production `spaces::serving::decide` function. The loop-free function has no
+unwinding bound. Harnesses quantify over full `u64` domains for clocks and
+freshness bounds. Kani's CBMC result checks every execution of each harness
+under its assertions. This is partial correctness: it does not show that
+callers supply valid or synchronized clocks. The harnesses cover freshness,
+revocation and clock boundaries, not private AppView serving or network behavior.
 
 For any adopted proof:
 
-1. Specify and verify the production function, not a copied implementation.
-2. Record preconditions, trusted assumptions, overflow/target assumptions,
+1. Verify the production function, not a copied implementation.
+2. Record preconditions, trusted assumptions, overflow and target assumptions,
    and whether the proof covers termination or only partial correctness.
-3. Pin the compiler, Creusot and solver dependencies through the flake.
+3. Pin verifier tools through the flake.
 4. Add a described devenv command and CI job that fail on unproved goals.
 5. Keep property and boundary tests. A proof does not establish real network,
    PostgreSQL, S3, browser or operating-system behavior.
 6. Name the executed proof job when making a verification claim.
+
+Use proof gates only when the benefit exceeds their proof and maintenance cost.
+Do not impose a proof gate on the whole async application. Creusot remains an
+alternative for properties that need richer specifications than Kani's harness
+assertions can express.
 
 ## Acceptance tests
 

@@ -7,7 +7,11 @@
 #
 # Commands live here as devenv scripts, so they're on PATH in the shell and
 # CI runs exactly the same ones (`nix develop --no-pure-eval -c <script>`).
-{ rustToolchain, networkPackages }:
+{
+  rustToolchain,
+  networkPackages,
+  kani,
+}:
 {
   pkgs,
   lib,
@@ -55,6 +59,7 @@ in
     with pkgs;
     [
       rustToolchain
+      kani
       cargo-nextest
       cargo-deny
       cargo-mutants
@@ -559,6 +564,26 @@ in
     };
 
     # Slower assurance.
+    proofs = {
+      description = "Prove the Spaces serving properties with pinned Kani, Rust and CBMC";
+      exec = ''
+        set -euo pipefail
+        export PATH="${kani}/bin:$PATH"
+        report=target/kani/proofs.json
+        mkdir -p target/kani
+        rm -f "$report"
+        ${rustToolchain}/bin/cargo kani -p motet-spaces --lib -Z unstable-options --export-json "$report"
+        # Kani accepts a crate with no harnesses. Missing or incomplete proofs
+        # must fail this gate, not silently become a successful empty run.
+        ${pkgs.jq}/bin/jq --exit-status '
+          .verification_results as $proofs
+          | $proofs.summary.total_harnesses > 0
+            and $proofs.summary.executed == $proofs.summary.total_harnesses
+            and ($proofs.results | length) == $proofs.summary.total_harnesses
+            and all($proofs.results[]; .status == "Success")
+        ' "$report"
+      '';
+    };
     audit = {
       description = "Known advisories in Rust crates and production npm packages (needs network)";
       exec = ''

@@ -44,9 +44,10 @@
             inherit system;
             overlays = [ (import inputs.rust-overlay) ];
           };
-          # One toolchain, read from rust-toolchain.toml, for the shell, the
-          # build and CI.
+          # The production toolchain stays stable; Kani owns a separate,
+          # ABI-matched nightly compiler in its private Nix closure.
           rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          kani = import ./nix/pkgs/kani.nix { inherit pkgs; };
           rust = import ./nix/rust.nix {
             inherit pkgs rustToolchain;
             crane = inputs.crane;
@@ -65,6 +66,7 @@
             // network.packages
             // {
               default = rust.packages.motet-appview;
+              inherit kani;
             };
 
           # `nix flake check`: everything that needs no running services. The
@@ -73,7 +75,7 @@
           checks = rust.checks;
 
           devenv.shells.default = import ./nix/devenv.nix {
-            inherit rustToolchain;
+            inherit rustToolchain kani;
             networkPackages = network.packages;
           };
 

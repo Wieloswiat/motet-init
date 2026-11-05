@@ -101,6 +101,8 @@ proptest-state-machine = "0.9"
 unsafe_code = "forbid"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"
+# Kani supplies this cfg when compiling proof harnesses, without a runtime dependency.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 # The groups come first, at priority -1, so the lines below them can change
 # single lints. The `restriction` group stays off: some of its lints

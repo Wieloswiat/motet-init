@@ -8,8 +8,9 @@
 #            the `ci` script (what `devenv test` runs locally): everything
 #            above plus rustdoc's lints, the web packages, and the integration
 #            and end-to-end suites.
-#   images   on a push to main, once both pass: builds the container images
-#            with nix (no Dockerfile) and publishes them.
+#   proofs   `proofs`: the Spaces serving harnesses, with pinned Kani and CBMC.
+#   images   on a push to main, once all three pass: builds the container
+#            images with nix (no Dockerfile) and publishes them.
 name: CI
 
 on:
@@ -115,13 +116,38 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
+  proofs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: devenv
+      - uses: nix-community/cache-nix-action@v6
+        with:
+          primary-key: proofs-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'nix/pkgs/kani.nix') }}
+          restore-prefixes-first-match: proofs-${{ runner.os }}-
+      - name: Prove Spaces serving properties
+        run: nix develop --no-pure-eval --no-update-lock-file --command proofs
+      - name: Proof report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-report
+          path: target/kani/proofs.json
+          if-no-files-found: error
+
   # Container images for deploy/compose.yaml and whatever runs Motet next,
   # tagged with the commit. `main` moves to a commit only while that commit
   # is the head of main.
   images:
     # A failed or cancelled check skips this job. Pull requests and the merge
     # queue run this workflow too, but only a push to main publishes.
-    needs: [checks, gate]
+    needs: [checks, gate, proofs]
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
