@@ -287,7 +287,7 @@ For any adopted proof:
 1. Verify the production function, not a copied implementation.
 2. Record preconditions, trusted assumptions, overflow and target assumptions,
    and whether the proof covers termination or only partial correctness.
-3. Pin verifier tools through the flake.
+3. Pin verifier tools through Nix (the native shell imports `nix/pkgs/kani.nix`).
 4. Add a described devenv command and CI job that fail on unproved goals.
 5. Keep property and boundary tests. A proof does not establish real network,
    PostgreSQL, S3, browser or operating-system behavior.

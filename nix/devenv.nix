@@ -1,12 +1,12 @@
 # The development environment: toolchains, local services and git hooks.
 #
-#   nix develop --no-pure-eval   (or `direnv allow`)
+#   devenv shell                 (or `direnv allow`)
 #   devenv up                    PostgreSQL, SeaweedFS, atproto network, AppView and tenor
 #   devenv test                  the whole CI gate, services included
 #   devenv info                  lists the scripts below with descriptions
 #
 # Commands live here as devenv scripts, so they're on PATH in the shell and
-# CI runs exactly the same ones (`nix develop --no-pure-eval -c <script>`).
+# CI runs exactly the same ones (`devenv shell -- <script>`).
 {
   rustToolchain,
   networkPackages,
@@ -25,7 +25,7 @@ let
   s3Secret = "motet-dev-secret";
   networkState = "${config.devenv.state}/network";
   networkPassword = "motet-network-dev";
-  # Leave readiness to process-compose; ready.timeout makes wrappers supervise dependencies.
+  # Leave readiness to the process manager; ready.timeout makes wrappers supervise dependencies.
   httpReady = port: path: {
     http.get = { inherit port path; };
     period = 1;
@@ -429,7 +429,7 @@ in
       exec = ''
         set -euo pipefail
         cargo fmt --all
-        nixfmt flake.nix nix/*.nix nix/pkgs/*.nix
+        nixfmt devenv.nix flake.nix nix/*.nix nix/pkgs/*.nix
         taplo fmt
         pnpm format
       '';
@@ -439,7 +439,7 @@ in
       exec = ''
         set -euo pipefail
         cargo fmt --all --check
-        nixfmt --check flake.nix nix/*.nix nix/pkgs/*.nix
+        nixfmt --check devenv.nix flake.nix nix/*.nix nix/pkgs/*.nix
         taplo fmt --check
         pnpm format:check
       '';
@@ -610,9 +610,8 @@ in
     };
   };
 
-  # `devenv test` starts the processes above, then runs this: the whole CI
-  # gate in one command. CI starts the processes itself and runs `ci`, so it
-  # can keep their logs.
+  # Developers and CI use `devenv test` to start the processes above and run
+  # the whole gate. CI retains the native manager's temporary process log.
   enterTest = "ci";
 
   enterShell = ''

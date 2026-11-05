@@ -117,7 +117,18 @@ check clarity and truth; a word-count linter cannot check reasoning.
 
 ## Local commands and CI
 
-Commands live in `nix/devenv.nix`, with descriptions shown by `devenv info`.
+Enter the native shell with `devenv shell`, or use `direnv allow`.
+Run a command without an interactive shell with `devenv shell -- <command>`.
+Root `devenv.nix` imports `nix/devenv.nix`; commands and services live there,
+with descriptions shown by `devenv info`. The flake retains hermetic checks
+and deployment packages, not a second dev shell ([ADR 0025](adr/0025-native-devenv.md)).
+
+`flake.lock` owns the nixpkgs, rust-overlay and crane pins. After updating
+those flake inputs, copy their revisions into `devenv.yaml` and run
+`devenv update`. Editing `devenv.yaml` also makes the next shell entry
+rewrite `devenv.lock`. Commit that lock with the matching `flake.lock`
+change and YAML revisions. Shell evaluation then rejects different revisions
+or source hashes; `nix flake check` also checks lock alignment.
 Multi-command scripts stop on failure. A later successful command must never
 hide a failed lint or Rust test.
 The shell puts Motet's `fmt` script before the unrelated GNU coreutils command

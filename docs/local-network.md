@@ -103,7 +103,7 @@ record the current unprivileged-port setting before setup, so you can restore
 it later:
 
 ```sh
-direnv allow  # or: nix develop --no-pure-eval
+direnv allow  # or: devenv shell
 motet_prior_port=$(sysctl -n net.ipv4.ip_unprivileged_port_start)
 printf 'Previous unprivileged port start: %s\n' "$motet_prior_port"
 tls-setup
@@ -354,7 +354,7 @@ remove PostgreSQL or S3 volumes unless their data should also be discarded.
 | `indigo` | [Indigo `4f47add43060c27e8a37d9d76482ecddf001fcd8`](https://github.com/bluesky-social/indigo/commit/4f47add43060c27e8a37d9d76482ecddf001fcd8), `cmd/relay` and `cmd/tap` (`tap-v0.1.10`)   |
 | `pds-rs` | [atproto-crates `09a868cdde938c789326f1db16ffc30bbf38c15e`](https://tangled.org/ngerakines.me/atproto-crates/commit/09a868cdde938c789326f1db16ffc30bbf38c15e), `atproto-pds`, binary `pds` |
 
-PLC uses the flake's `pnpm_11` and a fixed dependency closure.
+PLC uses the pinned nixpkgs `pnpm_11` and a fixed dependency closure.
 `pnpm_config_pm_on_fail=ignore` prevents the upstream package-manager pin from
 self-downloading in the sandbox. Containers reuse the native builds without a
 separate dependency graph or external image fallback.
@@ -379,7 +379,7 @@ establish that either works.
 Build just the network packages without the workspace gates:
 
 ```sh
-nix build --no-pure-eval .#plc .#indigo .#pds-rs
+nix build .#plc .#indigo .#pds-rs
 ```
 
 `nix flake check` does not build these packages. The service-backed CI gate

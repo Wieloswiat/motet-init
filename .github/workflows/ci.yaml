@@ -1,11 +1,11 @@
-# The CI gate. The checking jobs run commands defined in the nix flake, so CI
+# The CI gate. The checking jobs run the shared Nix/devenv commands, so CI
 # can't drift from what a developer runs locally:
 #
 #   checks   `nix flake check`: fmt, clippy, the default test suites, cargo-deny
 #            (bans, licences, sources) and lexicon freshness, all hermetic and
 #            cached per derivation.
 #   gate     sets up local TLS and starts the development services, then runs
-#            the `ci` script (what `devenv test` runs locally): everything
+#            `devenv test` (the `ci` script): everything
 #            above plus rustdoc's lints, the web packages, and the integration
 #            and end-to-end suites.
 #   proofs   `proofs`: the Spaces serving harnesses, with pinned Kani and CBMC.
@@ -53,18 +53,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
+      # Supplies the devenv.cachix.org substituter for native CLI binaries.
       - uses: cachix/cachix-action@v16
         with:
           name: devenv
       - uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock', 'devenv.lock', 'Cargo.lock') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
-      # devenv needs the working directory, so even the hermetic checks
-      # evaluate impurely; the checks themselves stay sandboxed builds. An
-      # input that flake.lock doesn't pin fails here, because nix would
-      # otherwise lock it to its newest version, which no commit records.
-      - run: nix flake check --no-pure-eval --no-update-lock-file --print-build-logs
+      # Lock updates must be committed; the checks stay sandboxed builds.
+      - run: nix flake check --no-update-lock-file --print-build-logs
 
   gate:
     runs-on: ubuntu-latest
@@ -79,29 +77,34 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
+      # Supplies the devenv.cachix.org substituter for native CLI binaries.
       - uses: cachix/cachix-action@v16
         with:
           name: devenv
       - uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: devenv-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'pnpm-lock.yaml') }}
+          primary-key: devenv-${{ runner.os }}-${{ hashFiles('flake.lock', 'devenv.lock', 'Cargo.lock', 'pnpm-lock.yaml') }}
           restore-prefixes-first-match: devenv-${{ runner.os }}-
+      - name: Install native devenv
+        # devenv 2.4.0, aligned with the module revision in devenv.lock.
+        run: nix profile add github:cachix/devenv/9655d320b8f9df74dbecf681f52a7334574606c3
       - name: Set up local TLS
-        run: nix develop --no-pure-eval --command tls-setup
-      - name: Start development services
-        run: |
-          # devenv-up is a script, not a package with a bin/ directory. It runs
-          # inside the dev shell so processes see the same environment as
-          # `devenv up` on a laptop; the background flag turns off the TUI.
-          nix build --no-pure-eval .#devenv-up -o devenv-up
-          DEVENV_PROCESS_MANAGER_BACKGROUND=1 \
-            nohup nix develop --no-pure-eval --command ./devenv-up > services.log 2>&1 &
-      - run: nix develop --no-pure-eval --command ci
+        run: devenv shell -- tls-setup
+      # Watch the first run: readiness probes can hang devenv test (cachix/devenv#3215).
+      - name: Service-backed gate
+        run: devenv test 2>&1 | tee services.log
       - name: Service logs
         if: ${{ failure() }}
         run: |
-          if [[ -f services.log ]]; then tail -n 100 services.log; fi
-          tail -n 200 .devenv/state/process-compose/process-compose.log || true
+          if [[ -f services.log ]]; then
+            tail -n 100 services.log
+            # Native devenv test prints its temporary per-run process log path.
+            process_log="$(sed -nE 's/\x1b\[[0-9;]*[mK]//g; s/.*See logs: tail -f (.*\/processes[.]log).*/\1/p' services.log | tail -n 1)"
+            if [[ -n "$process_log" && -f "$process_log" ]]; then
+              cp -- "$process_log" processes.log
+              tail -n 200 processes.log
+            fi
+          fi
       - name: Test report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -112,7 +115,7 @@ jobs:
             target/nextest/integration/junit.xml
             apps/web/playwright-report/
             services.log
-            .devenv/state/process-compose/
+            processes.log
           if-no-files-found: ignore
           include-hidden-files: true
 
@@ -124,15 +127,19 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
+      # Supplies the devenv.cachix.org substituter for native CLI binaries.
       - uses: cachix/cachix-action@v16
         with:
           name: devenv
       - uses: nix-community/cache-nix-action@v6
         with:
-          primary-key: proofs-${{ runner.os }}-${{ hashFiles('flake.lock', 'Cargo.lock', 'nix/pkgs/kani.nix') }}
+          primary-key: proofs-${{ runner.os }}-${{ hashFiles('flake.lock', 'devenv.lock', 'Cargo.lock', 'nix/pkgs/kani.nix') }}
           restore-prefixes-first-match: proofs-${{ runner.os }}-
+      - name: Install native devenv
+        # devenv 2.4.0, aligned with the module revision in devenv.lock.
+        run: nix profile add github:cachix/devenv/9655d320b8f9df74dbecf681f52a7334574606c3
       - name: Prove Spaces serving properties
-        run: nix develop --no-pure-eval --no-update-lock-file --command proofs
+        run: devenv shell -- proofs
       - name: Proof report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

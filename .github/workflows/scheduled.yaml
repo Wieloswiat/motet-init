@@ -20,11 +20,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
+      # Supplies the devenv.cachix.org substituter for native CLI binaries.
       - uses: cachix/cachix-action@v16
         with:
           name: devenv
+      - name: Install native devenv
+        # devenv 2.4.0, aligned with the module revision in devenv.lock.
+        run: nix profile add github:cachix/devenv/9655d320b8f9df74dbecf681f52a7334574606c3
       # cargo-deny's advisories, then `pnpm audit --prod` (the `audit` script).
-      - run: nix develop --no-pure-eval --command audit
+      - run: devenv shell -- audit
 
   mutants:
     runs-on: ubuntu-latest
@@ -40,12 +44,16 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
+      # Supplies the devenv.cachix.org substituter for native CLI binaries.
       - uses: cachix/cachix-action@v16
         with:
           name: devenv
+      - name: Install native devenv
+        # devenv 2.4.0, aligned with the module revision in devenv.lock.
+        run: nix profile add github:cachix/devenv/9655d320b8f9df74dbecf681f52a7334574606c3
       - env:
           CRATE: ${{ matrix.crate }}
-        run: nix develop --no-pure-eval --command mutants --package "$CRATE" --no-shuffle
+        run: devenv shell -- mutants --package "$CRATE" --no-shuffle
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
@@ -60,10 +68,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@v31
+      # Supplies the devenv.cachix.org substituter for native CLI binaries.
       - uses: cachix/cachix-action@v16
         with:
           name: devenv
-      - run: nix develop --no-pure-eval --command mutants-web
+      - name: Install native devenv
+        # devenv 2.4.0, aligned with the module revision in devenv.lock.
+        run: nix profile add github:cachix/devenv/9655d320b8f9df74dbecf681f52a7334574606c3
+      - run: devenv shell -- mutants-web
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
