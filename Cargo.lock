@@ -189,9 +189,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "atproto-dasl",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-oauth",
- "atproto-record",
+ "atproto-record 0.15.0-rc.6",
  "bytes",
  "futures",
  "reqwest",
@@ -227,7 +227,7 @@ source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938
 dependencies = [
  "async-trait",
  "atproto-dasl",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-repo",
  "futures",
  "http",
@@ -271,14 +271,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "atproto-identity"
+version = "0.15.0-rc.7"
+source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=d95d4993bba24fbf18d7851c24b3466258ae6e63#d95d4993bba24fbf18d7851c24b3466258ae6e63"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "data-encoding",
+ "ecdsa",
+ "ed25519-dalek",
+ "elliptic-curve",
+ "idna",
+ "k256",
+ "multibase",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "atproto-lexicon"
 version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
 dependencies = [
  "anyhow",
  "atproto-dasl",
- "atproto-identity",
- "atproto-record",
+ "atproto-identity 0.15.0-rc.6",
+ "atproto-record 0.15.0-rc.6",
  "bitflags",
  "chrono",
  "indexmap",
@@ -297,7 +322,7 @@ source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938
 dependencies = [
  "anyhow",
  "async-trait",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "base64 0.23.1",
  "chrono",
  "http",
@@ -321,7 +346,23 @@ source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938
 dependencies = [
  "anyhow",
  "async-trait",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
+ "base64 0.23.1",
+ "chrono",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "atproto-record"
+version = "0.15.0-rc.7"
+source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=d95d4993bba24fbf18d7851c24b3466258ae6e63#d95d4993bba24fbf18d7851c24b3466258ae6e63"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "atproto-identity 0.15.0-rc.7",
  "base64 0.23.1",
  "chrono",
  "rand 0.10.3",
@@ -336,8 +377,8 @@ version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
 dependencies = [
  "atproto-dasl",
- "atproto-identity",
- "atproto-record",
+ "atproto-identity 0.15.0-rc.6",
+ "atproto-record 0.15.0-rc.6",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -353,8 +394,8 @@ source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938
 dependencies = [
  "async-trait",
  "atproto-dasl",
- "atproto-identity",
- "atproto-record",
+ "atproto-identity 0.15.0-rc.6",
+ "atproto-record 0.15.0-rc.6",
  "base64 0.23.1",
  "blake3",
  "chrono",
@@ -379,7 +420,7 @@ dependencies = [
  "async-trait",
  "atproto-client",
  "atproto-dasl",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-space",
  "base64 0.23.1",
  "bytes",
@@ -399,7 +440,7 @@ name = "atproto-tap"
 version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
 dependencies = [
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "base64 0.23.1",
  "compact_str",
  "futures",
@@ -423,7 +464,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "atproto-dasl",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-xrpcs",
  "axum",
  "base64 0.23.1",
@@ -444,7 +485,7 @@ version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
 dependencies = [
  "async-trait",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "base64 0.23.1",
  "rand 0.10.3",
  "serde",
@@ -3148,9 +3189,9 @@ dependencies = [
  "async-trait",
  "atproto-client",
  "atproto-dasl",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-oauth",
- "atproto-record",
+ "atproto-record 0.15.0-rc.7",
  "atproto-space",
  "atproto-space-client",
  "atproto-tap",
@@ -3237,7 +3278,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-oauth",
  "axum",
  "motet-xrpc",
@@ -3292,10 +3333,10 @@ dependencies = [
  "async-trait",
  "atproto-dasl",
  "atproto-firehose",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-lexicon",
  "atproto-oauth",
- "atproto-record",
+ "atproto-record 0.15.0-rc.7",
  "atproto-repo",
  "atproto-space",
  "atproto-testkit",
@@ -3344,7 +3385,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "atproto-identity",
+ "atproto-identity 0.15.0-rc.6",
  "atproto-oauth",
  "axum",
  "base64 0.22.1",
