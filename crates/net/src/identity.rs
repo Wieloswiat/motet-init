@@ -156,7 +156,7 @@ impl DidResolver {
     }
 
     /// Where a DID's document is published, or `None` for a DID method Motet
-    /// doesn't resolve.
+    /// doesn't resolve or a `did:web` whose authority is not a plain DNS host.
     #[must_use]
     pub fn document_url(&self, did: &str) -> Option<String> {
         if let Some(id) = did.strip_prefix("did:plc:") {
@@ -178,19 +178,52 @@ impl DidResolver {
             }
             None => (authority, None),
         };
-        let valid = !host.is_empty()
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-            && !host.starts_with('.')
-            && !host.ends_with('.');
-        valid.then(|| {
-            port.map_or_else(
-                || format!("https://{host}/.well-known/did.json"),
-                |port| format!("https://{host}:{port}/.well-known/did.json"),
-            )
-        })
+        if !is_domain(host) {
+            return None;
+        }
+        let url = port.map_or_else(
+            || format!("https://{host}/.well-known/did.json"),
+            |port| format!("https://{host}:{port}/.well-known/did.json"),
+        );
+        // The fetcher hands this string to reqwest, whose WHATWG host parser
+        // reads a numeric host as an IPv4 address: it rewrites "0x7f000001" to
+        // 127.0.0.1 and refuses "a.0" outright. Resolution may only continue
+        // when the URL names the host the DID names.
+        let parsed = reqwest::Url::parse(&url).ok()?;
+        if !parsed.host_str()?.eq_ignore_ascii_case(host) {
+            return None;
+        }
+        Some(url)
     }
+}
+
+/// The longest DNS name, in bytes, without its trailing dot.
+const MAX_DOMAIN_LEN: usize = 253;
+/// The longest DNS label, in bytes.
+const MAX_LABEL_LEN: usize = 63;
+
+/// Whether `host` is a DNS name a `did:web` may name.
+///
+/// Labels are letters, digits and inner hyphens; a final label of digits is
+/// refused because the URL parser reads it as an IPv4 address, so `a.0` has no
+/// URL and `1.2.3.4` names an address rather than a domain. Single-label names
+/// stay allowed: the fetcher still refuses whatever address they resolve to.
+fn is_domain(host: &str) -> bool {
+    if host.is_empty() || host.len() > MAX_DOMAIN_LEN {
+        return false;
+    }
+    let last = host.split('.').next_back().unwrap_or_default();
+    if last.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    host.split('.').all(is_label)
+}
+
+fn is_label(label: &str) -> bool {
+    (1..=MAX_LABEL_LEN).contains(&label.len())
+        && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && !label.starts_with('-')
+        && !label.ends_with('-')
 }
 
 fn require_fresh(started: Instant) -> anyhow::Result<()> {
@@ -381,6 +414,51 @@ mod tests {
         ] {
             assert!(r.document_url(did).is_none(), "{did}");
         }
+    }
+
+    /// A numeric did:web host names an address, not a domain, and the URL
+    /// parser either rewrites it ("0x7f000001" becomes 127.0.0.1) or refuses it
+    /// ("a.0" is not a URL at all), so resolution must refuse it first. Catches
+    /// a host check that filters characters without applying the IPv4 rule.
+    #[test]
+    fn numeric_did_web_hosts_are_refused() {
+        let r = resolver();
+        for did in [
+            "did:web:a.0",
+            "did:web:1.2.3.4",
+            "did:web:0x7f000001",
+            "did:web:2130706433",
+            "did:web:0177.0.0.1",
+            "did:web:a.0%3A8443",
+        ] {
+            assert!(r.document_url(did).is_none(), "{did}");
+        }
+    }
+
+    /// A did:web host must be a DNS name, so an empty or hyphen-edged label is
+    /// refused rather than handed to the fetcher. Catches a host check that
+    /// accepts any run of host characters.
+    #[test]
+    fn did_web_hosts_must_be_domain_names() {
+        let r = resolver();
+        let long_label = format!("did:web:{}.example", "a".repeat(MAX_LABEL_LEN + 1));
+        let long_domain = format!("did:web:{}", vec!["a"; 128].join("."));
+        for did in [
+            "did:web:",
+            "did:web:.a.b",
+            "did:web:a.b.",
+            "did:web:a..b",
+            "did:web:a-.b",
+            "did:web:-a.b",
+            "did:web:a.b-",
+            &long_label,
+            &long_domain,
+        ] {
+            assert!(r.document_url(did).is_none(), "{did}");
+        }
+        // A single label and an inner hyphen are still DNS names.
+        assert!(r.document_url("did:web:localhost").is_some());
+        assert!(r.document_url("did:web:gilded-reach.motet.at").is_some());
     }
 
     /// A removed key stops authorizing service tokens when the short cache
