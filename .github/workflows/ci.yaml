@@ -195,6 +195,7 @@ jobs:
             echo "::notice::main is now at $head, so $GITHUB_SHA keeps only its commit tag"
             exit 0
           fi
-          # `main` gets the digest just pushed; nothing is uploaded twice.
-          ./skopeo/bin/skopeo copy --dest-creds "$creds" \
+          # `main` gets the digest just pushed; nothing is uploaded twice. The
+          # source is the same private package, so reading it needs credentials too.
+          ./skopeo/bin/skopeo copy --src-creds "$creds" --dest-creds "$creds" \
             "docker://$image:$GITHUB_SHA" "docker://$image:main"
