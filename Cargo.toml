@@ -29,7 +29,7 @@ motet-xrpc = { path = "crates/xrpc" }
 # the Spaces, repo and Tap crates Motet needs exist only there. Bump the
 # revision for all of them at once.
 atproto-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
-atproto-dasl = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
+atproto-dasl = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "c4564e941675d2566c65ecf26b9698aae5229768" }
 atproto-identity = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
 atproto-lexicon = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
 atproto-oauth = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
