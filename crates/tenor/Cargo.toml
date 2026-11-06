@@ -47,7 +47,7 @@ tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-atproto-firehose = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
+atproto-firehose = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "c4564e941675d2566c65ecf26b9698aae5229768", default-features = false }
 atproto-testkit.workspace = true
 motet-testkit = { workspace = true, features = ["services"] }
 futures.workspace = true
