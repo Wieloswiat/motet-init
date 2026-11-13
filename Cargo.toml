@@ -33,7 +33,7 @@ atproto-dasl = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev =
 atproto-identity = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
 atproto-lexicon = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
 atproto-oauth = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e", default-features = false }
-atproto-record = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "d95d4993bba24fbf18d7851c24b3466258ae6e63" }
+atproto-record = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "0ebab4fdc674dacdfea60048db5cafee5ffcb06a" }
 atproto-repo = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
 atproto-space = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
 atproto-space-client = { git = "https://tangled.org/ngerakines.me/atproto-crates", rev = "09a868cdde938c789326f1db16ffc30bbf38c15e" }
