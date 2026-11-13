@@ -190,7 +190,7 @@ dependencies = [
  "async-trait",
  "atproto-dasl",
  "atproto-identity 0.15.0-rc.6",
- "atproto-oauth",
+ "atproto-oauth 0.15.0-rc.6",
  "atproto-record 0.15.0-rc.6",
  "bytes",
  "futures",
@@ -296,6 +296,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "atproto-identity"
+version = "0.15.0-rc.8"
+source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=0ebab4fdc674dacdfea60048db5cafee5ffcb06a#0ebab4fdc674dacdfea60048db5cafee5ffcb06a"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "data-encoding",
+ "ecdsa",
+ "ed25519-dalek",
+ "elliptic-curve",
+ "idna",
+ "k256",
+ "multibase",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "atproto-lexicon"
 version = "0.15.0-rc.6"
 source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=09a868cdde938c789326f1db16ffc30bbf38c15e#09a868cdde938c789326f1db16ffc30bbf38c15e"
@@ -323,6 +348,30 @@ dependencies = [
  "anyhow",
  "async-trait",
  "atproto-identity 0.15.0-rc.6",
+ "base64 0.23.1",
+ "chrono",
+ "http",
+ "rand 0.10.3",
+ "reqwest",
+ "reqwest-chain",
+ "reqwest-middleware",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "ulid 3.0.0",
+]
+
+[[package]]
+name = "atproto-oauth"
+version = "0.15.0-rc.8"
+source = "git+https://tangled.org/ngerakines.me/atproto-crates?rev=0ebab4fdc674dacdfea60048db5cafee5ffcb06a#0ebab4fdc674dacdfea60048db5cafee5ffcb06a"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "atproto-identity 0.15.0-rc.8",
  "base64 0.23.1",
  "chrono",
  "http",
@@ -3190,7 +3239,7 @@ dependencies = [
  "atproto-client",
  "atproto-dasl",
  "atproto-identity 0.15.0-rc.6",
- "atproto-oauth",
+ "atproto-oauth 0.15.0-rc.8",
  "atproto-record 0.15.0-rc.7",
  "atproto-space",
  "atproto-space-client",
@@ -3279,7 +3328,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "atproto-identity 0.15.0-rc.6",
- "atproto-oauth",
+ "atproto-oauth 0.15.0-rc.8",
  "axum",
  "motet-xrpc",
  "proptest",
@@ -3335,7 +3384,7 @@ dependencies = [
  "atproto-firehose",
  "atproto-identity 0.15.0-rc.6",
  "atproto-lexicon",
- "atproto-oauth",
+ "atproto-oauth 0.15.0-rc.8",
  "atproto-record 0.15.0-rc.7",
  "atproto-repo",
  "atproto-space",
@@ -3386,7 +3435,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "atproto-identity 0.15.0-rc.6",
- "atproto-oauth",
+ "atproto-oauth 0.15.0-rc.8",
  "axum",
  "base64 0.22.1",
  "futures",
